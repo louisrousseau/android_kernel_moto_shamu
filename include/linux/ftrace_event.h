@@ -36,6 +36,9 @@ const char *ftrace_print_symbols_seq_u64(struct trace_seq *p,
 								 *symbol_array);
 #endif
 
+const char *ftrace_print_bitmask_seq(struct trace_seq *p, void *bitmask_ptr,
+				     unsigned int bitmask_size);
+
 const char *ftrace_print_hex_seq(struct trace_seq *p,
 				 const unsigned char *buf, int len);
 
@@ -378,5 +381,8 @@ perf_trace_buf_submit(void *raw_data, int size, int rctx, u64 addr,
 	perf_tp_event(addr, count, raw_data, size, regs, head, rctx, task);
 }
 #endif
+
+#define FTRACE_EVENT_ENABLED(name)					\
+	((event_##name).flags & (1 << (TRACE_EVENT_FL_WAS_ENABLED_BIT)))\
 
 #endif /* _LINUX_FTRACE_EVENT_H */

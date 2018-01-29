@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,6 +17,9 @@
 #include <linux/skbuff.h>
 #include <linux/types.h>
 #include <linux/msm-sps.h>
+#include <linux/if_ether.h>
+
+#define IPA_APPS_MAX_BW_IN_MBPS 200
 
 /**
  * enum ipa_nat_en_type - NAT setting type in IPA end-point
@@ -251,10 +254,12 @@ struct ipa_ep_cfg_route {
  * struct ipa_ep_cfg_holb - head of line blocking configuration in IPA end-point
  * @en: enable(1 => ok to drop pkt)/disable(0 => never drop pkt)
  * @tmr_val: duration in units of 128 IPA clk clock cyles [0,511], 1 clk=1.28us
+ *	     IPAv2.5 support 32 bit HOLB timeout value, previous versions
+ *	     supports 16 bit
  */
 struct ipa_ep_cfg_holb {
 	u16 en;
-	u16 tmr_val;
+	u32 tmr_val;
 };
 
 /**
@@ -403,6 +408,7 @@ typedef void (*ipa_notify_cb)(void *priv, enum ipa_dp_evt_type evt,
  * @data:	data FIFO meta-data when client has allocated it
  * @skip_ep_cfg: boolean field that determines if EP should be configured
  *  by IPA driver
+ * @keep_ipa_awake: when true, IPA will not be clock gated
  */
 struct ipa_connect_params {
 	struct ipa_ep_cfg ipa_ep_cfg;
@@ -417,6 +423,7 @@ struct ipa_connect_params {
 	struct sps_mem_buffer desc;
 	struct sps_mem_buffer data;
 	bool skip_ep_cfg;
+	bool keep_ipa_awake;
 };
 
 /**
@@ -482,6 +489,7 @@ struct ipa_ext_intf {
  *		enum for valid cases.
  * @skip_ep_cfg: boolean field that determines if EP should be configured
  *  by IPA driver
+ * @keep_ipa_awake: when true, IPA will not be clock gated
  */
 struct ipa_sys_connect_params {
 	struct ipa_ep_cfg ipa_ep_cfg;
@@ -490,12 +498,15 @@ struct ipa_sys_connect_params {
 	void *priv;
 	ipa_notify_cb notify;
 	bool skip_ep_cfg;
+	bool keep_ipa_awake;
 };
 
 /**
  * struct ipa_tx_meta - meta-data for the TX packet
  * @mbim_stream_id:	the stream ID used in NDP signature
  * @mbim_stream_id_valid:	 is above field valid?
+ * @dma_address: dma mapped address of TX packet
+ * @dma_address_valid: is above field valid?
  */
 struct ipa_tx_meta {
 	u8 mbim_stream_id;
@@ -503,6 +514,8 @@ struct ipa_tx_meta {
 	u8 pkt_init_dst_ep;
 	bool pkt_init_dst_ep_valid;
 	bool pkt_init_dst_ep_remote;
+	dma_addr_t dma_address;
+	bool dma_address_valid;
 };
 
 /**
@@ -533,25 +546,13 @@ typedef void (*ipa_msg_free_fn)(void *buff, u32 len, u32 type);
 typedef int (*ipa_msg_pull_fn)(void *buff, u32 len, u32 type);
 
 /**
- * enum ipa_bridge_dir - direction of the bridge from air interface perspective
- *
- * IPA bridge direction
+ * enum ipa_voltage_level - IPA Voltage levels
  */
-enum ipa_bridge_dir {
-	IPA_BRIDGE_DIR_DL,
-	IPA_BRIDGE_DIR_UL,
-	IPA_BRIDGE_DIR_MAX
-};
-
-/**
- * enum ipa_bridge_type - type of SW bridge
- *
- * IPA bridge type
- */
-enum ipa_bridge_type {
-	IPA_BRIDGE_TYPE_TETHERED,
-	IPA_BRIDGE_TYPE_EMBEDDED,
-	IPA_BRIDGE_TYPE_MAX
+enum ipa_voltage_level {
+	IPA_VOLTAGE_UNSPECIFIED,
+	IPA_VOLTAGE_SVS = IPA_VOLTAGE_UNSPECIFIED,
+	IPA_VOLTAGE_NOMINAL,
+	IPA_VOLTAGE_MAX,
 };
 
 /**
@@ -589,6 +590,8 @@ struct ipa_rm_register_params {
  * struct ipa_rm_create_params - information needed to initialize
  *				the resource
  * @name: resource name
+ * @floor_voltage: floor voltage needed for client to operate in maximum
+ *		bandwidth.
  * @reg_params: register parameters, contains are ignored
  *		for consumer resource NULL should be provided
  *		for consumer resource
@@ -603,47 +606,24 @@ struct ipa_rm_register_params {
  */
 struct ipa_rm_create_params {
 	enum ipa_rm_resource_name name;
+	enum ipa_voltage_level floor_voltage;
 	struct ipa_rm_register_params reg_params;
 	int (*request_resource)(void);
 	int (*release_resource)(void);
 };
 
+/**
+ * struct ipa_rm_perf_profile - information regarding IPA RM client performance
+ * profile
+ *
+ * @max_bandwidth_mbps: maximum bandwidth need of the client in Mbps
+ */
+struct ipa_rm_perf_profile {
+	u32 max_supported_bandwidth_mbps;
+};
+
 #define A2_MUX_HDR_NAME_V4_PREF "dmux_hdr_v4_"
 #define A2_MUX_HDR_NAME_V6_PREF "dmux_hdr_v6_"
-
-enum a2_mux_event_type {
-	A2_MUX_RECEIVE,
-	A2_MUX_WRITE_DONE
-};
-
-enum a2_mux_logical_channel_id {
-	A2_MUX_WWAN_0,
-	A2_MUX_WWAN_1,
-	A2_MUX_WWAN_2,
-	A2_MUX_WWAN_3,
-	A2_MUX_WWAN_4,
-	A2_MUX_WWAN_5,
-	A2_MUX_WWAN_6,
-	A2_MUX_WWAN_7,
-	A2_MUX_TETHERED_0,
-	A2_MUX_RESERVED_9,
-	A2_MUX_MULTI_RMNET_10,
-	A2_MUX_MULTI_RMNET_11,
-	A2_MUX_MULTI_RMNET_12,
-	A2_MUX_MULTI_MBIM_13,
-	A2_MUX_MULTI_MBIM_14,
-	A2_MUX_MULTI_MBIM_15,
-	A2_MUX_MULTI_MBIM_16,
-	A2_MUX_MULTI_MBIM_17,
-	A2_MUX_MULTI_MBIM_18,
-	A2_MUX_MULTI_MBIM_19,
-	A2_MUX_MULTI_MBIM_20,
-	A2_MUX_NUM_CHANNELS
-};
-
-typedef void (*a2_mux_notify_cb)(void *user_data,
-		enum a2_mux_event_type event,
-		unsigned long data);
 
 /**
  * enum teth_tethering_mode - Tethering mode (Rmnet / MBIM)
@@ -756,6 +736,292 @@ struct ipa_tx_suspend_irq_data {
 typedef void (*ipa_irq_handler_t)(enum ipa_irq_type interrupt,
 				void *private_data,
 				void *interrupt_data);
+
+/**
+ * struct IpaHwBamStats_t - Strucuture holding the BAM statistics
+ *
+ * @bamFifoFull : Number of times Bam Fifo got full - For In Ch: Good,
+ * For Out Ch: Bad
+ * @bamFifoEmpty : Number of times Bam Fifo got empty - For In Ch: Bad,
+ * For Out Ch: Good
+ * @bamFifoUsageHigh : Number of times Bam fifo usage went above 75% -
+ * For In Ch: Good, For Out Ch: Bad
+ * @bamFifoUsageLow : Number of times Bam fifo usage went below 25% -
+ * For In Ch: Bad, For Out Ch: Good
+*/
+struct IpaHwBamStats_t {
+	u32 bamFifoFull;
+	u32 bamFifoEmpty;
+	u32 bamFifoUsageHigh;
+	u32 bamFifoUsageLow;
+} __packed;
+
+/**
+ * struct IpaHwRingStats_t - Strucuture holding the Ring statistics
+ *
+ * @ringFull : Number of times Transfer Ring got full - For In Ch: Good,
+ * For Out Ch: Bad
+ * @ringEmpty : Number of times Transfer Ring got empty - For In Ch: Bad,
+ * For Out Ch: Good
+ * @ringUsageHigh : Number of times Transfer Ring usage went above 75% -
+ * For In Ch: Good, For Out Ch: Bad
+ * @ringUsageLow : Number of times Transfer Ring usage went below 25% -
+ * For In Ch: Bad, For Out Ch: Good
+*/
+struct IpaHwRingStats_t {
+	u32 ringFull;
+	u32 ringEmpty;
+	u32 ringUsageHigh;
+	u32 ringUsageLow;
+} __packed;
+
+/**
+ * struct IpaHwStatsWDIRxInfoData_t - Structure holding the WDI Rx channel
+ * structures
+ *
+ * @max_outstanding_pkts : Number of outstanding packets in Rx Ring
+ * @num_pkts_processed : Number of packets processed - cumulative
+ * @rx_ring_rp_value : Read pointer last advertized to the WLAN FW
+ * @rx_ind_ring_stats : Ring info
+ * @bam_stats : BAM info
+ * @num_bam_int_handled : Number of Bam Interrupts handled by FW
+ * @num_db : Number of times the doorbell was rung
+ * @num_unexpected_db : Number of unexpected doorbells
+*/
+struct IpaHwStatsWDIRxInfoData_t {
+	u32 max_outstanding_pkts;
+	u32 num_pkts_processed;
+	u32 rx_ring_rp_value;
+	struct IpaHwRingStats_t rx_ind_ring_stats;
+	struct IpaHwBamStats_t bam_stats;
+	u32 num_bam_int_handled;
+	u32 num_db;
+	u32 num_unexpected_db;
+	u32 reserved1;
+	u32 reserved2;
+} __packed;
+
+/**
+ * struct IpaHwStatsWDITxInfoData_t  - Structure holding the WDI Tx channel
+ * structures
+ *
+ * @num_pkts_processed : Number of packets processed - cumulative
+ * @copy_engine_doorbell_value : latest value of doorbell written to copy engine
+ * @num_db_fired : Number of DB from uC FW to Copy engine
+ * @tx_comp_ring_stats : ring info
+ * @bam_stats : BAM info
+ * @num_db : Number of times the doorbell was rung
+ * @num_unexpected_db : Number of unexpected doorbells
+ * @num_bam_int_handled : Number of Bam Interrupts handled by FW
+ * @num_bam_int_in_non_runnning_state : Number of Bam interrupts while not in
+ * Running state
+ * @num_qmb_int_handled : Number of QMB interrupts handled
+*/
+struct IpaHwStatsWDITxInfoData_t {
+	u32 num_pkts_processed;
+	u32 copy_engine_doorbell_value;
+	u32 num_db_fired;
+	struct IpaHwRingStats_t tx_comp_ring_stats;
+	struct IpaHwBamStats_t bam_stats;
+	u32 num_db;
+	u32 num_unexpected_db;
+	u32 num_bam_int_handled;
+	u32 num_bam_int_in_non_runnning_state;
+	u32 num_qmb_int_handled;
+} __packed;
+
+/**
+ * struct IpaHwStatsWDIInfoData_t - Structure holding the WDI channel structures
+ *
+ * @rx_ch_stats : RX stats
+ * @tx_ch_stats : TX stats
+*/
+struct IpaHwStatsWDIInfoData_t {
+	struct IpaHwStatsWDIRxInfoData_t rx_ch_stats;
+	struct IpaHwStatsWDITxInfoData_t tx_ch_stats;
+} __packed;
+
+
+/**
+ * struct  ipa_wdi_ul_params - WDI_RX configuration
+ * @rdy_ring_base_pa: physical address of the base of the Rx ring (containing
+ * Rx buffers)
+ * @rdy_ring_size: size of the Rx ring in bytes
+ * @rdy_ring_rp_pa: physical address of the location through which IPA uc is
+ * expected to communicate about the Read pointer into the Rx Ring
+ */
+struct ipa_wdi_ul_params {
+	phys_addr_t rdy_ring_base_pa;
+	u32 rdy_ring_size;
+	phys_addr_t rdy_ring_rp_pa;
+};
+
+/**
+ * struct  ipa_wdi_dl_params - WDI_TX configuration
+ * @comp_ring_base_pa: physical address of the base of the Tx completion ring
+ * @comp_ring_size: size of the Tx completion ring in bytes
+ * @ce_ring_base_pa: physical address of the base of the Copy Engine Source
+ * Ring
+ * @ce_door_bell_pa: physical address of the doorbell that the IPA uC has to
+ * write into to trigger the copy engine
+ * @ce_ring_size: Copy Engine Ring size in bytes
+ * @num_tx_buffers: Number of pkt buffers allocated
+ */
+struct ipa_wdi_dl_params {
+	phys_addr_t comp_ring_base_pa;
+	u32 comp_ring_size;
+	phys_addr_t ce_ring_base_pa;
+	phys_addr_t ce_door_bell_pa;
+	u32 ce_ring_size;
+	u32 num_tx_buffers;
+};
+
+/**
+ * struct  ipa_wdi_in_params - information provided by WDI client
+ * @sys: IPA EP configuration info
+ * @ul: WDI_RX configuration info
+ * @dl: WDI_TX configuration info
+ */
+struct ipa_wdi_in_params {
+	struct ipa_sys_connect_params sys;
+	union {
+		struct ipa_wdi_ul_params ul;
+		struct ipa_wdi_dl_params dl;
+	} u;
+};
+
+/**
+ * struct  ipa_wdi_out_params - information provided to WDI client
+ * @uc_door_bell_pa: physical address of IPA uc doorbell
+ * @clnt_hdl: opaque handle assigned to client
+ */
+struct ipa_wdi_out_params {
+	phys_addr_t uc_door_bell_pa;
+	u32 clnt_hdl;
+};
+
+/**
+ * struct ipa_wdi_db_params - information provided to retrieve
+ *       physical address of uC doorbell
+ * @client:	type of "client" (IPA_CLIENT_WLAN#_PROD/CONS)
+ * @uc_door_bell_pa: physical address of IPA uc doorbell
+ */
+struct ipa_wdi_db_params {
+	enum ipa_client_type client;
+	phys_addr_t uc_door_bell_pa;
+};
+
+/**
+ * struct  ipa_wdi_uc_ready_params - uC ready CB parameters
+ * @is_uC_ready: uC loaded or not
+ * @priv : callback cookie
+ * @notify:	callback
+ */
+typedef void (*ipa_uc_ready_cb)(void *priv);
+struct ipa_wdi_uc_ready_params {
+	bool is_uC_ready;
+	void *priv;
+	ipa_uc_ready_cb notify;
+};
+
+/**
+ * struct odu_bridge_params - parameters for odu bridge initialization API
+ *
+ * @netdev_name: network interface name
+ * @priv: private data that will be supplied to client's callback
+ * @tx_dp_notify: callback for handling SKB. the following event are supported:
+ *	IPA_WRITE_DONE:	will be called after client called to odu_bridge_tx_dp()
+ *			Client is expected to free the skb.
+ *	IPA_RECEIVE:	will be called for delivering skb to APPS.
+ *			Client is expected to deliver the skb to network stack.
+ * @send_dl_skb: callback for sending skb on downlink direction to adapter.
+ *		Client is expected to free the skb.
+ * @device_ethaddr: device Ethernet address in network order.
+ * @ipa_desc_size: IPA Sys Pipe Desc Size
+ */
+struct odu_bridge_params {
+	const char *netdev_name;
+	void *priv;
+	ipa_notify_cb tx_dp_notify;
+	int (*send_dl_skb)(void *priv, struct sk_buff *skb);
+	u8 device_ethaddr[ETH_ALEN];
+	u32 ipa_desc_size;
+};
+
+/**
+ * enum ipa_mhi_event_type - event type for mhi callback
+ *
+ * @IPA_MHI_EVENT_READY: IPA MHI is ready and IPA uC is loaded. After getting
+ *	this event MHI client is expected to call to ipa_mhi_start() API
+ * @IPA_MHI_EVENT_DATA_AVAILABLE: downlink data available on MHI channel
+ */
+enum ipa_mhi_event_type {
+	IPA_MHI_EVENT_READY,
+	IPA_MHI_EVENT_DATA_AVAILABLE,
+	IPA_MHI_EVENT_MAX,
+};
+
+typedef void (*mhi_client_cb)(void *priv, enum ipa_mhi_event_type event,
+	unsigned long data);
+
+/**
+ * struct ipa_mhi_msi_info - parameters for MSI (Message Signaled Interrupts)
+ * @addr_low: MSI lower base physical address
+ * @addr_hi: MSI higher base physical address
+ * @data: Data Pattern to use when generating the MSI
+ * @mask: Mask indicating number of messages assigned by the host to device
+ *
+ * msi value is written according to this formula:
+ *	((data & ~mask) | (mmio.msiVec & mask))
+ */
+struct ipa_mhi_msi_info {
+	u32 addr_low;
+	u32 addr_hi;
+	u32 data;
+	u32 mask;
+};
+
+/**
+ * struct ipa_mhi_init_params - parameters for IPA MHI initialization API
+ *
+ * @msi: MSI (Message Signaled Interrupts) parameters
+ * @mmio_addr: MHI MMIO physical address
+ * @first_ch_idx: First channel ID for hardware accelerated channels.
+ * @first_er_idx: First event ring ID for hardware accelerated channels.
+ * @notify: client callback
+ * @priv: client private data to be provided in client callback
+ */
+struct ipa_mhi_init_params {
+	struct ipa_mhi_msi_info msi;
+	u32 mmio_addr;
+	u32 first_ch_idx;
+	u32 first_er_idx;
+	mhi_client_cb notify;
+	void *priv;
+};
+
+/**
+ * struct ipa_mhi_start_params - parameters for IPA MHI start API
+ *
+ * @host_ctrl_addr: Base address of MHI control data structures
+ * @host_data_addr: Base address of MHI data buffers
+ */
+struct ipa_mhi_start_params {
+	u32 host_ctrl_addr;
+	u32 host_data_addr;
+};
+
+/**
+ * struct ipa_mhi_connect_params - parameters for IPA MHI channel connect API
+ *
+ * @sys: IPA EP configuration info
+ * @channel_id: MHI channel id
+ */
+struct ipa_mhi_connect_params {
+	struct ipa_sys_connect_params sys;
+	u8 channel_id;
+};
+
 #ifdef CONFIG_IPA
 
 /*
@@ -768,9 +1034,7 @@ int ipa_disconnect(u32 clnt_hdl);
 /*
  * Resume / Suspend
  */
-int ipa_resume(u32 clnt_hdl);
-
-int ipa_suspend(u32 clnt_hdl);
+int ipa_reset_endpoint(u32 clnt_hdl);
 
 /*
  * Configuration
@@ -823,6 +1087,13 @@ int ipa_put_hdr(u32 hdr_hdl);
 int ipa_copy_hdr(struct ipa_ioc_copy_hdr *copy);
 
 /*
+ * Header Processing Context
+ */
+int ipa_add_hdr_proc_ctx(struct ipa_ioc_add_hdr_proc_ctx *proc_ctxs);
+
+int ipa_del_hdr_proc_ctx(struct ipa_ioc_del_hdr_proc_ctx *hdls);
+
+/*
  * Routing
  */
 int ipa_add_rt_rule(struct ipa_ioc_add_rt_rule *rules);
@@ -839,12 +1110,16 @@ int ipa_put_rt_tbl(u32 rt_tbl_hdl);
 
 int ipa_query_rt_index(struct ipa_ioc_get_rt_tbl_indx *in);
 
+int ipa_mdfy_rt_rule(struct ipa_ioc_mdfy_rt_rule *rules);
+
 /*
  * Filtering
  */
 int ipa_add_flt_rule(struct ipa_ioc_add_flt_rule *rules);
 
 int ipa_del_flt_rule(struct ipa_ioc_del_flt_rule *hdls);
+
+int ipa_mdfy_flt_rule(struct ipa_ioc_mdfy_flt_rule *rules);
 
 int ipa_commit_flt(enum ipa_ip_type ip);
 
@@ -889,15 +1164,6 @@ int ipa_set_qcncm_ndp_sig(char sig[3]);
 int ipa_set_single_ndp_per_mbim(bool enable);
 
 /*
- * SW bridge (between IPA and A2)
- */
-int ipa_bridge_setup(enum ipa_bridge_dir dir, enum ipa_bridge_type type,
-		     struct ipa_sys_connect_params *sys_in, u32 *clnt_hdl);
-int ipa_bridge_teardown(enum ipa_bridge_dir dir, enum ipa_bridge_type type,
-			u32 clnt_hdl);
-
-
-/*
  * Data path
  */
 int ipa_tx_dp(enum ipa_client_type dst, struct sk_buff *skb,
@@ -920,6 +1186,32 @@ int ipa_setup_sys_pipe(struct ipa_sys_connect_params *sys_in, u32 *clnt_hdl);
 
 int ipa_teardown_sys_pipe(u32 clnt_hdl);
 
+int ipa_connect_wdi_pipe(struct ipa_wdi_in_params *in,
+		struct ipa_wdi_out_params *out);
+int ipa_disconnect_wdi_pipe(u32 clnt_hdl);
+int ipa_enable_wdi_pipe(u32 clnt_hdl);
+int ipa_disable_wdi_pipe(u32 clnt_hdl);
+int ipa_resume_wdi_pipe(u32 clnt_hdl);
+int ipa_suspend_wdi_pipe(u32 clnt_hdl);
+int ipa_get_wdi_stats(struct IpaHwStatsWDIInfoData_t *stats);
+u16 ipa_get_smem_restr_bytes(void);
+/*
+ * To retrieve doorbell physical address of
+ * wlan pipes
+ */
+int ipa_uc_wdi_get_dbpa(struct ipa_wdi_db_params *out);
+
+/*
+ * To register uC ready callback if uC not ready
+ * and also check uC readiness
+ * if uC not ready only, register callback
+ */
+int ipa_uc_reg_rdyCB(struct ipa_wdi_uc_ready_params *param);
+/*
+ * To de-register uC ready callback
+ */
+int ipa_uc_dereg_rdyCB(void);
+
 /*
  * Resource manager
  */
@@ -933,8 +1225,14 @@ int ipa_rm_register(enum ipa_rm_resource_name resource_name,
 int ipa_rm_deregister(enum ipa_rm_resource_name resource_name,
 			struct ipa_rm_register_params *reg_params);
 
+int ipa_rm_set_perf_profile(enum ipa_rm_resource_name resource_name,
+			struct ipa_rm_perf_profile *profile);
+
 int ipa_rm_add_dependency(enum ipa_rm_resource_name resource_name,
 			enum ipa_rm_resource_name depends_on_name);
+
+int ipa_rm_add_dependency_sync(enum ipa_rm_resource_name resource_name,
+		enum ipa_rm_resource_name depends_on_name);
 
 int ipa_rm_delete_dependency(enum ipa_rm_resource_name resource_name,
 			enum ipa_rm_resource_name depends_on_name);
@@ -958,27 +1256,6 @@ int ipa_rm_inactivity_timer_release_resource(
 				enum ipa_rm_resource_name resource_name);
 
 /*
- * a2 service
- */
-int a2_mux_open_channel(enum a2_mux_logical_channel_id lcid,
-			void *user_data,
-			a2_mux_notify_cb notify_cb);
-
-int a2_mux_close_channel(enum a2_mux_logical_channel_id lcid);
-
-int a2_mux_write(enum a2_mux_logical_channel_id lcid, struct sk_buff *skb);
-
-int a2_mux_is_ch_empty(enum a2_mux_logical_channel_id lcid);
-
-int a2_mux_is_ch_low(enum a2_mux_logical_channel_id lcid);
-
-int a2_mux_is_ch_full(enum a2_mux_logical_channel_id lcid);
-
-int a2_mux_get_client_handles(enum a2_mux_logical_channel_id lcid,
-		unsigned int *clnt_cons_handle,
-		unsigned int *clnt_prod_handle);
-
-/*
  * Tethering bridge (Rmnet / MBIM)
  */
 int teth_bridge_init(struct teth_bridge_init_params *params);
@@ -988,63 +1265,92 @@ int teth_bridge_disconnect(enum ipa_client_type client);
 int teth_bridge_connect(struct teth_bridge_connect_params *connect_params);
 
 /*
- * Misc.
+ * ODU bridge
  */
-void ipa_bam_reg_dump(void);
-bool ipa_emb_ul_pipes_empty(void);
 
-/* mux id*/
+int odu_bridge_init(struct odu_bridge_params *params);
+
+int odu_bridge_connect(void);
+
+int odu_bridge_disconnect(void);
+
+int odu_bridge_tx_dp(struct sk_buff *skb, struct ipa_tx_meta *metadata);
+
+int odu_bridge_cleanup(void);
+
+/*
+ * IPADMA
+ */
+int ipa_dma_init(void);
+
+int ipa_dma_enable(void);
+
+int ipa_dma_disable(void);
+
+int ipa_dma_sync_memcpy(phys_addr_t dest, phys_addr_t src, int len);
+
+int ipa_dma_async_memcpy(phys_addr_t dest, phys_addr_t src, int len,
+			void (*user_cb)(void *user1), void *user_param);
+
+int ipa_dma_uc_memcpy(phys_addr_t dest, phys_addr_t src, int len);
+
+void ipa_dma_destroy(void);
+
+/*
+ * MHI
+ */
+int ipa_mhi_init(struct ipa_mhi_init_params *params);
+
+int ipa_mhi_start(struct ipa_mhi_start_params *params);
+
+int ipa_mhi_connect_pipe(struct ipa_mhi_connect_params *in, u32 *clnt_hdl);
+
+int ipa_mhi_disconnect_pipe(u32 clnt_hdl);
+
+int ipa_mhi_suspend(bool force);
+
+int ipa_mhi_resume(void);
+
+int ipa_mhi_destroy(void);
+
+/*
+ * mux id
+ */
 int ipa_write_qmap_id(struct ipa_ioc_write_qmapid *param_in);
 
-/*interrupts*/
+/*
+ * interrupts
+ */
 int ipa_add_interrupt_handler(enum ipa_irq_type interrupt,
 		ipa_irq_handler_t handler,
 		bool deferred_flag,
 		void *private_data);
+
 int ipa_remove_interrupt_handler(enum ipa_irq_type interrupt);
+
+/*
+ * Miscellaneous
+ */
+void ipa_bam_reg_dump(void);
+
+bool ipa_emb_ul_pipes_empty(void);
 
 int ipa_get_ep_mapping(enum ipa_client_type client);
 
+bool ipa_is_ready(void);
+
+void ipa_proxy_clk_vote(void);
+void ipa_proxy_clk_unvote(void);
+
+enum ipa_hw_type ipa_get_hw_type(void);
+
+bool ipa_is_client_handle_valid(u32 clnt_hdl);
+
+enum ipa_client_type ipa_get_client_mapping(int pipe_idx);
+
+enum ipa_rm_resource_name ipa_get_rm_resource_from_ep(int pipe_idx);
+
 #else /* CONFIG_IPA */
-
-static inline int a2_mux_open_channel(enum a2_mux_logical_channel_id lcid,
-	void *user_data, a2_mux_notify_cb notify_cb)
-{
-	return -EPERM;
-}
-
-static inline int a2_mux_close_channel(enum a2_mux_logical_channel_id lcid)
-{
-	return -EPERM;
-}
-
-static inline int a2_mux_write(enum a2_mux_logical_channel_id lcid,
-			       struct sk_buff *skb)
-{
-	return -EPERM;
-}
-
-static inline int a2_mux_is_ch_empty(enum a2_mux_logical_channel_id lcid)
-{
-	return -EPERM;
-}
-
-static inline int a2_mux_is_ch_low(enum a2_mux_logical_channel_id lcid)
-{
-	return -EPERM;
-}
-
-static inline int a2_mux_is_ch_full(enum a2_mux_logical_channel_id lcid)
-{
-	return -EPERM;
-}
-
-static inline int a2_mux_get_client_handles(
-	enum a2_mux_logical_channel_id lcid, unsigned int *clnt_cons_handle,
-	unsigned int *clnt_prod_handle)
-{
-	return -EPERM;
-}
 
 /*
  * Connect / Disconnect
@@ -1063,12 +1369,7 @@ static inline int ipa_disconnect(u32 clnt_hdl)
 /*
  * Resume / Suspend
  */
-static inline int ipa_resume(u32 clnt_hdl)
-{
-	return -EPERM;
-}
-
-static inline int ipa_suspend(u32 clnt_hdl)
+static inline int ipa_reset_endpoint(u32 clnt_hdl)
 {
 	return -EPERM;
 }
@@ -1187,6 +1488,19 @@ static inline int ipa_copy_hdr(struct ipa_ioc_copy_hdr *copy)
 }
 
 /*
+ * Header Processing Context
+ */
+static inline int ipa_add_hdr_proc_ctx(
+				struct ipa_ioc_add_hdr_proc_ctx *proc_ctxs)
+{
+	return -EPERM;
+}
+
+static inline int ipa_del_hdr_proc_ctx(struct ipa_ioc_del_hdr_proc_ctx *hdls)
+{
+	return -EPERM;
+}
+/*
  * Routing
  */
 static inline int ipa_add_rt_rule(struct ipa_ioc_add_rt_rule *rules)
@@ -1224,6 +1538,11 @@ static inline int ipa_query_rt_index(struct ipa_ioc_get_rt_tbl_indx *in)
 	return -EPERM;
 }
 
+static inline int ipa_mdfy_rt_rule(struct ipa_ioc_mdfy_rt_rule *rules)
+{
+	return -EPERM;
+}
+
 /*
  * Filtering
  */
@@ -1233,6 +1552,11 @@ static inline int ipa_add_flt_rule(struct ipa_ioc_add_flt_rule *rules)
 }
 
 static inline int ipa_del_flt_rule(struct ipa_ioc_del_flt_rule *hdls)
+{
+	return -EPERM;
+}
+
+static inline int ipa_mdfy_flt_rule(struct ipa_ioc_mdfy_flt_rule *rules)
 {
 	return -EPERM;
 }
@@ -1335,24 +1659,6 @@ static inline int ipa_set_single_ndp_per_mbim(bool enable)
 }
 
 /*
- * SW bridge (between IPA and A2)
- */
-static inline int ipa_bridge_setup(enum ipa_bridge_dir dir,
-				    enum ipa_bridge_type type,
-				    struct ipa_sys_connect_params *sys_in,
-				    u32 *clnt_hdl)
-{
-	return -EPERM;
-}
-
-static inline int ipa_bridge_teardown(enum ipa_bridge_dir dir,
-				       enum ipa_bridge_type type,
-				      u32 clnt_hdl)
-{
-	return -EPERM;
-}
-
-/*
  * Data path
  */
 static inline int ipa_tx_dp(enum ipa_client_type dst, struct sk_buff *skb,
@@ -1363,7 +1669,7 @@ static inline int ipa_tx_dp(enum ipa_client_type dst, struct sk_buff *skb,
 
 /*
  * To transfer multiple data packets
-*/
+ */
 static inline int ipa_tx_dp_mul(
 	enum ipa_client_type dst,
 	struct ipa_tx_data_desc *data_desc)
@@ -1376,10 +1682,14 @@ static inline void ipa_free_skb(struct ipa_rx_data *rx_in)
 	return;
 }
 
-
 /*
  * System pipes
  */
+static inline u16 ipa_get_smem_restr_bytes(void)
+{
+	return -EPERM;
+}
+
 static inline int ipa_setup_sys_pipe(struct ipa_sys_connect_params *sys_in,
 		u32 *clnt_hdl)
 {
@@ -1390,6 +1700,55 @@ static inline int ipa_teardown_sys_pipe(u32 clnt_hdl)
 {
 	return -EPERM;
 }
+
+static inline int ipa_connect_wdi_pipe(struct ipa_wdi_in_params *in,
+		struct ipa_wdi_out_params *out)
+{
+	return -EPERM;
+}
+
+static inline int ipa_disconnect_wdi_pipe(u32 clnt_hdl)
+{
+	return -EPERM;
+}
+
+static inline int ipa_enable_wdi_pipe(u32 clnt_hdl)
+{
+	return -EPERM;
+}
+
+static inline int ipa_disable_wdi_pipe(u32 clnt_hdl)
+{
+	return -EPERM;
+}
+
+static inline int ipa_resume_wdi_pipe(u32 clnt_hdl)
+{
+	return -EPERM;
+}
+
+static inline int ipa_suspend_wdi_pipe(u32 clnt_hdl)
+{
+	return -EPERM;
+}
+
+static inline int ipa_uc_wdi_get_dbpa(
+	struct ipa_wdi_db_params *out)
+{
+	return -EPERM;
+}
+
+static inline int ipa_uc_reg_rdyCB(
+	struct ipa_wdi_uc_ready_params *param)
+{
+	return -EPERM;
+}
+
+static inline int ipa_uc_dereg_rdyCB(void)
+{
+	return -EPERM;
+}
+
 
 /*
  * Resource manager
@@ -1412,6 +1771,13 @@ static inline int ipa_rm_register(enum ipa_rm_resource_name resource_name,
 	return -EPERM;
 }
 
+static inline int ipa_rm_set_perf_profile(
+		enum ipa_rm_resource_name resource_name,
+		struct ipa_rm_perf_profile *profile)
+{
+	return -EPERM;
+}
+
 static inline int ipa_rm_deregister(enum ipa_rm_resource_name resource_name,
 			struct ipa_rm_register_params *reg_params)
 {
@@ -1419,6 +1785,13 @@ static inline int ipa_rm_deregister(enum ipa_rm_resource_name resource_name,
 }
 
 static inline int ipa_rm_add_dependency(
+		enum ipa_rm_resource_name resource_name,
+		enum ipa_rm_resource_name depends_on_name)
+{
+	return -EPERM;
+}
+
+static inline int ipa_rm_add_dependency_sync(
 		enum ipa_rm_resource_name resource_name,
 		enum ipa_rm_resource_name depends_on_name)
 {
@@ -1476,7 +1849,7 @@ static inline int ipa_rm_inactivity_timer_release_resource(
 }
 
 /*
- * Tethering bridge (Rmnetm / MBIM)
+ * Tethering bridge (Rmnet / MBIM)
  */
 static inline int teth_bridge_init(struct teth_bridge_init_params *params)
 {
@@ -1494,23 +1867,126 @@ static inline int teth_bridge_connect(struct teth_bridge_connect_params
 	return -EPERM;
 }
 
-static inline void ipa_bam_reg_dump(void)
+/*
+ * ODU bridge
+ */
+static inline int odu_bridge_init(struct odu_bridge_params *params)
+{
+	return -EPERM;
+}
+
+static inline int odu_bridge_disconnect(void)
+{
+	return -EPERM;
+}
+
+static inline int odu_bridge_connect(void)
+{
+	return -EPERM;
+}
+
+static inline int odu_bridge_tx_dp(struct sk_buff *skb,
+						struct ipa_tx_meta *metadata)
+{
+	return -EPERM;
+}
+
+static inline int odu_bridge_cleanup(void)
+{
+	return -EPERM;
+}
+
+/*
+ * IPADMA
+ */
+static inline int ipa_dma_init(void)
+{
+	return -EPERM;
+}
+
+static inline int ipa_dma_enable(void)
+{
+	return -EPERM;
+}
+
+static inline int ipa_dma_disable(void)
+{
+	return -EPERM;
+}
+
+static inline int ipa_dma_sync_memcpy(phys_addr_t dest, phys_addr_t src
+			, int len)
+{
+	return -EPERM;
+}
+
+static inline int ipa_dma_async_memcpy(phys_addr_t dest, phys_addr_t src
+			, int len, void (*user_cb)(void *user1),
+			void *user_param)
+{
+	return -EPERM;
+}
+
+static inline int ipa_dma_uc_memcpy(phys_addr_t dest, phys_addr_t src, int len)
+{
+	return -EPERM;
+}
+
+static inline void ipa_dma_destroy(void)
 {
 	return;
 }
 
-static inline bool ipa_emb_ul_pipes_empty(void)
+/*
+ * MHI
+ */
+static inline int ipa_mhi_init(struct ipa_mhi_init_params *params)
 {
-	return false;
+	return -EPERM;
 }
 
-/* mux id */
+static inline int ipa_mhi_start(struct ipa_mhi_start_params *params)
+{
+	return -EPERM;
+}
+
+static inline int ipa_mhi_connect_pipe(struct ipa_mhi_connect_params *in,
+	u32 *clnt_hdl)
+{
+	return -EPERM;
+}
+
+static inline int ipa_mhi_disconnect_pipe(u32 clnt_hdl)
+{
+	return -EPERM;
+}
+
+static inline int ipa_mhi_suspend(bool force)
+{
+	return -EPERM;
+}
+
+static inline int ipa_mhi_resume(void)
+{
+	return -EPERM;
+}
+
+static inline int ipa_mhi_destroy(void)
+{
+	return -EPERM;
+}
+
+/*
+ * mux id
+ */
 static inline int ipa_write_qmap_id(struct ipa_ioc_write_qmapid *param_in)
 {
 	return -EPERM;
 }
 
-/* interrupts */
+/*
+ * interrupts
+ */
 static inline int ipa_add_interrupt_handler(enum ipa_irq_type interrupt,
 		ipa_irq_handler_t handler,
 		bool deferred_flag,
@@ -1524,10 +2000,63 @@ static inline int ipa_remove_interrupt_handler(enum ipa_irq_type interrupt)
 	return -EPERM;
 }
 
+/*
+ * Miscellaneous
+ */
+static inline void ipa_bam_reg_dump(void)
+{
+	return;
+}
+
+static inline bool ipa_emb_ul_pipes_empty(void)
+{
+	return false;
+}
+
+static inline int ipa_get_wdi_stats(struct IpaHwStatsWDIInfoData_t *stats)
+{
+	return -EPERM;
+}
+
 static inline int ipa_get_ep_mapping(enum ipa_client_type client)
 {
 	return -EPERM;
 }
+
+static inline bool ipa_is_ready(void)
+{
+	return false;
+}
+
+static inline void ipa_proxy_clk_vote(void)
+{
+}
+
+static inline void ipa_proxy_clk_unvote(void)
+{
+}
+
+static inline enum ipa_hw_type ipa_get_hw_type(void)
+{
+	return IPA_HW_None;
+}
+
+static inline bool ipa_is_client_handle_valid(u32 clnt_hdl)
+{
+	return -EINVAL;
+}
+
+static inline enum ipa_client_type ipa_get_client_mapping(int pipe_idx)
+{
+	return -EINVAL;
+}
+
+static inline enum ipa_rm_resource_name ipa_get_rm_resource_from_ep(
+	int pipe_idx)
+{
+	return -EFAULT;
+}
+
 #endif /* CONFIG_IPA*/
 
 #endif /* _IPA_H_ */

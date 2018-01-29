@@ -14,10 +14,12 @@
 #include <linux/module.h>
 #include <sound/hwdep.h>
 #include <sound/devdep_params.h>
+#include <sound/msm-dts-eagle.h>
 
 #include "msm-pcm-routing-devdep.h"
 #include "msm-ds2-dap-config.h"
 
+#ifdef CONFIG_SND_HWDEP
 static int msm_pcm_routing_hwdep_open(struct snd_hwdep *hw, struct file *file)
 {
 	pr_debug("%s\n", __func__);
@@ -51,6 +53,23 @@ static int msm_pcm_routing_hwdep_ioctl(struct snd_hwdep *hw, struct file *file,
 	case SNDRV_DEVDEP_DAP_IOCTL_GET_VISUALIZER:
 		ret = msm_ds2_dap_ioctl(hw, file, cmd, argp);
 		break;
+	case DTS_EAGLE_IOCTL_GET_CACHE_SIZE:
+	case DTS_EAGLE_IOCTL_SET_CACHE_SIZE:
+	case DTS_EAGLE_IOCTL_GET_PARAM:
+	case DTS_EAGLE_IOCTL_SET_PARAM:
+	case DTS_EAGLE_IOCTL_SET_CACHE_BLOCK:
+	case DTS_EAGLE_IOCTL_SET_ACTIVE_DEVICE:
+	case DTS_EAGLE_IOCTL_GET_LICENSE:
+	case DTS_EAGLE_IOCTL_SET_LICENSE:
+	case DTS_EAGLE_IOCTL_SEND_LICENSE:
+	case DTS_EAGLE_IOCTL_SET_VOLUME_COMMANDS:
+		ret = msm_dts_eagle_ioctl(cmd, arg);
+		if (ret == -EPERM) {
+			pr_err("%s called with invalid control 0x%X\n",
+				__func__, cmd);
+			ret = -EINVAL;
+		}
+		break;
 	default:
 		pr_err("%s called with invalid control 0x%X\n", __func__, cmd);
 		ret = -EINVAL;
@@ -62,8 +81,55 @@ static int msm_pcm_routing_hwdep_ioctl(struct snd_hwdep *hw, struct file *file,
 void msm_pcm_routing_hwdep_free(struct snd_pcm *pcm)
 {
 	pr_debug("%s\n", __func__);
+	msm_dts_eagle_pcm_free(pcm);
 }
 
+#ifdef CONFIG_COMPAT
+static int msm_pcm_routing_hwdep_compat_ioctl(struct snd_hwdep *hw,
+					      struct file *file,
+					      unsigned int cmd,
+					      unsigned long arg)
+{
+	int ret = 0;
+	void __user *argp = (void __user *)arg;
+	pr_debug("%s:cmd %x\n", __func__, cmd);
+	switch (cmd) {
+	case SNDRV_DEVDEP_DAP_IOCTL_SET_PARAM32:
+	case SNDRV_DEVDEP_DAP_IOCTL_GET_PARAM32:
+	case SNDRV_DEVDEP_DAP_IOCTL_DAP_COMMAND32:
+	case SNDRV_DEVDEP_DAP_IOCTL_DAP_LICENSE32:
+		msm_pcm_routing_acquire_lock();
+		ret = msm_ds2_dap_compat_ioctl(hw, file, cmd, argp);
+		msm_pcm_routing_release_lock();
+		break;
+	case SNDRV_DEVDEP_DAP_IOCTL_GET_VISUALIZER32:
+		ret = msm_ds2_dap_compat_ioctl(hw, file, cmd, argp);
+		break;
+	case DTS_EAGLE_IOCTL_GET_CACHE_SIZE32:
+	case DTS_EAGLE_IOCTL_SET_CACHE_SIZE32:
+	case DTS_EAGLE_IOCTL_GET_PARAM32:
+	case DTS_EAGLE_IOCTL_SET_PARAM32:
+	case DTS_EAGLE_IOCTL_SET_CACHE_BLOCK32:
+	case DTS_EAGLE_IOCTL_SET_ACTIVE_DEVICE32:
+	case DTS_EAGLE_IOCTL_GET_LICENSE32:
+	case DTS_EAGLE_IOCTL_SET_LICENSE32:
+	case DTS_EAGLE_IOCTL_SEND_LICENSE32:
+	case DTS_EAGLE_IOCTL_SET_VOLUME_COMMANDS32:
+		ret = msm_dts_eagle_compat_ioctl(cmd, arg);
+		if (ret == -EPERM) {
+			pr_err("%s called with invalid control 0x%X\n",
+				__func__, cmd);
+			ret = -EINVAL;
+		}
+		break;
+	default:
+		pr_err("%s called with invalid control 0x%X\n", __func__, cmd);
+		ret = -EINVAL;
+		break;
+	}
+	return ret;
+}
+#endif
 
 int msm_pcm_routing_hwdep_new(struct snd_soc_pcm_runtime *runtime,
 			      struct msm_pcm_routing_bdai_data *msm_bedais)
@@ -98,6 +164,9 @@ int msm_pcm_routing_hwdep_new(struct snd_soc_pcm_runtime *runtime,
 	hwdep->ops.open = msm_pcm_routing_hwdep_open;
 	hwdep->ops.ioctl = msm_pcm_routing_hwdep_ioctl;
 	hwdep->ops.release = msm_pcm_routing_hwdep_release;
-
-	return 0;
+#ifdef CONFIG_COMPAT
+	hwdep->ops.ioctl_compat = msm_pcm_routing_hwdep_compat_ioctl;
+#endif
+	return msm_dts_eagle_pcm_new(runtime);
 }
+#endif

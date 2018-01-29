@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2013, The Linux Foundatation. All rights reserved.
+/* Copyright (c) 2011-2014, The Linux Foundatation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -14,8 +14,6 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <mach/board.h>
-#include <mach/camera.h>
 #include "msm_camera_i2c_mux.h"
 
 /* TODO move this somewhere else */
@@ -97,6 +95,8 @@ static long msm_i2c_mux_subdev_ioctl(struct v4l2_subdev *sd,
 		rc = msm_i2c_mux_release(mux_device);
 		break;
 	default:
+		pr_err_ratelimited("%s: unsupported compat type 0x%x\n",
+				__func__, cmd);
 		rc = -ENOIOCTLCMD;
 	}
 	mutex_unlock(&mux_device->mutex);

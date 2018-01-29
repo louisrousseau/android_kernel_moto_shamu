@@ -206,6 +206,7 @@ struct ehci_hcd {			/* one per controller */
 	unsigned		resume_sof_bug:1;/*Chip Idea HC*/
 	unsigned		reset_sof_bug:1; /*Chip Idea HC*/
 	bool			disable_cerr;
+	bool			no_testmode_suspend; /* MSM Chipidea HC */
 	u32			reset_delay;
 	unsigned		imx28_write_fix:1; /* For Freescale i.MX28 */
 
@@ -818,7 +819,10 @@ static inline u32 hc32_to_cpup (const struct ehci_hcd *ehci, const __hc32 *x)
 
 struct ehci_driver_overrides {
 	size_t		extra_priv_size;
+	int		flags;
 	int		(*reset)(struct usb_hcd *hcd);
+	int		(*bus_suspend)(struct usb_hcd *hcd);
+	int		(*bus_resume)(struct usb_hcd *hcd);
 };
 
 extern void	ehci_init_driver(struct hc_driver *drv,
@@ -826,6 +830,8 @@ extern void	ehci_init_driver(struct hc_driver *drv,
 extern int	ehci_setup(struct usb_hcd *hcd);
 
 #ifdef CONFIG_PM
+extern int ehci_bus_suspend(struct usb_hcd *hcd);
+extern int ehci_bus_resume(struct usb_hcd *hcd);
 extern int	ehci_suspend(struct usb_hcd *hcd, bool do_wakeup);
 extern int	ehci_resume(struct usb_hcd *hcd, bool hibernated);
 #endif	/* CONFIG_PM */

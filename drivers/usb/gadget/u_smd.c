@@ -1,7 +1,7 @@
 /*
  * u_smd.c - utilities for USB gadget serial over smd
  *
- * Copyright (c) 2011, 2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011, 2013-2014, The Linux Foundation. All rights reserved.
  *
  * This code also borrows from drivers/usb/gadget/u_serial.c, which is
  * Copyright (C) 2000 - 2003 Al Borchers (alborchers@steinerpoint.com)
@@ -25,7 +25,7 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/termios.h>
-#include <mach/msm_smd.h>
+#include <soc/qcom/smd.h>
 #include <linux/debugfs.h>
 
 #include "u_serial.h"
@@ -634,6 +634,9 @@ static void gsmd_notify_modem(void *gptr, u8 portno, int ctrl_bits)
 	if (!test_bit(CH_OPENED, &port->pi->flags))
 		return;
 
+	pr_debug("%s: ctrl_tomodem:%d DTR:%d  RST:%d\n", __func__, ctrl_bits,
+		ctrl_bits & SMD_ACM_CTRL_DTR ? 1 : 0,
+		ctrl_bits & SMD_ACM_CTRL_RTS ? 1 : 0);
 	/* if DTR is high, update latest modem info to laptop */
 	if (port->cbits_to_modem & TIOCM_DTR) {
 		unsigned i;
@@ -641,6 +644,12 @@ static void gsmd_notify_modem(void *gptr, u8 portno, int ctrl_bits)
 		i = smd_tiocmget(port->pi->ch);
 		port->cbits_to_laptop = convert_uart_sigs_to_acm(i);
 
+		pr_debug("%s - input control lines: cbits_to_host:%x DCD:%c DSR:%c BRK:%c RING:%c\n",
+			__func__, port->cbits_to_laptop,
+			port->cbits_to_laptop & SMD_ACM_CTRL_DCD ? '1' : '0',
+			port->cbits_to_laptop & SMD_ACM_CTRL_DSR ? '1' : '0',
+			port->cbits_to_laptop & SMD_ACM_CTRL_BRK ? '1' : '0',
+			port->cbits_to_laptop & SMD_ACM_CTRL_RI  ? '1' : '0');
 		if (gser->send_modem_ctrl_bits)
 			gser->send_modem_ctrl_bits(
 					port->port_usb,
@@ -681,8 +690,8 @@ int gsmd_connect(struct gserial *gser, u8 portno)
 
 	ret = usb_ep_enable(gser->in);
 	if (ret) {
-		pr_err("%s: usb_ep_enable failed eptype:IN ep:%p",
-				__func__, gser->in);
+		pr_err("%s: usb_ep_enable failed eptype:IN ep:%p, err:%d",
+				__func__, gser->in, ret);
 		port->port_usb = 0;
 		return ret;
 	}
@@ -690,8 +699,8 @@ int gsmd_connect(struct gserial *gser, u8 portno)
 
 	ret = usb_ep_enable(gser->out);
 	if (ret) {
-		pr_err("%s: usb_ep_enable failed eptype:OUT ep:%p",
-				__func__, gser->out);
+		pr_err("%s: usb_ep_enable failed eptype:OUT ep:%p, err: %d",
+				__func__, gser->out, ret);
 		port->port_usb = 0;
 		gser->in->driver_data = 0;
 		return ret;
@@ -746,6 +755,8 @@ void gsmd_disconnect(struct gserial *gser, u8 portno)
 				port->cbits_to_modem,
 				~port->cbits_to_modem);
 	}
+
+	gser->notify_modem = NULL;
 
 	if (port->pi->ch)
 		queue_work(gsmd_wq, &port->disconnect_work);
@@ -994,3 +1005,20 @@ void gsmd_cleanup(struct usb_gadget *g, unsigned count)
 {
 	/* TBD */
 }
+
+int gsmd_write(u8 portno, char *buf, unsigned int size)
+{
+	int count, avail;
+	struct gsmd_port const *port = smd_ports[portno].port;
+
+	if (portno > SMD_N_PORTS)
+		return -EINVAL;
+
+	avail = smd_write_avail(port->pi->ch);
+	if (avail < size)
+		return -EAGAIN;
+
+	count = smd_write(port->pi->ch, buf, size);
+	return count;
+}
+

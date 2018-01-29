@@ -17,6 +17,22 @@
 #define MSM_CAM_V4L2_IOCTL_NOTIFY_ERROR \
 	_IOW('V', BASE_VIDIOC_PRIVATE + 33, struct msm_v4l2_event_data)
 
+
+#ifdef CONFIG_COMPAT
+#define MSM_CAM_V4L2_IOCTL_NOTIFY32 \
+	_IOW('V', BASE_VIDIOC_PRIVATE + 30, struct v4l2_event32)
+
+#define MSM_CAM_V4L2_IOCTL_NOTIFY_META32 \
+	_IOW('V', BASE_VIDIOC_PRIVATE + 31, struct v4l2_event32)
+
+#define MSM_CAM_V4L2_IOCTL_CMD_ACK32 \
+	_IOW('V', BASE_VIDIOC_PRIVATE + 32, struct v4l2_event32)
+
+#define MSM_CAM_V4L2_IOCTL_NOTIFY_ERROR32 \
+	_IOW('V', BASE_VIDIOC_PRIVATE + 33, struct v4l2_event32)
+
+#endif
+
 #define QCAMERA_DEVICE_GROUP_ID	1
 #define QCAMERA_VNODE_GROUP_ID	2
 #define MSM_CAMERA_NAME					"msm_camera"
@@ -38,17 +54,21 @@
 #define MSM_CAMERA_SUBDEV_BUF_MNGR     13
 #define MSM_CAMERA_SUBDEV_SENSOR_INIT  14
 #define MSM_CAMERA_SUBDEV_OIS          15
-
-#define MSM_CAMERA_SUBDEV_CCI_INTF     20
+#define MSM_CAMERA_SUBDEV_FLASH        16
+#define MSM_CAMERA_SUBDEV_TOF          17
 
 #define MSM_MAX_CAMERA_SENSORS  5
 
 /* The below macro is defined to put an upper limit on maximum
  * number of buffer requested per stream. In case of extremely
  * large value for number of buffer due to data structure corruption
- * we return error to avoid integer overflow. This value may be
+ * we return error to avoid integer overflow. Group processing
+ * can have max of 9 groups of 8 bufs each. This value may be
  * configured in future*/
-#define MSM_CAMERA_MAX_STREAM_BUF 40
+#define MSM_CAMERA_MAX_STREAM_BUF 72
+
+/* Max batch size of processing */
+#define MSM_CAMERA_MAX_USER_BUFF_CNT 16
 
 /* featur base */
 #define MSM_CAMERA_FEATURE_BASE     0x00010000
@@ -96,6 +116,7 @@
 #define MSM_CAMERA_ERR_EVT_BASE 0x00010000
 #define MSM_CAMERA_ERR_CMD_FAIL (MSM_CAMERA_ERR_EVT_BASE + 1)
 #define MSM_CAMERA_ERR_MAPPING  (MSM_CAMERA_ERR_EVT_BASE + 2)
+#define MSM_CAMERA_ERR_DEVICE_BUSY  (MSM_CAMERA_ERR_EVT_BASE + 3)
 
 /* The msm_v4l2_event_data structure should match the
  * v4l2_event.u.data field.
@@ -179,6 +200,11 @@ enum smmu_attach_mode {
 
 struct msm_camera_smmu_attach_type {
 	enum smmu_attach_mode attach;
+};
+
+struct msm_camera_user_buf_cont_t {
+	unsigned int buf_cnt;
+	unsigned int buf_idx[MSM_CAMERA_MAX_USER_BUFF_CNT];
 };
 
 #endif /* __LINUX_MSMB_CAMERA_H */

@@ -364,12 +364,16 @@ static int __cpufreq_stats_create_table(struct cpufreq_policy *policy,
 	if (per_cpu(cpufreq_stats_table, cpu))
 		return -EBUSY;
 	stat = kzalloc(sizeof(*stat), GFP_KERNEL);
-	if ((stat) == NULL)
+	if ((stat) == NULL) {
+		pr_err("Failed to alloc cpufreq_stats table\n");
 		return -ENOMEM;
+	}
 
 	ret = sysfs_create_group(&policy->kobj, &stats_attr_group);
-	if (ret)
+	if (ret) {
+		pr_err("Failed to create cpufreq_stats sysfs\n");
 		goto error_out;
+	}
 
 	stat->cpu = cpu;
 	per_cpu(cpufreq_stats_table, cpu) = stat;
@@ -384,6 +388,7 @@ static int __cpufreq_stats_create_table(struct cpufreq_policy *policy,
 	stat->time_in_state = kzalloc(alloc_size, GFP_KERNEL);
 	if (!stat->time_in_state) {
 		ret = -ENOMEM;
+		pr_err("Failed to alloc cpufreq_stats table\n");
 		goto error_alloc;
 	}
 	stat->freq_table = (unsigned int *)(stat->time_in_state + count);
@@ -418,6 +423,8 @@ static void cpufreq_stats_update_policy_cpu(struct cpufreq_policy *policy)
 	struct cpufreq_stats *stat = per_cpu(cpufreq_stats_table,
 			policy->last_cpu);
 
+	if (!stat)
+		return;
 	pr_debug("Updating stats_table for new_cpu %u from last_cpu %u\n",
 			policy->cpu, policy->last_cpu);
 	per_cpu(cpufreq_stats_table, policy->cpu) = per_cpu(cpufreq_stats_table,
@@ -567,10 +574,10 @@ static void cpufreq_allstats_create(unsigned int cpu,
 static int cpufreq_stat_notifier_policy(struct notifier_block *nb,
 		unsigned long val, void *data)
 {
-	int ret, count = 0, i;
+	int ret = 0, count = 0, i;
 	struct cpufreq_policy *policy = data;
 	struct cpufreq_frequency_table *table;
-	unsigned int cpu = policy->cpu;
+	unsigned int cpu_num, cpu = policy->cpu;
 
 	if (val == CPUFREQ_UPDATE_POLICY_CPU) {
 		cpufreq_stats_update_policy_cpu(policy);
@@ -592,8 +599,10 @@ static int cpufreq_stat_notifier_policy(struct notifier_block *nb,
 	if (!per_cpu(all_cpufreq_stats, cpu))
 		cpufreq_allstats_create(cpu, table, count);
 
-	if (!per_cpu(cpufreq_power_stats, cpu))
-		cpufreq_powerstats_create(cpu, table, count);
+	for_each_possible_cpu(cpu_num) {
+		if (!per_cpu(cpufreq_power_stats, cpu_num))
+			cpufreq_powerstats_create(cpu_num, table, count);
+	}
 
 	if (val == CPUFREQ_CREATE_POLICY)
 		ret = __cpufreq_stats_create_table(policy, table, count);
@@ -607,7 +616,7 @@ static void cpufreq_stats_create_table(unsigned int cpu)
 {
 	struct cpufreq_policy *policy;
 	struct cpufreq_frequency_table *table;
-	int i, count = 0;
+	int i, cpu_num, count = 0;
 	/*
 	 * "likely(!policy)" because normally cpufreq_stats will be registered
 	 * before cpufreq driver
@@ -621,16 +630,17 @@ static void cpufreq_stats_create_table(unsigned int cpu)
 		for (i = 0; table[i].frequency != CPUFREQ_TABLE_END; i++) {
 			unsigned int freq = table[i].frequency;
 
-			if (freq == CPUFREQ_ENTRY_INVALID)
-				continue;
-			count++;
+			if (freq != CPUFREQ_ENTRY_INVALID)
+				count++;
 		}
 
 		if (!per_cpu(all_cpufreq_stats, cpu))
 			cpufreq_allstats_create(cpu, table, count);
 
-		if (!per_cpu(cpufreq_power_stats, cpu))
-			cpufreq_powerstats_create(cpu, table, count);
+		for_each_possible_cpu(cpu_num) {
+			if (!per_cpu(cpufreq_power_stats, cpu))
+				cpufreq_powerstats_create(cpu, table, count);
+		}
 
 		__cpufreq_stats_create_table(policy, table, count);
 	}

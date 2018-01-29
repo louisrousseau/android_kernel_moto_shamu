@@ -27,10 +27,10 @@
 #include <sound/pcm.h>
 #include <sound/jack.h>
 #include <sound/q6afe-v2.h>
+#include <sound/q6core.h>
 #include <sound/pcm_params.h>
 #include <soc/qcom/subsystem_notif.h>
 #include "qdsp6v2/msm-pcm-routing-v2.h"
-#include "qdsp6v2/q6core.h"
 #include "../codecs/wcd9xxx-common.h"
 #include "../codecs/wcd9320.h"
 
@@ -1776,11 +1776,12 @@ static struct snd_soc_dai_link apq8084_dai_links[] = {
 	},
 	/* LSM FE */
 	{
-		.name = "Listen Audio Service",
-		.stream_name = "Listen Audio Service",
-		.cpu_dai_name = "LSM",
+		.name = "Listen 1 Audio Service",
+		.stream_name = "Listen 1 Audio Service",
+		.cpu_dai_name = "LSM1",
 		.platform_name = "msm-lsm-client",
 		.dynamic = 1,
+		.async_ops = ASYNC_DPCM_SND_SOC_PREPARE,
 		.trigger = { SND_SOC_DPCM_TRIGGER_POST,
 			     SND_SOC_DPCM_TRIGGER_POST },
 		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
@@ -1907,6 +1908,21 @@ static struct snd_soc_dai_link apq8084_dai_links[] = {
 		.be_id = MSM_BACKEND_DAI_AFE_PCM_TX,
 		.be_hw_params_fixup = msm_proxy_tx_be_hw_params_fixup,
 		.ignore_suspend = 1,
+	},
+	{
+		.name = "Voice2 Stub",
+		.stream_name = "Voice2 Stub",
+		.cpu_dai_name = "VOICE2_STUB",
+		.platform_name = "msm-pcm-hostless",
+		.dynamic = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			    SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		/* this dainlink has playback support */
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
 	},
 	/* Primary AUX PCM Backend DAI Links */
 	{
@@ -2273,11 +2289,11 @@ static int apq8084_asoc_machine_probe(struct platform_device *pdev)
 		goto err;
 
 	ret = of_property_read_u32(pdev->dev.of_node,
-			"qcom,codec-mclk-clk-freq", &pdata->mclk_freq);
+			"qcom,taiko-mclk-clk-freq", &pdata->mclk_freq);
 	if (ret) {
 		dev_err(&pdev->dev,
 			"%s: Looking up %s property in node %s failed\n",
-			__func__, "qcom,codec-mclk-clk-freq",
+			__func__, "qcom,taiko-mclk-clk-freq",
 			pdev->dev.of_node->full_name);
 		goto err;
 	}

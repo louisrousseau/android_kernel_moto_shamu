@@ -70,6 +70,7 @@
 #define HFI_ERR_SESSION_UNSUPPORT_BUFFERTYPE	(HFI_COMMON_BASE + 0x1010)
 #define HFI_ERR_SESSION_BUFFERCOUNT_TOOSMALL	(HFI_COMMON_BASE + 0x1011)
 #define HFI_ERR_SESSION_INVALID_SCALE_FACTOR	(HFI_COMMON_BASE + 0x1012)
+#define HFI_ERR_SESSION_UPSCALE_NOT_SUPPORTED	(HFI_COMMON_BASE + 0x1013)
 
 #define HFI_EVENT_SYS_ERROR				(HFI_COMMON_BASE + 0x1)
 #define HFI_EVENT_SESSION_ERROR			(HFI_COMMON_BASE + 0x2)
@@ -210,6 +211,9 @@
 #define HFI_BUFFER_INTERNAL_PERSIST		(HFI_COMMON_BASE + 0x4)
 #define HFI_BUFFER_INTERNAL_PERSIST_1		(HFI_COMMON_BASE + 0x5)
 
+#define HFI_VENC_PERFMODE_MAX_QUALITY	0x1
+#define HFI_VENC_PERFMODE_POWER_SAVE	0x2
+
 struct hfi_buffer_info {
 	u32 buffer_addr;
 	u32 extra_data_addr;
@@ -229,6 +233,8 @@ struct hfi_buffer_info {
 	(HFI_PROPERTY_SYS_COMMON_START + 0x005)
 #define  HFI_PROPERTY_SYS_IMAGE_VERSION    \
 	(HFI_PROPERTY_SYS_COMMON_START + 0x006)
+#define  HFI_PROPERTY_SYS_CONFIG_COVERAGE    \
+	(HFI_PROPERTY_SYS_COMMON_START + 0x007)
 
 #define HFI_PROPERTY_PARAM_COMMON_START	\
 	(HFI_DOMAIN_BASE_COMMON + HFI_ARCH_COMMON_OFFSET + 0x1000)
@@ -346,6 +352,8 @@ struct hfi_buffer_info {
 	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x023)
 #define HFI_PROPERTY_PARAM_VENC_HIER_P_MAX_NUM_ENH_LAYER	\
 	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x026)
+#define HFI_PROPERTY_PARAM_VENC_DISABLE_RC_TIMESTAMP \
+	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x027)
 #define HFI_PROPERTY_PARAM_VENC_INITIAL_QP	\
 	(HFI_PROPERTY_PARAM_VENC_COMMON_START + 0x028)
 #define HFI_PROPERTY_PARAM_VENC_VPX_ERROR_RESILIENCE_MODE	\
@@ -378,7 +386,7 @@ struct hfi_buffer_info {
 	(HFI_PROPERTY_CONFIG_VENC_COMMON_START + 0x009)
 #define  HFI_PROPERTY_CONFIG_VENC_USELTRFRAME			\
 	(HFI_PROPERTY_CONFIG_VENC_COMMON_START + 0x00A)
-#define  HFI_PROPERTY_CONFIG_VENC_HIER_P_ENH_LAYER			\
+#define  HFI_PROPERTY_CONFIG_VENC_HIER_P_ENH_LAYER		\
 	(HFI_PROPERTY_CONFIG_VENC_COMMON_START + 0x00B)
 #define  HFI_PROPERTY_CONFIG_VENC_LTRPERIOD			\
 	(HFI_PROPERTY_CONFIG_VENC_COMMON_START + 0x00C)
@@ -721,7 +729,7 @@ struct hfi_operations {
 
 struct hfi_resource_ocmem {
 	u32 size;
-	u8 *mem;
+	u32 mem;
 };
 
 struct hfi_resource_ocmem_requirement {
@@ -829,6 +837,7 @@ struct hfi_mvc_buffer_layout_descp_type {
 #define HFI_MSG_SYS_SESSION_INIT_DONE	(HFI_MSG_SYS_COMMON_START + 0x6)
 #define HFI_MSG_SYS_SESSION_END_DONE	(HFI_MSG_SYS_COMMON_START + 0x7)
 #define HFI_MSG_SYS_IDLE		(HFI_MSG_SYS_COMMON_START + 0x8)
+#define HFI_MSG_SYS_COV                 (HFI_MSG_SYS_COMMON_START + 0x9)
 #define HFI_MSG_SYS_PROPERTY_INFO	(HFI_MSG_SYS_COMMON_START + 0xA)
 
 #define HFI_MSG_SESSION_COMMON_START		\
@@ -842,6 +851,11 @@ struct hfi_mvc_buffer_layout_descp_type {
 #define HFI_TEST_SSR_SW_ERR_FATAL	0x1
 #define HFI_TEST_SSR_SW_DIV_BY_ZERO	0x2
 #define HFI_TEST_SSR_HW_WDOG_IRQ	0x3
+
+struct vidc_hal_cmd_pkt_hdr {
+	u32 size;
+	u32 packet_type;
+};
 
 struct vidc_hal_msg_pkt_hdr {
 	u32 size;
@@ -942,7 +956,7 @@ struct hfi_cmd_session_get_sequence_header_packet {
 	u32 packet_type;
 	u32 session_id;
 	u32 buffer_len;
-	u8 *packet_buffer;
+	u32 packet_buffer;
 };
 
 struct hfi_msg_event_notify_packet {
@@ -956,8 +970,8 @@ struct hfi_msg_event_notify_packet {
 };
 
 struct hfi_msg_release_buffer_ref_event_packet {
-	u8 *packet_buffer;
-	u8 *exra_data_buffer;
+	u32 packet_buffer;
+	u32 extra_data_buffer;
 	u32 output_tag;
 };
 
@@ -1004,13 +1018,22 @@ struct hfi_msg_session_get_sequence_header_done_packet {
 	u32 session_id;
 	u32 error_type;
 	u32 header_len;
-	u8 *sequence_header;
+	u32 sequence_header;
 };
 
 struct hfi_msg_sys_debug_packet {
 	u32 size;
 	u32 packet_type;
 	u32 msg_type;
+	u32 msg_size;
+	u32 time_stamp_hi;
+	u32 time_stamp_lo;
+	u8 rg_msg_data[1];
+};
+
+struct hfi_msg_sys_coverage_packet {
+	u32 size;
+	u32 packet_type;
 	u32 msg_size;
 	u32 time_stamp_hi;
 	u32 time_stamp_lo;

@@ -20,17 +20,17 @@
 #include <linux/of_gpio.h>
 #include <linux/irq.h>
 #include <linux/dma-mapping.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/bitops.h>
 #include <linux/workqueue.h>
 #include <linux/clk/msm-clk.h>
 #include <linux/reboot.h>
 
-#include <mach/msm_bus.h>
+#include <linux/msm-bus.h>
 #include <mach/rpm-regulator.h>
 #include <mach/msm_iomap.h>
 #include <linux/debugfs.h>
 #include <asm/unaligned.h>
-#include <linux/pinctrl/consumer.h>
 
 #include "xhci.h"
 
@@ -133,11 +133,51 @@ struct mxhci_hsic_hcd {
 
 	uint32_t		wakeup_int_cnt;
 	uint32_t		pwr_evt_irq_inlpm;
-	struct notifier_block   hsic_reboot;
+	struct pinctrl		*hsic_pinctrl;
+	struct tasklet_struct	bh;
+	unsigned		handled_event_cnt;
+	unsigned		cpu_yield_cnt;
 };
 
+static struct mxhci_hsic_hcd *__mxhci;
+static bool host_ready;
 
 #define SYNOPSIS_DWC3_VENDOR	0x5533
+
+static int set_host_ready(const char *val, const struct kernel_param *kp)
+{
+	int ret = 0;
+	struct mxhci_hsic_hcd *mxhci = __mxhci;
+
+	if (!mxhci) {
+		pr_err("%s: null mxhci\n", __func__);
+		return -ENODEV;
+	}
+
+	ret = param_set_bool(val, kp);
+	if (ret) {
+		pr_err("error in setting host ready param\n");
+		return ret;
+	}
+
+	pr_debug("assert: %d\n", host_ready);
+
+	if (mxhci->host_ready)
+		gpio_direction_output(mxhci->host_ready, host_ready);
+	else
+		return -ENODEV;
+
+	return ret;
+}
+
+static struct kernel_param_ops host_ready_ops = {
+	.set = set_host_ready,
+	.get = param_get_bool,
+};
+
+module_param_cb(host_ready, &host_ready_ops, &host_ready,
+		S_IRUGO | S_IWUSR);
+
 
 static struct dbg_data dbg_hsic = {
 	.ctrl_idx = 0,
@@ -146,8 +186,8 @@ static struct dbg_data dbg_hsic = {
 	.data_lck = __RW_LOCK_UNLOCKED(dlck),
 	.log_payload = 1,
 	.log_events = 1,
-	.inep_log_mask = 0xffff,
-	.outep_log_mask = 0xffff
+	.inep_log_mask = 1,
+	.outep_log_mask = 1
 };
 
 static inline void dbg_inc(unsigned *idx)
@@ -165,6 +205,9 @@ module_param_named(ep_addr_rxdbg_mask,
 			dbg_hsic.inep_log_mask, uint, S_IRUGO | S_IWUSR);
 module_param_named(ep_addr_txdbg_mask,
 			dbg_hsic.outep_log_mask, uint, S_IRUGO | S_IWUSR);
+
+static int max_event_to_handle = 20;
+module_param(max_event_to_handle, uint, S_IRUGO | S_IWUSR);
 
 static int mxhci_hsic_data_events_show(struct seq_file *s, void *unused)
 {
@@ -516,25 +559,30 @@ static int mxhci_msm_config_gdsc(struct mxhci_hsic_hcd *mxhci, int on)
 static int mxhci_hsic_config_gpios(struct mxhci_hsic_hcd *mxhci)
 {
 	int rc = 0;
-	struct pinctrl *pinctrl;
+	struct pinctrl_state *set_state;
 
-	pinctrl = devm_pinctrl_get_select(mxhci->dev, "active");
-	if (IS_ERR(pinctrl)) {
-		rc = PTR_ERR(pinctrl);
-		dev_err(mxhci->dev, "pinctrl failed err %d\n", rc);
-		return rc;
-	}
-
-	rc = devm_gpio_request(mxhci->dev, mxhci->strobe, "HSIC_STROBE_GPIO");
-	if (rc < 0) {
-		dev_err(mxhci->dev, "gpio request failed for HSIC STROBE\n");
-		goto out;
-	}
-
-	rc = devm_gpio_request(mxhci->dev, mxhci->data, "HSIC_DATA_GPIO");
-	if (rc < 0) {
-		dev_err(mxhci->dev, "gpio request failed for HSIC DATA\n");
-		goto out;
+	if (mxhci->hsic_pinctrl) {
+		set_state = pinctrl_lookup_state(mxhci->hsic_pinctrl,
+				"hsic_xhci_active");
+		if (IS_ERR(set_state)) {
+			pr_err("cannot get hsic pinctrl active state\n");
+			rc = PTR_ERR(set_state);
+			goto out;
+		}
+		rc = pinctrl_select_state(mxhci->hsic_pinctrl, set_state);
+	} else {
+		rc = devm_gpio_request(mxhci->dev, mxhci->strobe,
+				"HSIC_STROBE_GPIO");
+		if (rc < 0) {
+			dev_err(mxhci->dev, "gpio request failed for HSIC STROBE\n");
+			goto out;
+		}
+		rc = devm_gpio_request(mxhci->dev, mxhci->data,
+				"HSIC_DATA_GPIO");
+		if (rc < 0) {
+			dev_err(mxhci->dev, "gpio request failed for HSIC DATA\n");
+			goto out;
+		}
 	}
 
 	if (mxhci->host_ready) {
@@ -558,7 +606,6 @@ static int mxhci_hsic_config_gpios(struct mxhci_hsic_hcd *mxhci)
 			rc = 0;
 		}
 	}
-
 out:
 	return rc;
 }
@@ -873,6 +920,13 @@ static int mxhci_hsic_suspend(struct mxhci_hsic_hcd *mxhci)
 	}
 
 	disable_irq(hcd->irq);
+	if (mxhci->bh.state) {
+		xhci_dbg_log_event(&dbg_hsic, NULL,
+			"skip SUSPEND tasklet state",
+			mxhci->bh.state);
+		enable_irq(hcd->irq);
+		return -EBUSY;
+	}
 	disable_irq(mxhci->pwr_event_irq);
 
 	/* make sure we don't race against a remote wakeup */
@@ -1023,10 +1077,6 @@ int mxhci_hsic_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 	u32 status;
 
 	ret = xhci_hub_control(hcd, typeReq, wValue, wIndex, buf, wLength);
-	if (!hcd->primary_hcd)
-		return ret;
-
-	mxhci = hcd_to_hsic(hcd->primary_hcd);
 
 	if (!hcd->primary_hcd)
 		return ret;
@@ -1107,6 +1157,66 @@ unlock:
 		spin_unlock_irqrestore(&xhci->lock, flags);
 }
 
+static irqreturn_t mxhci_irq(struct usb_hcd *hcd)
+{
+	struct mxhci_hsic_hcd *mxhci = hcd_to_hsic(hcd->primary_hcd);
+	struct xhci_hcd *xhci = mxhci->xhci;
+	u32 status;
+	u64 temp_64;
+
+	spin_lock(&xhci->lock);
+	/* Check if the xHC generated the interrupt, or the irq is shared */
+	status = xhci_readl(xhci, &xhci->op_regs->status);
+	if (status == 0xffffffff) {
+		spin_unlock(&xhci->lock);
+		return IRQ_HANDLED;
+	}
+
+	if (!(status & STS_EINT)) {
+		spin_unlock(&xhci->lock);
+		return IRQ_NONE;
+	}
+	if (status & STS_FATAL) {
+		xhci_warn(xhci, "WARNING: Host System Error\n");
+		xhci_halt(xhci);
+		spin_unlock(&xhci->lock);
+		return IRQ_HANDLED;
+	}
+
+	/*
+	 * Clear the op reg interrupt status first,
+	 * so we can receive interrupts from other MSI-X interrupters.
+	 * Write 1 to clear the interrupt status.
+	 */
+	status |= STS_EINT;
+	xhci_writel(xhci, status, &xhci->op_regs->status);
+
+	if (hcd->irq) {
+		u32 irq_pending;
+		/* Acknowledge the PCI interrupt */
+		irq_pending = xhci_readl(xhci, &xhci->ir_set->irq_pending);
+		irq_pending |= IMAN_IP;
+		xhci_writel(xhci, irq_pending, &xhci->ir_set->irq_pending);
+	}
+
+	if (xhci->xhc_state & XHCI_STATE_DYING) {
+		xhci_dbg(xhci, "xHCI dying, ignoring interrupt.\n");
+		/* Clear the event handler busy flag (RW1C);
+		 * the event ring should be empty.
+		 */
+		temp_64 = xhci_read_64(xhci, &xhci->ir_set->erst_dequeue);
+		xhci_write_64(xhci, temp_64 | ERST_EHB,
+				&xhci->ir_set->erst_dequeue);
+		spin_unlock(&xhci->lock);
+		return IRQ_HANDLED;
+	}
+	spin_unlock(&xhci->lock);
+
+	tasklet_schedule(&mxhci->bh);
+
+	return IRQ_HANDLED;
+}
+
 static struct hc_driver mxhci_hsic_hc_driver = {
 	.description =		"xhci-hcd",
 	.product_desc =		"Qualcomm xHCI Host Controller using HSIC",
@@ -1114,7 +1224,7 @@ static struct hc_driver mxhci_hsic_hc_driver = {
 	/*
 	 * generic hardware linkage
 	 */
-	.irq =			xhci_irq,
+	.irq =			mxhci_irq,
 	.flags =		HCD_MEMORY | HCD_USB3,
 
 	/*
@@ -1161,6 +1271,61 @@ static struct hc_driver mxhci_hsic_hc_driver = {
 	.set_autosuspend_delay = mxhci_hsic_set_autosuspend_delay,
 	.udev_enum_done =	mxhci_hsic_udev_enum_done,
 };
+
+static void mxhci_irq_bh(unsigned long param)
+{
+	struct mxhci_hsic_hcd *mxhci = (struct mxhci_hsic_hcd *)param;
+	struct xhci_hcd *xhci = mxhci->xhci;
+	u64 temp_64;
+	union xhci_trb *event_ring_deq;
+	struct xhci_ring *er;
+	dma_addr_t deq;
+	unsigned long flags;
+	unsigned event_cnt = 0;
+	int schedule_again;
+
+	spin_lock_irqsave(&xhci->lock, flags);
+	event_ring_deq = xhci->event_ring->dequeue;
+
+	do {
+		schedule_again = xhci_handle_event(xhci);
+		event_cnt++;
+	} while (schedule_again && (event_cnt < max_event_to_handle));
+
+	/* check if we have more events to process */
+	er = xhci->event_ring;
+	if (schedule_again && er && er->dequeue &&
+		((le32_to_cpu(er->dequeue->event_cmd.flags) & TRB_CYCLE)
+		== er->cycle_state))
+		schedule_again = 1;
+	else
+		schedule_again = 0;
+
+	temp_64 = xhci_read_64(xhci, &xhci->ir_set->erst_dequeue);
+	/* If necessary, update the HW's version of the event ring deq ptr. */
+	if (event_ring_deq != xhci->event_ring->dequeue) {
+		deq = xhci_trb_virt_to_dma(xhci->event_ring->deq_seg,
+				xhci->event_ring->dequeue);
+		if (deq == 0)
+			xhci_warn(xhci,
+				"WARN wrong SW event ring dequeue ptr.\n");
+		/* Update HC event ring dequeue pointer */
+		temp_64 &= ERST_PTR_MASK;
+		temp_64 |= ((u64) deq & (u64) ~ERST_PTR_MASK);
+	}
+
+	/* Clear the event handler busy flag to get irq ; reloads imod */
+	temp_64 |= ERST_EHB;
+	xhci_write_64(xhci, temp_64, &xhci->ir_set->erst_dequeue);
+	spin_unlock_irqrestore(&xhci->lock, flags);
+
+	mxhci->handled_event_cnt += event_cnt - 1;
+	mxhci->cpu_yield_cnt++;
+
+	if (schedule_again && !mxhci->xhci_remove_flag)
+		tasklet_schedule(&mxhci->bh);
+}
+
 
 static ssize_t config_imod_store(struct device *pdev,
 		struct device_attribute *attr, const char *buff, size_t size)
@@ -1217,57 +1382,6 @@ static ssize_t config_imod_show(struct device *pdev,
 static DEVICE_ATTR(config_imod, S_IRUGO | S_IWUSR,
 		config_imod_show, config_imod_store);
 
-static ssize_t host_ready_store(struct device *pdev,
-			struct device_attribute *attr,
-			const char *buff, size_t size)
-{
-	int assert;
-	struct usb_hcd *hcd = dev_get_drvdata(pdev);
-	struct mxhci_hsic_hcd *mxhci;
-
-	sscanf(buff, "%d", &assert);
-	assert = !!assert;
-
-	if (!hcd) {
-		pr_err("%s: hsic: null hcd\n", __func__);
-		return -ENODEV;
-	}
-
-	dev_dbg(pdev, "assert: %d\n", assert);
-
-	mxhci = hcd_to_hsic(hcd);
-	if (mxhci->host_ready)
-		gpio_direction_output(mxhci->host_ready, assert);
-	else
-		return -ENODEV;
-
-	return size;
-}
-
-static ssize_t host_ready_show(struct device *pdev,
-			struct device_attribute *attr, char *buff)
-{
-	struct usb_hcd *hcd = dev_get_drvdata(pdev);
-	struct mxhci_hsic_hcd *mxhci;
-	int val = -ENODEV;
-
-	if (!hcd) {
-		pr_err("%s: hsic: null hcd\n", __func__);
-		return -ENODEV;
-	}
-
-	mxhci = hcd_to_hsic(hcd);
-
-	if (mxhci->host_ready)
-		val = gpio_get_value(mxhci->host_ready);
-
-	return snprintf(buff, PAGE_SIZE, "%d\n", val);
-
-}
-
-static DEVICE_ATTR(host_ready, S_IRUGO | S_IWUSR,
-		host_ready_show, host_ready_store);
-
 static int mxhci_hsic_probe(struct platform_device *pdev)
 {
 	struct hc_driver *driver;
@@ -1276,6 +1390,7 @@ static int mxhci_hsic_probe(struct platform_device *pdev)
 	struct xhci_hcd		*xhci;
 	struct resource *res;
 	struct usb_hcd *hcd;
+	struct pinctrl_state *set_state;
 	unsigned int reg;
 	int ret;
 	int irq;
@@ -1322,19 +1437,34 @@ static int mxhci_hsic_probe(struct platform_device *pdev)
 	mxhci->dev = &pdev->dev;
 	mxhci->xhci_remove_flag = false;
 	mxhci->xhci_shutdown_flag = false;
+	mxhci->bh.func = mxhci_irq_bh;
+	mxhci->bh.data = (unsigned long)mxhci;
 
-	mxhci->strobe = of_get_named_gpio(node, "hsic,strobe-gpio", 0);
-	if (mxhci->strobe < 0) {
-		ret = -EINVAL;
-		goto put_hcd;
+	/* Get pinctrl if target uses pinctrl */
+	mxhci->hsic_pinctrl = devm_pinctrl_get(&pdev->dev);
+	if (IS_ERR(mxhci->hsic_pinctrl)) {
+		if (of_property_read_bool(pdev->dev.of_node, "pinctrl-names")) {
+			dev_err(&pdev->dev, "Error encountered while getting pinctrl");
+			ret = PTR_ERR(mxhci->hsic_pinctrl);
+			goto put_hcd;
+		}
+		dev_dbg(&pdev->dev, "Target does not use pinctrl\n");
+		mxhci->hsic_pinctrl = NULL;
 	}
 
-	mxhci->data  = of_get_named_gpio(node, "hsic,data-gpio", 0);
-	if (mxhci->data < 0) {
-		ret = -EINVAL;
-		goto put_hcd;
-	}
+	if (IS_ERR_OR_NULL(mxhci->hsic_pinctrl)) {
+		mxhci->strobe = of_get_named_gpio(node, "hsic,strobe-gpio", 0);
+		if (mxhci->strobe < 0) {
+			ret = -EINVAL;
+			goto put_hcd;
+		}
 
+		mxhci->data  = of_get_named_gpio(node, "hsic,data-gpio", 0);
+		if (mxhci->data < 0) {
+			ret = -EINVAL;
+			goto put_hcd;
+		}
+	}
 	mxhci->host_ready = of_get_named_gpio(node,
 					"qcom,host-ready-gpio", 0);
 	if (mxhci->host_ready < 0)
@@ -1422,7 +1552,7 @@ static int mxhci_hsic_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev,
 					"request irq failed (wakeup irq)\n");
-			goto deinit_vddcx;
+			goto pinctrl_sleep;
 		}
 	}
 
@@ -1437,7 +1567,7 @@ static int mxhci_hsic_probe(struct platform_device *pdev)
 	irq_set_status_flags(irq, IRQ_NOAUTOEN);
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret)
-		goto deinit_vddcx;
+		goto pinctrl_sleep;
 
 	hcd = dev_get_drvdata(&pdev->dev);
 	xhci = hcd_to_xhci(hcd);
@@ -1531,23 +1661,14 @@ static int mxhci_hsic_probe(struct platform_device *pdev)
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 
-	ret = device_create_file(&pdev->dev, &dev_attr_host_ready);
-	if (ret)
-		pr_err("err creating sysfs node\n");
-
-	mxhci->hsic_reboot.notifier_call = mxhci_hsic_reboot;
-	mxhci->hsic_reboot.next = NULL;
-	mxhci->hsic_reboot.priority = 1;
-	ret = register_reboot_notifier(&mxhci->hsic_reboot);
-	if (ret)
-		dev_err(&pdev->dev, "%s: register for reboot failed\n",
-					__func__);
-
 	dev_dbg(&pdev->dev, "%s: Probe complete\n", __func__);
 
 	ret = mxhci_hsic_debugfs_init();
 	if (ret)
 		dev_dbg(&pdev->dev, "debugfs is not availabile\n");
+
+	__mxhci = mxhci;
+
 	return 0;
 
 delete_wq:
@@ -1560,6 +1681,15 @@ remove_usb2_hcd:
 	usb_remove_hcd(hcd);
 deinit_vddcx:
 	mxhci_hsic_init_vddcx(mxhci, 0);
+pinctrl_sleep:
+	if (mxhci->hsic_pinctrl) {
+		set_state = pinctrl_lookup_state(mxhci->hsic_pinctrl,
+				"hsic_xhci_sleep");
+		if (IS_ERR(set_state))
+			pr_err("cannot get hsic pinctrl sleep state\n");
+		else
+			pinctrl_select_state(mxhci->hsic_pinctrl, set_state);
+	}
 deinit_clocks:
 	mxhci_hsic_init_clocks(mxhci, 0);
 put_hcd:
@@ -1573,9 +1703,12 @@ static int mxhci_hsic_remove(struct platform_device *pdev)
 	struct usb_hcd	*hcd = platform_get_drvdata(pdev);
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	struct mxhci_hsic_hcd *mxhci = hcd_to_hsic(hcd);
+	struct pinctrl_state *set_state;
 	u32 reg;
 
 	xhci_dbg_log_event(&dbg_hsic, NULL,  "mxhci_hsic_remove", 0);
+
+	__mxhci = NULL;
 
 	/* disable STROBE_PAD_CTL */
 	reg = readl_relaxed(TLMM_GPIO_HSIC_STROBE_PAD_CTL);
@@ -1588,7 +1721,6 @@ static int mxhci_hsic_remove(struct platform_device *pdev)
 	mb();
 
 	device_remove_file(&pdev->dev, &dev_attr_config_imod);
-	device_remove_file(&pdev->dev, &dev_attr_host_ready);
 	mxhci_hsic_debugfs_cleanup();
 
 	mxhci->xhci_remove_flag = true;
@@ -1600,6 +1732,11 @@ static int mxhci_hsic_remove(struct platform_device *pdev)
 		pm_runtime_disable(&pdev->dev);
 
 	pm_runtime_set_suspended(&pdev->dev);
+
+	pm_runtime_disable(&hcd->self.root_hub->dev);
+	pm_runtime_barrier(&hcd->self.root_hub->dev);
+
+	tasklet_kill(&mxhci->bh);
 
 	usb_remove_hcd(xhci->shared_hcd);
 	usb_put_hcd(xhci->shared_hcd);
@@ -1619,12 +1756,20 @@ static int mxhci_hsic_remove(struct platform_device *pdev)
 
 	destroy_workqueue(mxhci->wq);
 
+	if (mxhci->hsic_pinctrl) {
+		set_state = pinctrl_lookup_state(mxhci->hsic_pinctrl,
+				"hsic_xhci_sleep");
+		if (IS_ERR(set_state))
+			pr_err("cannot get hsic pinctrl sleep state\n");
+		else
+			pinctrl_select_state(mxhci->hsic_pinctrl, set_state);
+	}
+
 	device_wakeup_disable(&pdev->dev);
 	mxhci_hsic_init_vddcx(mxhci, 0);
 	mxhci_hsic_init_clocks(mxhci, 0);
 	mxhci_msm_config_gdsc(mxhci, 0);
 	kfree(xhci);
-	unregister_reboot_notifier(&mxhci->hsic_reboot);
 	usb_put_hcd(hcd);
 
 

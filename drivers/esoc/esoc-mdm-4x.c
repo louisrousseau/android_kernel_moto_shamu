@@ -10,10 +10,13 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/coresight.h>
+#include <linux/coresight-cti.h>
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
+#include <linux/of_address.h>
 #include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
@@ -39,6 +42,11 @@
 #define RD_BUF_SIZE			100
 #define SFR_MAX_RETRIES			10
 #define SFR_RETRY_INTERVAL		1000
+#define MDM_DBG_OFFSET			0x934
+#define MDM_DBG_MODE			0x53444247
+#define MDM_CTI_NAME			"coresight-cti-rpm-cpu0"
+#define MDM_CTI_TRIG			0
+#define MDM_CTI_CH			0
 
 enum mdm_gpio {
 	AP2MDM_WAKEUP = 0,
@@ -90,13 +98,16 @@ struct mdm_ctrl {
 	bool debug_fail;
 	unsigned int dump_timeout_ms;
 	unsigned int ramdump_delay_ms;
-	int sysmon_subsys_id;
 	struct esoc_clink *esoc;
 	bool get_restart_reason;
 	unsigned long irq_mask;
 	bool ready;
 	bool dual_interface;
 	u32 status;
+	void __iomem *dbg_addr;
+	bool dbg_mode;
+	struct coresight_cti *cti;
+	int trig_cnt;
 };
 
 struct mdm_ops {
@@ -247,6 +258,18 @@ static void mdm_update_gpio_configs(struct mdm_ctrl *mdm,
 	}
 }
 
+static void mdm_trigger_dbg(struct mdm_ctrl *mdm)
+{
+	int ret;
+
+	if (mdm->dbg_mode && !mdm->trig_cnt) {
+		ret = coresight_cti_pulse_trig(mdm->cti, MDM_CTI_CH);
+		mdm->trig_cnt++;
+		if (ret)
+			dev_err(mdm->dev, "unable to trigger cti pulse on\n");
+	}
+}
+
 /* This function can be called from atomic context. */
 static void mdm_toggle_soft_reset(struct mdm_ctrl *mdm)
 {
@@ -309,11 +332,11 @@ static void mdm_power_down(struct mdm_ctrl *mdm)
 
 static int mdm_cmd_exe(enum esoc_cmd cmd, struct esoc_clink *esoc)
 {
-	int ret;
 	unsigned long end_time;
 	bool status_down = false;
 	struct mdm_ctrl *mdm = get_esoc_clink_data(esoc);
 	struct device *dev = mdm->dev;
+	bool graceful_shutdown;
 
 	switch (cmd) {
 	case ESOC_PWR_ON:
@@ -326,28 +349,36 @@ static int mdm_cmd_exe(enum esoc_cmd cmd, struct esoc_clink *esoc)
 		mdm_disable_irqs(mdm);
 		mdm->debug = 0;
 		mdm->ready = false;
-		ret = sysmon_send_shutdown(mdm->sysmon_subsys_id);
-		if (ret)
-			dev_err(mdm->dev, "Graceful shutdown fail, ret = %d\n",
-									ret);
-		else {
-			dev_dbg(mdm->dev, "Waiting for status gpio go low\n");
-			status_down = false;
-			end_time = jiffies + msecs_to_jiffies(10000);
-			while (time_before(jiffies, end_time)) {
-				if (gpio_get_value(MDM_GPIO(mdm, MDM2AP_STATUS))
+		mdm->trig_cnt = 0;
+		graceful_shutdown = true;
+
+		dev_dbg(mdm->dev, "Waiting for status gpio go low\n");
+		status_down = false;
+		end_time = jiffies + msecs_to_jiffies(10000);
+		while (time_before(jiffies, end_time)) {
+			if (gpio_get_value(MDM_GPIO(mdm, MDM2AP_STATUS))
 									== 0) {
-					dev_dbg(dev, "Status went low\n");
-					status_down = true;
-					break;
-				}
-				msleep(100);
+				dev_dbg(dev, "Status went low\n");
+				status_down = true;
+				break;
 			}
-			if (status_down)
-				dev_dbg(dev, "shutdown successful\n");
-			else
-				dev_err(mdm->dev, "graceful poff ipc fail\n");
+			msleep(100);
 		}
+		if (status_down)
+			dev_dbg(dev, "shutdown successful\n");
+		else
+			dev_err(mdm->dev, "graceful poff ipc fail\n");
+	case ESOC_FORCE_PWR_OFF:
+		if (!graceful_shutdown) {
+			mdm_disable_irqs(mdm);
+			mdm->debug = 0;
+			mdm->ready = false;
+			mdm->trig_cnt = 0;
+
+			dev_err(mdm->dev, "Graceful shutdown fail, ret = %d\n",
+				esoc->subsys.sysmon_shutdown_ret);
+		}
+
 		/*
 		 * Force a shutdown of the mdm. This is required in order
 		 * to prevent the mdm from immediately powering back on
@@ -375,6 +406,7 @@ static int mdm_cmd_exe(enum esoc_cmd cmd, struct esoc_clink *esoc)
 		break;
 	case ESOC_EXE_DEBUG:
 		mdm->debug = 1;
+		mdm->trig_cnt = 0;
 		mdm_toggle_soft_reset(mdm);
 		/*
 		 * wait for ramdumps to be collected
@@ -440,7 +472,7 @@ static void mdm_get_restart_reason(struct work_struct *work)
 	struct device *dev = mdm->dev;
 
 	do {
-		ret = sysmon_get_reason(mdm->sysmon_subsys_id, sfr_buf,
+		ret = sysmon_get_reason(&mdm->esoc->subsys, sfr_buf,
 							sizeof(sfr_buf));
 		if (!ret) {
 			dev_err(dev, "mdm restart reason is %s\n", sfr_buf);
@@ -530,6 +562,8 @@ static void mdm_notify(enum esoc_notify notify, struct esoc_clink *esoc)
 		gpio_direction_output(MDM_GPIO(mdm, AP2MDM_SOFT_RESET),
 				!!mdm->soft_reset_inverted);
 		mdelay(300);
+		gpio_direction_output(MDM_GPIO(mdm, AP2MDM_SOFT_RESET),
+				!mdm->soft_reset_inverted);
 		break;
 	};
 	return;
@@ -577,6 +611,7 @@ static irqreturn_t mdm_status_change(int irq, void *dev_id)
 		cancel_delayed_work(&mdm->mdm2ap_status_check_work);
 		dev_dbg(dev, "status = 1: mdm is now ready\n");
 		mdm->ready = true;
+		mdm_trigger_dbg(mdm);
 		queue_work(mdm->mdm_queue, &mdm->mdm_status_work);
 		if (mdm->get_restart_reason)
 			queue_work(mdm->mdm_queue, &mdm->restart_reason_work);
@@ -599,6 +634,7 @@ static irqreturn_t mdm_pblrdy_change(int irq, void *dev_id)
 			gpio_get_value(MDM_GPIO(mdm, MDM2AP_PBLRDY)));
 	if (mdm->init) {
 		mdm->init = 0;
+		mdm_trigger_dbg(mdm);
 		esoc_clink_queue_request(ESOC_REQ_IMG, esoc);
 		return IRQ_HANDLED;
 	}
@@ -616,6 +652,46 @@ static int mdm_get_status(u32 *status, struct esoc_clink *esoc)
 	else
 		*status = 1;
 	return 0;
+}
+
+static void mdm_configure_debug(struct mdm_ctrl *mdm)
+{
+	void __iomem *addr;
+	unsigned val;
+	int ret;
+	struct device_node *node = mdm->dev->of_node;
+
+	addr = of_iomap(node, 0);
+	if (IS_ERR(addr)) {
+		dev_err(mdm->dev, "failed to get debug base addres\n");
+		return;
+	}
+	mdm->dbg_addr = addr + MDM_DBG_OFFSET;
+	val = readl_relaxed(mdm->dbg_addr);
+	if (val == MDM_DBG_MODE) {
+		mdm->dbg_mode = true;
+		mdm->cti = coresight_cti_get(MDM_CTI_NAME);
+		if (IS_ERR(mdm->cti)) {
+			dev_err(mdm->dev, "unable to get cti handle\n");
+			goto cti_get_err;
+		}
+		ret = coresight_cti_map_trigout(mdm->cti, MDM_CTI_TRIG,
+								MDM_CTI_CH);
+		if (ret) {
+			dev_err(mdm->dev, "unable to map trig to channel\n");
+			goto cti_map_err;
+		}
+		mdm->trig_cnt = 0;
+	} else {
+		dev_dbg(mdm->dev, "Not in debug mode. debug mode = %u\n", val);
+		mdm->dbg_mode = false;
+	}
+	return;
+cti_map_err:
+	coresight_cti_put(mdm->cti);
+cti_get_err:
+	mdm->dbg_mode = false;
+	return;
 }
 
 /* Fail if any of the required gpios is absent. */
@@ -712,10 +788,6 @@ static int mdm_configure_ipc(struct mdm_ctrl *mdm, struct platform_device *pdev)
 			goto fatal_err;
 		}
 	}
-	ret = of_property_read_u32(node, "qcom,sysmon-subsys-id",
-						&mdm->sysmon_subsys_id);
-	if (ret < 0)
-		dev_dbg(dev, "sysmon_subsys_id not set.\n");
 
 	gpio_direction_output(MDM_GPIO(mdm, AP2MDM_STATUS), 0);
 	gpio_direction_output(MDM_GPIO(mdm, AP2MDM_ERRFATAL), 0);
@@ -813,6 +885,7 @@ static int mdm9x25_setup_hw(struct mdm_ctrl *mdm,
 	ret = mdm_configure_ipc(mdm, pdev);
 	if (ret)
 		return ret;
+	mdm_configure_debug(mdm);
 	dev_err(mdm->dev, "ipc configure done\n");
 	esoc->name = MDM9x25_LABEL;
 	esoc->link_name = MDM9x25_HSIC;
@@ -867,6 +940,7 @@ static int mdm9x35_setup_hw(struct mdm_ctrl *mdm,
 	ret = mdm_configure_ipc(mdm, pdev);
 	if (ret)
 		return ret;
+	mdm_configure_debug(mdm);
 	dev_dbg(mdm->dev, "ipc configure done\n");
 	esoc->name = MDM9x35_LABEL;
 	mdm->dual_interface = of_property_read_bool(node,

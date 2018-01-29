@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2015 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,8 +27,7 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/machine.h>
-#include <linux/reboot.h>
-#include <linux/qpnp/qpnp-adc.h>
+#include <linux/pinctrl/consumer.h>
 
 #define SMB135X_BITS_PER_REG	8
 
@@ -72,12 +71,7 @@
 #define USB_2_3_BIT			BIT(5)
 
 #define CFG_A_REG			0x0A
-#define DCIN_VOLT_SEL			SMB135X_MASK(7, 5)
 #define DCIN_INPUT_MASK			SMB135X_MASK(4, 0)
-#define DCIN_INPUT_FAC                  0x06
-
-#define CFG_B_REG			0x0B
-#define DCIN_AICL_BIT			BIT(2)
 
 #define CFG_C_REG			0x0C
 #define USBIN_VOLT_MODE_5V		0x00
@@ -85,6 +79,11 @@
 #define USBIN_VOLT_MODE_5V_TO_9V	0x20
 #define USBIN_VOLT_MODE_MASK		SMB135X_MASK(7, 5)
 #define USBIN_INPUT_MASK		SMB135X_MASK(4, 0)
+#define USBIN_ADAPTER_ALLOWANCE_MASK	SMB135X_MASK(7, 5)
+#define ALLOW_5V_ONLY			0x00
+#define ALLOW_5V_OR_9V			0x20
+#define ALLOW_5V_TO_9V			0x40
+#define ALLOW_9V_ONLY			0x60
 
 #define CFG_D_REG			0x0D
 #define AICL_GLITCH			BIT(3)
@@ -93,10 +92,12 @@
 #define CFG_E_REG			0x0E
 #define POLARITY_100_500_BIT		BIT(2)
 #define USB_CTRL_BY_PIN_BIT		BIT(1)
+#define HVDCP_5_9_BIT			BIT(4)
 
 #define CFG_11_REG			0x11
+#define APSD_DISABLE_BIT		BIT(0)
 #define PRIORITY_BIT			BIT(7)
-#define AUTO_SRC_DET_BIT		BIT(0)
+#define AUTO_SRC_DET_EN_BIT			BIT(0)
 
 #define USBIN_DCIN_CFG_REG		0x12
 #define USBIN_SUSPEND_VIA_COMMAND_BIT	BIT(6)
@@ -112,7 +113,8 @@
 #define EN_CHG_INHIBIT_BIT		BIT(0)
 
 #define CFG_16_REG			0x16
-#define SAFETY_TIME_EN_BIT		BIT(4)
+#define SAFETY_TIME_EN_BIT		BIT(5)
+#define SAFETY_TIME_EN_SHIFT		5
 #define SAFETY_TIME_MINUTES_MASK	SMB135X_MASK(3, 2)
 #define SAFETY_TIME_MINUTES_SHIFT	2
 
@@ -131,6 +133,18 @@
 #define CFG_1A_REG			0x1A
 #define HOT_SOFT_VFLOAT_COMP_EN_BIT	BIT(3)
 #define COLD_SOFT_VFLOAT_COMP_EN_BIT	BIT(2)
+#define HOT_SOFT_CURRENT_COMP_EN_BIT	BIT(1)
+#define COLD_SOFT_CURRENT_COMP_EN_BIT	BIT(0)
+
+#define CFG_1B_REG			0x1B
+#define COLD_HARD_MASK			SMB135X_MASK(7, 6)
+#define COLD_HARD_SHIFT			6
+#define HOT_HARD_MASK			SMB135X_MASK(5, 4)
+#define HOT_HARD_SHIFT			4
+#define COLD_SOFT_MASK			SMB135X_MASK(3, 2)
+#define COLD_SOFT_SHIFT			2
+#define HOT_SOFT_MASK			SMB135X_MASK(1, 0)
+#define HOT_SOFT_SHIFT			0
 
 #define CFG_1C_REG			0x1C
 #define BATT_CURR_MASK			SMB135X_MASK(4, 0)
@@ -138,6 +152,13 @@
 
 #define VFLOAT_REG			0x1E
 #define VFLOAT_MASK			SMB135X_MASK(5, 0)
+
+#define VERSION1_REG			0x2A
+#define VERSION1_MASK			SMB135X_MASK(7,	6)
+#define VERSION1_SHIFT			6
+#define VERSION2_REG			0x32
+#define VERSION2_MASK			SMB135X_MASK(1,	0)
+#define VERSION3_REG			0x34
 
 #define VERSION1_REG			0x2A
 #define VERSION1_MASK			SMB135X_MASK(7,	6)
@@ -164,8 +185,21 @@
 #define IRQ2_VBAT_LOW_BIT		BIT(0)
 
 #define IRQ3_CFG_REG			0x09
+#define IRQ3_RID_DETECT_BIT		BIT(4)
 #define IRQ3_SRC_DETECT_BIT		BIT(2)
 #define IRQ3_DCIN_UV_BIT		BIT(0)
+
+#define USBIN_OTG_REG			0x0F
+#define OTG_CNFG_MASK			SMB135X_MASK(3,	2)
+#define OTG_CNFG_PIN_CTRL		0x04
+#define OTG_CNFG_COMMAND_CTRL		0x08
+#define OTG_CNFG_AUTO_CTRL		0x0C
+
+#define USBIN_AICL_REG			0x0D
+#define AICL_BIT_EN			BIT(2)
+
+#define BATT_REG			0x13
+#define VBATT_LOW_MASK			SMB135X_MASK(3,0)
 
 /* Command Registers */
 #define CMD_I2C_REG			0x40
@@ -214,8 +248,11 @@
 #define ACA_C_BIT			BIT(1)
 #define ACA_DOCK_BIT			BIT(0)
 
-#define STATUS_6_REG			0x4D
-#define HVDCP_BIT			BIT(4)
+#define STATUS_6_REG			0x4C
+#define RID_FLOAT_BIT			BIT(3)
+#define RID_A_BIT			BIT(2)
+#define RID_B_BIT			BIT(1)
+#define RID_C_BIT			BIT(0)
 
 #define STATUS_8_REG			0x4E
 #define USBIN_9V			BIT(5)
@@ -243,7 +280,7 @@
 
 #define IRQ_C_REG			0x52
 #define IRQ_C_TERM_BIT			BIT(0)
-#define IRQ_C_FAST_CHG_BIT		BIT(6)
+#define IRQ_C_FASTCHG_BIT		BIT(6)
 
 #define IRQ_D_REG			0x53
 #define IRQ_D_AICL_DONE_BIT		BIT(4)
@@ -294,6 +331,13 @@ enum {
 	V_MAX,
 };
 
+static int version_data[] = {
+	[V_SMB1356] = V_SMB1356,
+	[V_SMB1357] = V_SMB1357,
+	[V_SMB1358] = V_SMB1358,
+	[V_SMB1359] = V_SMB1359,
+};
+
 static char *version_str[] = {
 	[V_SMB1356] = "smb1356",
 	[V_SMB1357] = "smb1357",
@@ -319,6 +363,10 @@ static int chg_time[] = {
 	1536,
 };
 
+static char *pm_batt_supplied_to[] = {
+	"bms",
+};
+
 struct smb135x_regulator {
 	struct regulator_desc	rdesc;
 	struct regulator_dev	*rdev;
@@ -338,9 +386,11 @@ struct smb135x_chg {
 	int				version;
 
 	bool				chg_enabled;
+	bool				chg_disabled_permanently;
 
 	bool				usb_present;
 	bool				dc_present;
+	bool				usb_slave_present;
 	bool				dc_ov;
 
 	bool				bmd_algo_disabled;
@@ -355,13 +405,26 @@ struct smb135x_chg {
 	int				*usb_current_table;
 	int				dc_current_arr_size;
 	int				*dc_current_table;
+	bool				inhibit_disabled;
+	int				fastchg_current_arr_size;
+	int				*fastchg_current_table;
+	int				fastchg_ma;
 	u8				irq_cfg_mask[3];
+	int				otg_oc_count;
+	struct delayed_work		reset_otg_oc_count_work;
+	struct mutex			otg_oc_count_lock;
+
+	bool				parallel_charger;
+	bool				parallel_charger_present;
+	bool				bms_controlled_charging;
 
 	/* psy */
 	struct power_supply		*usb_psy;
 	int				usb_psy_ma;
+	int				real_usb_psy_ma;
 	struct power_supply		batt_psy;
 	struct power_supply		dc_psy;
+	struct power_supply		parallel_psy;
 	struct power_supply		*bms_psy;
 	int				dc_psy_type;
 	int				dc_psy_ma;
@@ -387,8 +450,10 @@ struct smb135x_chg {
 	int				skip_reads;
 	u32				workaround_flags;
 	bool				soft_vfloat_comp_disabled;
+	bool				soft_current_comp_disabled;
 	struct mutex			irq_complete;
 	struct regulator		*therm_bias_vreg;
+	struct regulator		*usb_pullup_vreg;
 	struct delayed_work		wireless_insertion_work;
 	struct delayed_work		usb_insertion_work;
 
@@ -397,66 +462,16 @@ struct smb135x_chg {
 	int				therm_lvl_sel;
 	int				dc_therm_lvl_sel;
 	unsigned int			*thermal_mitigation;
-	unsigned int			*dc_thermal_mitigation;
+	unsigned int			gamma_setting_num;
+	unsigned int			*gamma_setting;
 	struct mutex			current_change_lock;
-	struct mutex                    batti_change_lock;
-	bool				factory_mode;
-	int				batt_current_ma;
-	int				apsd_rerun_cnt;
-	struct smb_wakeup_source        smb_wake_source;
-	struct delayed_work		heartbeat_work;
-	int				ext_temp_volt_mv;
-	int				ext_temp_soc;
-	int				ext_high_temp;
-	int				temp_check;
-	int				bms_check;
-	unsigned long			float_charge_start_time;
-	struct delayed_work		aicl_check_work;
-	struct delayed_work		src_removal_work;
-	struct delayed_work		ocp_clear_work;
-	bool				aicl_disabled;
-	bool				aicl_weak_detect;
-	int				charger_rate;
-	struct delayed_work		rate_check_work;
-	int				rate_check_count;
-	struct notifier_block		smb_reboot;
-	int				ir_comp_mv;
-	bool				invalid_battery;
-	struct qpnp_adc_tm_btm_param	vbat_monitor_params;
-	struct qpnp_adc_tm_chip		*adc_tm_dev;
-	struct qpnp_vadc_chip		*vadc_dev;
-	unsigned int			low_voltage_uv;
-	unsigned int                    max_voltage_uv;
-	unsigned int			low_gauge_mv;
-	bool				shutdown_voltage_tripped;
-	bool				poll_fast;
-	bool				hvdcp_powerup;
-	int				prev_batt_health;
-	bool				hb_running;
+
+	const char			*pinctrl_state_name;
+	struct pinctrl			*smb_pinctrl;
+
+	bool				apsd_rerun;
+	bool				id_line_not_connected;
 };
-
-static struct smb135x_chg *the_chip;
-
-static int smb135x_float_voltage_set(struct smb135x_chg *chip, int vfloat_mv);
-static int handle_usb_removal(struct smb135x_chg *chip);
-static int notify_usb_removal(struct smb135x_chg *chip);
-static int smb135x_setup_vbat_monitoring(struct smb135x_chg *chip);
-
-static void smb_stay_awake(struct smb_wakeup_source *source)
-{
-	if (__test_and_clear_bit(0, &source->disabled)) {
-		__pm_stay_awake(&source->source);
-		pr_debug("enabled source %s\n", source->source.name);
-	}
-}
-
-static void smb_relax(struct smb_wakeup_source *source)
-{
-	if (!__test_and_set_bit(0, &source->disabled)) {
-		__pm_relax(&source->source);
-		pr_debug("disabled source %s\n", source->source.name);
-	}
-}
 
 #define RETRY_COUNT 5
 int retry_sleep_ms[RETRY_COUNT] = {
@@ -493,9 +508,6 @@ static int __smb135x_write(struct smb135x_chg *chip, int reg,
 	s32 ret;
 	int retry_count = 0;
 
-	if (chip->factory_mode)
-		return 0;
-
 retry:
 	ret = i2c_smbus_write_byte_data(chip->client, reg, val);
 	if (ret < 0 && retry_count < RETRY_COUNT) {
@@ -503,22 +515,6 @@ retry:
 		msleep(retry_sleep_ms[retry_count++]);
 		goto retry;
 	}
-	if (ret < 0) {
-		dev_err(chip->dev,
-			"i2c write fail: can't write %02x to %02x: %d\n",
-			val, reg, ret);
-		return ret;
-	}
-	pr_debug("Writing 0x%02x=0x%02x\n", reg, val);
-	return 0;
-}
-
-static int __smb135x_write_fac(struct smb135x_chg *chip, int reg,
-						u8 val)
-{
-	s32 ret;
-
-	ret = i2c_smbus_write_byte_data(chip->client, reg, val);
 	if (ret < 0) {
 		dev_err(chip->dev,
 			"i2c write fail: can't write %02x to %02x: %d\n",
@@ -539,7 +535,9 @@ static int smb135x_read(struct smb135x_chg *chip, int reg,
 		return 0;
 	}
 	mutex_lock(&chip->read_write_lock);
+	pm_stay_awake(chip->dev);
 	rc = __smb135x_read(chip, reg, val);
+	pm_relax(chip->dev);
 	mutex_unlock(&chip->read_write_lock);
 
 	return rc;
@@ -554,7 +552,9 @@ static int smb135x_write(struct smb135x_chg *chip, int reg,
 		return 0;
 
 	mutex_lock(&chip->read_write_lock);
+	pm_stay_awake(chip->dev);
 	rc = __smb135x_write(chip, reg, val);
+	pm_relax(chip->dev);
 	mutex_unlock(&chip->read_write_lock);
 
 	return rc;
@@ -585,67 +585,6 @@ static int smb135x_masked_write(struct smb135x_chg *chip, int reg,
 out:
 	mutex_unlock(&chip->read_write_lock);
 	return rc;
-}
-
-static int smb135x_masked_write_fac(struct smb135x_chg *chip, int reg,
-						u8 mask, u8 val)
-{
-	s32 rc;
-	u8 temp;
-
-	if (chip->skip_writes || chip->skip_reads)
-		return 0;
-
-	mutex_lock(&chip->read_write_lock);
-	rc = __smb135x_read(chip, reg, &temp);
-	if (rc < 0) {
-		dev_err(chip->dev, "read failed: reg=%03X, rc=%d\n", reg, rc);
-		goto out;
-	}
-	temp &= ~mask;
-	temp |= val & mask;
-	rc = __smb135x_write_fac(chip, reg, temp);
-	if (rc < 0) {
-		dev_err(chip->dev,
-			"write failed: reg=%03X, rc=%d\n", reg, rc);
-	}
-out:
-	mutex_unlock(&chip->read_write_lock);
-	return rc;
-}
-
-static int is_usb_plugged_in(struct smb135x_chg *chip)
-{
-	int rc;
-	u8 reg = 0;
-	u8 reg2 = 0;
-
-	rc = smb135x_read(chip, IRQ_E_REG, &reg);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't read irq E rc = %d\n", rc);
-		return 0;
-	}
-
-	rc = smb135x_read(chip, IRQ_G_REG, &reg2);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't read irq G rc = %d\n", rc);
-		return 0;
-	}
-
-	return !(reg & IRQ_E_USB_UV_BIT) || !!(reg2 & IRQ_G_SRC_DETECT_BIT);
-}
-
-static int is_dc_plugged_in(struct smb135x_chg *chip)
-{
-	int rc;
-	u8 reg = 0;
-
-	rc = smb135x_read(chip, IRQ_E_REG, &reg);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't read irq E rc = %d\n", rc);
-		return 0;
-	}
-	return !(reg & IRQ_E_DC_OV_BIT) && !(reg & IRQ_E_DC_UV_BIT);
 }
 
 static int read_revision(struct smb135x_chg *chip, u8 *revision)
@@ -717,6 +656,30 @@ static bool is_usb100_broken(struct smb135x_chg *chip)
 		return rc;
 	}
 	return !!(reg & CHECK_USB100_GOOD_BIT);
+}
+
+static bool is_usb_slave_present(struct smb135x_chg *chip)
+{
+	bool usb_slave_present;
+	u8 reg;
+	int rc;
+
+	if (chip->id_line_not_connected)
+		return false;
+
+	rc = smb135x_read(chip, STATUS_6_REG, &reg);
+	if (rc < 0) {
+		pr_err("Couldn't read stat 6 rc = %d\n", rc);
+		return false;
+	}
+
+	if ((reg & (RID_FLOAT_BIT | RID_A_BIT | RID_B_BIT | RID_C_BIT)) == 0)
+		usb_slave_present = 1;
+	else
+		usb_slave_present = 0;
+
+	pr_debug("stat6= 0x%02x slave_present = %d\n", reg, usb_slave_present);
+	return usb_slave_present;
 }
 
 static char *usb_type_str[] = {
@@ -946,7 +909,9 @@ static int smb135x_get_prop_charge_type(struct smb135x_chg *chip,
 	else if (chg_type == BATT_FAST_CHG_VAL)
 		*charge_type = POWER_SUPPLY_CHARGE_TYPE_FAST;
 	else if (chg_type == BATT_PRE_CHG_VAL)
-		*charge_type = POWER_SUPPLY_CHARGE_TYPE_TRICKLE;
+		return POWER_SUPPLY_CHARGE_TYPE_TRICKLE;
+	else if (chg_type == BATT_TAPER_CHG_VAL)
+		return POWER_SUPPLY_CHARGE_TYPE_TAPER;
 
 	*charge_type = POWER_SUPPLY_CHARGE_TYPE_NONE;
 	return 0;
@@ -1155,6 +1120,41 @@ static int usb_current_table_smb1356[] = {
 	1620,
 	1680,
 	1800
+};
+
+static int fastchg_current_table[] = {
+	300,
+	400,
+	450,
+	475,
+	500,
+	550,
+	600,
+	650,
+	700,
+	900,
+	950,
+	1000,
+	1100,
+	1200,
+	1400,
+	2700,
+	1500,
+	1600,
+	1800,
+	1850,
+	1880,
+	1910,
+	2800,
+	1950,
+	1970,
+	2000,
+	2050,
+	2100,
+	2300,
+	2400,
+	2500,
+	3000
 };
 
 static int usb_current_table_smb1357_smb1358[] = {
@@ -1447,6 +1447,75 @@ static int smb135x_check_temp_range(struct smb135x_chg *chip)
 	return 0;
 }
 
+static int smb135x_get_usb_chg_current(struct smb135x_chg *chip)
+{
+	if (chip->usb_suspended)
+		return SUSPEND_CURRENT_MA;
+	else
+		return chip->real_usb_psy_ma;
+}
+#define FCC_MASK			SMB135X_MASK(4, 0)
+#define CFG_1C_REG			0x1C
+static int smb135x_get_fastchg_current(struct smb135x_chg *chip)
+{
+	u8 reg;
+	int rc;
+
+	rc = smb135x_read(chip, CFG_1C_REG, &reg);
+	if (rc < 0) {
+		pr_debug("cannot read 1c rc = %d\n", rc);
+		return 0;
+	}
+	reg &= FCC_MASK;
+	if (reg < 0 || chip->fastchg_current_arr_size == 0
+			|| reg > chip->fastchg_current_table[
+				chip->fastchg_current_arr_size - 1]) {
+		dev_err(chip->dev, "Current table out of range\n");
+		return -EINVAL;
+	}
+	return chip->fastchg_current_table[reg];
+}
+
+static int smb135x_set_fastchg_current(struct smb135x_chg *chip,
+							int current_ma)
+{
+	int i, rc, diff, best, best_diff;
+	u8 reg;
+
+	/*
+	 * if there is no array loaded or if the smallest current limit is
+	 * above the requested current, then do nothing
+	 */
+	if (chip->fastchg_current_arr_size == 0) {
+		dev_err(chip->dev, "no table loaded\n");
+		return -EINVAL;
+	} else if ((current_ma - chip->fastchg_current_table[0]) < 0) {
+		dev_err(chip->dev, "invalid current requested\n");
+		return -EINVAL;
+	}
+
+	/* use the closest setting under the requested current */
+	best = 0;
+	best_diff = current_ma - chip->fastchg_current_table[best];
+
+	for (i = 1; i < chip->fastchg_current_arr_size; i++) {
+		diff = current_ma - chip->fastchg_current_table[i];
+		if (diff >= 0 && diff < best_diff) {
+			best_diff = diff;
+			best = i;
+		}
+	}
+	i = best;
+
+	reg = i & FCC_MASK;
+	rc = smb135x_masked_write(chip, CFG_1C_REG, FCC_MASK, reg);
+	if (rc < 0)
+		dev_err(chip->dev, "cannot write to config c rc = %d\n", rc);
+	pr_debug("fastchg current set to %dma\n",
+			chip->fastchg_current_table[i]);
+	return rc;
+}
+
 static int smb135x_set_high_usb_chg_current(struct smb135x_chg *chip,
 							int current_ma)
 {
@@ -1468,6 +1537,8 @@ static int smb135x_set_high_usb_chg_current(struct smb135x_chg *chip,
 		if (rc < 0)
 			dev_err(chip->dev, "Couldn't set %dmA rc=%d\n",
 					CURRENT_150_MA, rc);
+		else
+			chip->real_usb_psy_ma = CURRENT_150_MA;
 		return rc;
 	}
 
@@ -1483,6 +1554,8 @@ static int smb135x_set_high_usb_chg_current(struct smb135x_chg *chip,
 					USB_100_500_AC_MASK, USB_AC_VAL);
 	if (rc < 0)
 		dev_err(chip->dev, "Couldn't write cfg 5 rc = %d\n", rc);
+	else
+		chip->real_usb_psy_ma = chip->usb_current_table[i];
 	return rc;
 }
 
@@ -1515,6 +1588,7 @@ static int smb135x_set_usb_chg_current(struct smb135x_chg *chip,
 	if (current_ma == SUSPEND_CURRENT_MA) {
 		/* force suspend bit */
 		rc = smb135x_path_suspend(chip, USB, CURRENT, true);
+		chip->real_usb_psy_ma = SUSPEND_CURRENT_MA;
 		goto out;
 	}
 	if (current_ma < CURRENT_150_MA) {
@@ -1523,6 +1597,7 @@ static int smb135x_set_usb_chg_current(struct smb135x_chg *chip,
 		rc |= smb135x_masked_write(chip, CMD_INPUT_LIMIT,
 				USB_100_500_AC_MASK, USB_100_VAL);
 		rc |= smb135x_path_suspend(chip, USB, CURRENT, false);
+		chip->real_usb_psy_ma = CURRENT_100_MA;
 		goto out;
 	}
 	/* specific current values */
@@ -1532,6 +1607,7 @@ static int smb135x_set_usb_chg_current(struct smb135x_chg *chip,
 		rc |= smb135x_masked_write(chip, CMD_INPUT_LIMIT,
 				USB_100_500_AC_MASK, USB_100_VAL);
 		rc |= smb135x_path_suspend(chip, USB, CURRENT, false);
+		chip->real_usb_psy_ma = CURRENT_150_MA;
 		goto out;
 	}
 	if (current_ma == CURRENT_500_MA) {
@@ -1539,6 +1615,7 @@ static int smb135x_set_usb_chg_current(struct smb135x_chg *chip,
 		rc |= smb135x_masked_write(chip, CMD_INPUT_LIMIT,
 				USB_100_500_AC_MASK, USB_500_VAL);
 		rc |= smb135x_path_suspend(chip, USB, CURRENT, false);
+		chip->real_usb_psy_ma = CURRENT_500_MA;
 		goto out;
 	}
 	if (current_ma == CURRENT_900_MA) {
@@ -1547,6 +1624,7 @@ static int smb135x_set_usb_chg_current(struct smb135x_chg *chip,
 		rc |= smb135x_masked_write(chip, CMD_INPUT_LIMIT,
 				USB_100_500_AC_MASK, USB_500_VAL);
 		rc |= smb135x_path_suspend(chip, USB, CURRENT, false);
+		chip->real_usb_psy_ma = CURRENT_900_MA;
 		goto out;
 	}
 
@@ -1566,7 +1644,7 @@ static int smb135x_set_dc_chg_current(struct smb135x_chg *chip,
 	u8 dc_cur_val;
 
 	for (i = chip->dc_current_arr_size - 1; i >= 0; i--) {
-		if (current_ma >= chip->dc_current_table[i])
+		if (chip->dc_psy_ma >= chip->dc_current_table[i])
 			break;
 	}
 	dc_cur_val = i & DCIN_INPUT_MASK;
@@ -1587,6 +1665,9 @@ static int smb135x_set_appropriate_current(struct smb135x_chg *chip,
 	int path_current = (path == USB) ? chip->usb_psy_ma : chip->dc_psy_ma;
 	int (*func)(struct smb135x_chg *chip, int current_ma);
 	int rc = 0;
+
+	if (!chip->usb_psy && path == USB)
+		return 0;
 
 	/*
 	 * If battery is absent do not modify the current at all, these
@@ -1632,58 +1713,22 @@ static int smb135x_set_appropriate_current(struct smb135x_chg *chip,
 	return rc;
 }
 
-int batt_current_table[] = {
-	300,
-	400,
-	450,
-	475,
-	500,
-	550,
-	600,
-	650,
-	700,
-	900,
-	950,
-	1000,
-	1100,
-	1200,
-	1400,
-	1450,
-	1500,
-	1600,
-	1800,
-	1850,
-	1880,
-	1910,
-	1930,
-	1950,
-	1970,
-	2000,
-	2050,
-	2100,
-	2300,
-	2400,
-	2500
-};
-
-static int smb135x_set_batt_current(struct smb135x_chg *chip,
-				   int current_ma)
+static int smb135x_charging_enable(struct smb135x_chg *chip, int enable)
 {
-	int i, rc;
-	u8 batt_cur_val;
+	int rc;
 
-	for (i = ARRAY_SIZE(batt_current_table) - 1; i >= 0; i--) {
-		if (current_ma >= batt_current_table[i])
-			break;
-	}
-	batt_cur_val = i & BATT_CURR_MASK;
-	rc = smb135x_masked_write(chip, CFG_1C_REG,
-				  BATT_CURR_MASK, batt_cur_val);
+	if (chip->invalid_battery)
+		enable = false;
+
+	rc = smb135x_masked_write(chip, CMD_CHG_REG,
+				CMD_CHG_EN, enable ? CMD_CHG_EN : 0);
 	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't set Battery current rc = %d\n",
-			rc);
+		dev_err(chip->dev,
+			"Couldn't set CHG_ENABLE_BIT enable = %d rc = %d\n",
+			enable, rc);
 		return rc;
 	}
+
 	return 0;
 }
 
@@ -1693,15 +1738,16 @@ static int __smb135x_charging(struct smb135x_chg *chip, int enable)
 
 	pr_debug("charging enable = %d\n", enable);
 
-	if (chip->invalid_battery)
-		enable = false;
+	if (chip->chg_disabled_permanently) {
+		pr_debug("charging is disabled permanetly\n");
+		return -EINVAL;
+	}
 
-	rc = smb135x_masked_write(chip, CMD_CHG_REG,
-			CMD_CHG_EN, enable ? CMD_CHG_EN : 0);
+	rc = smb135x_charging_enable(chip, enable);
 	if (rc < 0) {
 		dev_err(chip->dev,
-			"Couldn't set CHG_ENABLE_BIT enable = %d rc = %d\n",
-			enable, rc);
+			"Couldn't %s charging  rc = %d\n",
+			enable ? "enable" : "disable", rc);
 		return rc;
 	}
 	chip->chg_enabled = enable;
@@ -1893,16 +1939,57 @@ static int smb135x_battery_set_property(struct power_supply *psy,
 				       enum power_supply_property prop,
 				       const union power_supply_propval *val)
 {
+	int rc = 0, update_psy = 0;
 	struct smb135x_chg *chip = container_of(psy,
 				struct smb135x_chg, batt_psy);
 
 	switch (prop) {
+	case POWER_SUPPLY_PROP_STATUS:
+		if (!chip->bms_controlled_charging) {
+			rc = -EINVAL;
+			break;
+		}
+		switch (val->intval) {
+		case POWER_SUPPLY_STATUS_FULL:
+			rc = smb135x_charging_enable(chip, false);
+			if (rc < 0) {
+				dev_err(chip->dev, "Couldn't disable charging rc = %d\n",
+						rc);
+			} else {
+				chip->chg_done_batt_full = true;
+				update_psy = 1;
+				dev_dbg(chip->dev, "status = FULL chg_done_batt_full = %d",
+						chip->chg_done_batt_full);
+			}
+			break;
+		case POWER_SUPPLY_STATUS_DISCHARGING:
+			chip->chg_done_batt_full = false;
+			update_psy = 1;
+			dev_dbg(chip->dev, "status = DISCHARGING chg_done_batt_full = %d",
+					chip->chg_done_batt_full);
+			break;
+		case POWER_SUPPLY_STATUS_CHARGING:
+			rc = smb135x_charging_enable(chip, true);
+			if (rc < 0) {
+				dev_err(chip->dev, "Couldn't enable charging rc = %d\n",
+						rc);
+			} else {
+				chip->chg_done_batt_full = false;
+				dev_dbg(chip->dev, "status = CHARGING chg_done_batt_full = %d",
+						chip->chg_done_batt_full);
+			}
+			break;
+		default:
+			update_psy = 0;
+			rc = -EINVAL;
+		}
+		break;
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 		smb135x_charging(chip, val->intval);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		chip->fake_battery_soc = val->intval;
-		power_supply_changed(&chip->batt_psy);
+		update_psy = 1;
 		break;
 	case POWER_SUPPLY_PROP_SYSTEM_TEMP_LEVEL:
 		smb135x_system_temp_level_set(chip, val->intval);
@@ -1929,10 +2016,12 @@ static int smb135x_battery_set_property(struct power_supply *psy,
 		smb135x_bms_set_property(chip, prop, val);
 		break;
 	default:
-		return -EINVAL;
+		rc = -EINVAL;
 	}
 
-	return 0;
+	if (!rc && update_psy)
+		power_supply_changed(&chip->batt_psy);
+	return rc;
 }
 
 static int smb135x_battery_is_writeable(struct power_supply *psy,
@@ -2144,38 +2233,6 @@ static int smb135x_dc_get_property(struct power_supply *psy,
 	return 0;
 }
 
-static void smb135x_external_power_changed(struct power_supply *psy)
-{
-	struct smb135x_chg *chip = container_of(psy,
-				struct smb135x_chg, batt_psy);
-	union power_supply_propval prop = {0,};
-	int rc, current_limit = 0;
-
-	if (chip->bms_psy_name)
-		chip->bms_psy =
-			power_supply_get_by_name((char *)chip->bms_psy_name);
-
-	rc = chip->usb_psy->get_property(chip->usb_psy,
-				POWER_SUPPLY_PROP_CURRENT_MAX, &prop);
-	if (rc < 0)
-		dev_err(chip->dev,
-			"could not read USB current_max property, rc=%d\n", rc);
-	else
-		current_limit = prop.intval / 1000;
-
-	pr_debug("current_limit = %d\n", current_limit);
-
-	if (chip->usb_psy_ma != current_limit) {
-		mutex_lock(&chip->current_change_lock);
-		chip->usb_psy_ma = current_limit;
-		rc = smb135x_set_appropriate_current(chip, USB);
-		mutex_unlock(&chip->current_change_lock);
-		if (rc < 0)
-			dev_err(chip->dev, "Couldn't set usb current rc = %d\n",
-					rc);
-	}
-}
-
 #define MIN_FLOAT_MV	3600
 #define MAX_FLOAT_MV	4400
 
@@ -2206,7 +2263,7 @@ static int smb135x_float_voltage_set(struct smb135x_chg *chip, int vfloat_mv)
 		temp = MID_RANGE_FLOAT_MIN_VAL
 			+ (vfloat_mv - MID_RANGE_FLOAT_MV_MIN)
 				/ MID_RANGE_FLOAT_STEP_MV;
-	} else if (vfloat_mv <= VHIGH_RANGE_FLOAT_MIN_MV) {
+	} else if (vfloat_mv < VHIGH_RANGE_FLOAT_MIN_MV) {
 		/* high range */
 		temp = HIGH_RANGE_FLOAT_MIN_VAL
 			+ (vfloat_mv - HIGH_RANGE_FLOAT_MIN_MV)
@@ -2233,6 +2290,397 @@ static int smb135x_float_voltage_set(struct smb135x_chg *chip, int vfloat_mv)
 	return rc;
 }
 
+static int smb135x_set_resume_threshold(struct smb135x_chg *chip,
+		int resume_delta_mv)
+{
+	int rc;
+	u8 reg;
+
+	if (!chip->inhibit_disabled) {
+		if (resume_delta_mv < 100)
+			reg = CHG_INHIBIT_50MV_VAL;
+		else if (resume_delta_mv < 200)
+			reg = CHG_INHIBIT_100MV_VAL;
+		else if (resume_delta_mv < 300)
+			reg = CHG_INHIBIT_200MV_VAL;
+		else
+			reg = CHG_INHIBIT_300MV_VAL;
+
+		rc = smb135x_masked_write(chip, CFG_4_REG, CHG_INHIBIT_MASK,
+						reg);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't set inhibit val rc = %d\n",
+						rc);
+			return rc;
+		}
+	}
+
+	if (resume_delta_mv < 200)
+		reg = 0;
+	else
+		reg = RECHARGE_200MV_BIT;
+
+	rc = smb135x_masked_write(chip, CFG_5_REG, RECHARGE_200MV_BIT, reg);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't set recharge  rc = %d\n", rc);
+		return rc;
+	}
+	return 0;
+}
+
+static enum power_supply_property smb135x_parallel_properties[] = {
+	POWER_SUPPLY_PROP_CHARGING_ENABLED,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
+};
+
+static int smb135x_parallel_hw_init(struct smb135x_chg *chip)
+{
+	int rc;
+
+	/* disable auto source detection */
+	rc = smb135x_masked_write(chip, CFG_11_REG,
+			APSD_DISABLE_BIT, 0);
+	if (rc < 0) {
+		dev_err(chip->dev,
+				"Couldn't disable APSD. rc=%d\n", rc);
+		return rc;
+	}
+
+	/* disable JEITA */
+	rc = smb135x_write(chip, CFG_1A_REG, 0);
+	if (rc < 0) {
+		dev_err(chip->dev,
+				"Couldn't disable jeita func. rc=%d\n", rc);
+		return rc;
+	}
+	/* disable vbatt low threshold */
+	rc = smb135x_masked_write(chip, BATT_REG, VBATT_LOW_MASK, 0);
+	if (rc < 0) {
+		dev_err(chip->dev,
+				"Couldn't disable vbatt low. rc=%d\n", rc);
+		return rc;
+	}
+
+	/* disable AICL */
+	rc = smb135x_masked_write(chip, USBIN_AICL_REG, AICL_BIT_EN, 0);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't set aicl rc=%d\n", rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+static int smb135x_parallel_set_chg_present(struct smb135x_chg *chip,
+						int present)
+{
+	u8 val;
+	int rc;
+
+	/* Check if SMB135x is present */
+	rc = smb135x_read(chip, VERSION1_REG, &val);
+	if (rc) {
+		pr_debug("Failed to detect smb135x-parallel charger may be absent\n");
+		if (!present)
+			chip->parallel_charger_present = false;
+		return -ENODEV;
+	}
+
+	if (present == chip->parallel_charger_present) {
+		pr_debug("present %d -> %d, skipping\n",
+				chip->parallel_charger_present, present);
+		return 0;
+	}
+
+	if (present) {
+		rc = smb135x_enable_volatile_writes(chip);
+		if (rc < 0) {
+			dev_err(chip->dev,
+				"Couldn't configure for volatile rc = %d\n",
+				rc);
+			return rc;
+		}
+
+		/* set the float voltage */
+		if (chip->vfloat_mv != -EINVAL) {
+			rc = smb135x_float_voltage_set(chip, chip->vfloat_mv);
+			if (rc < 0) {
+				dev_err(chip->dev,
+					"Couldn't set float voltage rc = %d\n",
+					rc);
+				return rc;
+			}
+		}
+
+		/* resume threshold */
+		if (chip->resume_delta_mv != -EINVAL) {
+			smb135x_set_resume_threshold(chip,
+					chip->resume_delta_mv);
+		}
+
+		rc = smb135x_masked_write(chip, CMD_INPUT_LIMIT,
+					USE_REGISTER_FOR_CURRENT,
+					USE_REGISTER_FOR_CURRENT);
+		if (rc < 0) {
+			dev_err(chip->dev,
+				"Couldn't set input limit cmd rc=%d\n",
+				rc);
+			return rc;
+		}
+
+		/* set chg en by pin active low and enable auto recharge */
+		rc = smb135x_masked_write(chip, CFG_14_REG,
+				CHG_EN_BY_PIN_BIT | CHG_EN_ACTIVE_LOW_BIT
+				| DISABLE_AUTO_RECHARGE_BIT,
+				CHG_EN_BY_PIN_BIT | CHG_EN_ACTIVE_LOW_BIT);
+
+		/* set bit 0 = 100mA bit 1 = 500mA and set register control */
+		rc = smb135x_masked_write(chip, CFG_E_REG,
+				POLARITY_100_500_BIT | USB_CTRL_BY_PIN_BIT,
+				POLARITY_100_500_BIT);
+		if (rc < 0) {
+			dev_err(chip->dev,
+				"Couldn't set usbin cfg rc=%d\n",
+				rc);
+			return rc;
+		}
+
+		/* control USB suspend via command bits */
+		rc = smb135x_masked_write(chip, USBIN_DCIN_CFG_REG,
+			USBIN_SUSPEND_VIA_COMMAND_BIT,
+			USBIN_SUSPEND_VIA_COMMAND_BIT);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't set cfg rc=%d\n", rc);
+			return rc;
+		}
+
+		rc = smb135x_parallel_hw_init(chip);
+		if (rc < 0) {
+			dev_err(chip->dev,
+				"Unable to intialize hardware rc = %d\n", rc);
+			return rc;
+		}
+
+		/* set the fastchg_current to the lowest setting */
+		if (chip->fastchg_current_arr_size > 0)
+			rc = smb135x_set_fastchg_current(chip,
+					chip->fastchg_current_table[0]);
+
+		/*
+		 * enforce chip->chg_enabled since this could be the first
+		 * time we have i2c access to the charger after
+		 * chip->chg_enabled has been modified
+		 */
+		smb135x_charging(chip, chip->chg_enabled);
+	}
+
+	chip->parallel_charger_present = present;
+	/*
+	 * When present is being set force USB suspend, start charging
+	 * only when CURRENT_MAX is set.
+	 *
+	 * Usually the chip will be shutdown (no i2c access to the chip)
+	 * when USB is removed, however there could be situations when
+	 * it is not.  To cover for USB reinsetions in such situations
+	 * force USB suspend when present is being unset.
+	 * It is likely that i2c access could fail here - do not return error.
+	 * (It is not possible to detect whether the chip is in shutdown state
+	 * or not except for the i2c error).
+	 */
+	chip->usb_psy_ma = SUSPEND_CURRENT_MA;
+	rc = smb135x_path_suspend(chip, USB, CURRENT, true);
+
+	if (present) {
+		if (rc) {
+			dev_err(chip->dev,
+				"Couldn't set usb suspend to true rc = %d\n",
+				rc);
+			return rc;
+		}
+		/* Check if the USB is configured for suspend. If not, do it */
+		mutex_lock(&chip->path_suspend_lock);
+		rc = smb135x_read(chip, CMD_INPUT_LIMIT, &val);
+		if (rc) {
+			dev_err(chip->dev,
+				"Couldn't read 0x%02x rc:%d\n", CMD_INPUT_LIMIT,
+				rc);
+			mutex_unlock(&chip->path_suspend_lock);
+			return rc;
+		} else if (!(val & BIT(6))) {
+			rc = __smb135x_usb_suspend(chip, 1);
+		}
+		mutex_unlock(&chip->path_suspend_lock);
+		if (rc) {
+			dev_err(chip->dev,
+				"Couldn't set usb to suspend rc:%d\n", rc);
+			return rc;
+		}
+	} else {
+		chip->real_usb_psy_ma = SUSPEND_CURRENT_MA;
+	}
+	return 0;
+}
+
+static int smb135x_parallel_set_property(struct power_supply *psy,
+				       enum power_supply_property prop,
+				       const union power_supply_propval *val)
+{
+	int rc = 0;
+	struct smb135x_chg *chip = container_of(psy,
+				struct smb135x_chg, parallel_psy);
+
+	switch (prop) {
+	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
+		if (chip->parallel_charger_present)
+			smb135x_charging(chip, val->intval);
+		else
+			chip->chg_enabled = val->intval;
+		break;
+	case POWER_SUPPLY_PROP_PRESENT:
+		rc = smb135x_parallel_set_chg_present(chip, val->intval);
+		break;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		if (chip->parallel_charger_present) {
+			rc = smb135x_set_fastchg_current(chip,
+						val->intval / 1000);
+		}
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		if (chip->parallel_charger_present) {
+			chip->usb_psy_ma = val->intval / 1000;
+			rc = smb135x_set_usb_chg_current(chip,
+							chip->usb_psy_ma);
+		}
+		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		if (chip->parallel_charger_present &&
+			(chip->vfloat_mv != val->intval)) {
+			rc = smb135x_float_voltage_set(chip, val->intval);
+			if (!rc)
+				chip->vfloat_mv = val->intval;
+		} else {
+			chip->vfloat_mv = val->intval;
+		}
+		break;
+	default:
+		return -EINVAL;
+	}
+	return rc;
+}
+
+static int smb135x_parallel_is_writeable(struct power_supply *psy,
+				       enum power_supply_property prop)
+{
+	int rc;
+
+	switch (prop) {
+	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
+		rc = 1;
+		break;
+	default:
+		rc = 0;
+		break;
+	}
+	return rc;
+}
+static int smb135x_parallel_get_property(struct power_supply *psy,
+				       enum power_supply_property prop,
+				       union power_supply_propval *val)
+{
+	struct smb135x_chg *chip = container_of(psy,
+				struct smb135x_chg, parallel_psy);
+
+	switch (prop) {
+	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
+		val->intval = chip->chg_enabled;
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		if (chip->parallel_charger_present)
+			val->intval = smb135x_get_usb_chg_current(chip) * 1000;
+		else
+			val->intval = 0;
+		break;
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		val->intval = chip->vfloat_mv;
+		break;
+	case POWER_SUPPLY_PROP_PRESENT:
+		val->intval = chip->parallel_charger_present;
+		break;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		if (chip->parallel_charger_present)
+			val->intval = smb135x_get_fastchg_current(chip) * 1000;
+		else
+			val->intval = 0;
+		break;
+	case POWER_SUPPLY_PROP_STATUS:
+		if (chip->parallel_charger_present)
+			val->intval = smb135x_get_prop_batt_status(chip);
+		else
+			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static void smb135x_external_power_changed(struct power_supply *psy)
+{
+	struct smb135x_chg *chip = container_of(psy,
+				struct smb135x_chg, batt_psy);
+	union power_supply_propval prop = {0,};
+	int rc, current_limit = 0;
+
+	if (!chip->usb_psy)
+		return;
+
+	if (chip->bms_psy_name)
+		chip->bms_psy =
+			power_supply_get_by_name((char *)chip->bms_psy_name);
+
+	rc = chip->usb_psy->get_property(chip->usb_psy,
+				POWER_SUPPLY_PROP_CURRENT_MAX, &prop);
+	if (rc < 0)
+		dev_err(chip->dev,
+			"could not read USB current_max property, rc=%d\n", rc);
+	else
+		current_limit = prop.intval / 1000;
+
+	pr_debug("current_limit = %d\n", current_limit);
+
+	if (chip->usb_psy_ma != current_limit) {
+		mutex_lock(&chip->current_change_lock);
+		chip->usb_psy_ma = current_limit;
+		rc = smb135x_set_appropriate_current(chip, USB);
+		mutex_unlock(&chip->current_change_lock);
+		if (rc < 0)
+			dev_err(chip->dev, "Couldn't set usb current rc = %d\n",
+					rc);
+	}
+
+	rc = chip->usb_psy->get_property(chip->usb_psy,
+			POWER_SUPPLY_PROP_ONLINE, &prop);
+	if (rc < 0)
+		dev_err(chip->dev,
+			"could not read USB ONLINE property, rc=%d\n", rc);
+
+	/* update online property */
+	rc = 0;
+	if (chip->usb_present && chip->chg_enabled && chip->usb_psy_ma != 0) {
+		if (prop.intval == 0)
+			rc = power_supply_set_online(chip->usb_psy, true);
+	} else {
+		if (prop.intval == 1)
+			rc = power_supply_set_online(chip->usb_psy, false);
+	}
+	if (rc < 0)
+		dev_err(chip->dev, "could not set usb online, rc=%d\n", rc);
+}
+
 static bool elapsed_msec_greater(struct timeval *start_time,
 				struct timeval *end_time, int ms)
 {
@@ -2250,77 +2698,120 @@ static int smb135x_chg_otg_enable(struct smb135x_chg *chip)
 	int rc = 0;
 	int restart_count = 0;
 	struct timeval time_a, time_b, time_c, time_d;
+	u8 reg;
 
-	/*
-	 * Workaround for a hardware bug where the OTG needs to be enabled
-	 * disabled and enabled for it to be actually enabled. The time between
-	 * each step should be atmost MAX_STEP_MS
-	 *
-	 * Note that if enable-disable executes within the timeframe
-	 * but the final enable takes more than MAX_STEP_ME, we treat it as
-	 * the first enable and try disabling again. We don't want
-	 * to issue enable back to back.
-	 *
-	 * Notice the instances when time is captured and the successive
-	 * steps.
-	 * timeA-enable-timeC-disable-timeB-enable-timeD.
-	 * When
-	 * (timeB - timeA) < MAX_STEP_MS AND (timeC - timeD) < MAX_STEP_MS
-	 * then it is guaranteed that the successive steps
-	 * must have executed within MAX_STEP_MS
-	 */
-	do_gettimeofday(&time_a);
+	if (chip->revision == REV_2) {
+		/*
+		 * Workaround for a hardware bug where the OTG needs to be
+		 * enabled disabled and enabled for it to be actually enabled.
+		 * The time between each step should be atmost MAX_STEP_MS
+		 *
+		 * Note that if enable-disable executes within the timeframe
+		 * but the final enable takes more than MAX_STEP_ME, we treat
+		 * it as the first enable and try disabling again. We don't
+		 * want to issue enable back to back.
+		 *
+		 * Notice the instances when time is captured and the
+		 * successive steps.
+		 * timeA-enable-timeC-disable-timeB-enable-timeD.
+		 * When
+		 * (timeB - timeA) < MAX_STEP_MS AND
+		 *			(timeC - timeD) < MAX_STEP_MS
+		 * then it is guaranteed that the successive steps
+		 * must have executed within MAX_STEP_MS
+		 */
+		do_gettimeofday(&time_a);
 restart_from_enable:
-	/* first step - enable otg */
-	rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, OTG_EN);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't enable OTG mode rc=%d\n", rc);
-		return rc;
-	}
+		/* first step - enable otg */
+		rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, OTG_EN);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't enable OTG mode rc=%d\n",
+					rc);
+			return rc;
+		}
 
 restart_from_disable:
-	/* second step - disable otg */
-	do_gettimeofday(&time_c);
-	rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, 0);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't enable OTG mode rc=%d\n", rc);
-		return rc;
-	}
-	do_gettimeofday(&time_b);
-
-	if (elapsed_msec_greater(&time_a, &time_b, MAX_STEP_MS)) {
-		restart_count++;
-		if (restart_count > 10) {
-			dev_err(chip->dev,
-				"Couldn't enable OTG restart_count=%d\n",
-				restart_count);
-			return -EAGAIN;
+		/* second step - disable otg */
+		do_gettimeofday(&time_c);
+		rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, 0);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't enable OTG mode rc=%d\n",
+					rc);
+			return rc;
 		}
+		do_gettimeofday(&time_b);
+
+		if (elapsed_msec_greater(&time_a, &time_b, MAX_STEP_MS)) {
+			restart_count++;
+			if (restart_count > 10) {
+				dev_err(chip->dev,
+						"Couldn't enable OTG restart_count=%d\n",
+						restart_count);
+				return -EAGAIN;
+			}
+			time_a = time_b;
+			pr_debug("restarting from first enable\n");
+			goto restart_from_enable;
+		}
+
+		/* third step (first step in case of a failure) - enable otg */
 		time_a = time_b;
-		pr_debug("restarting from first enable\n");
-		goto restart_from_enable;
-	}
-
-	/* third step (first step in case of a failure) - enable otg */
-	time_a = time_b;
-	rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, OTG_EN);
-	if (rc < 0) {
-		dev_err(chip->dev, "Couldn't enable OTG mode rc=%d\n", rc);
-		return rc;
-	}
-	do_gettimeofday(&time_d);
-
-	if (elapsed_msec_greater(&time_c, &time_d, MAX_STEP_MS)) {
-		restart_count++;
-		if (restart_count > 10) {
-			dev_err(chip->dev,
-				"Couldn't enable OTG restart_count=%d\n",
-				restart_count);
-			return -EAGAIN;
+		rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, OTG_EN);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't enable OTG mode rc=%d\n",
+					rc);
+			return rc;
 		}
-		pr_debug("restarting from disable\n");
-		goto restart_from_disable;
+		do_gettimeofday(&time_d);
+
+		if (elapsed_msec_greater(&time_c, &time_d, MAX_STEP_MS)) {
+			restart_count++;
+			if (restart_count > 10) {
+				dev_err(chip->dev,
+						"Couldn't enable OTG restart_count=%d\n",
+						restart_count);
+				return -EAGAIN;
+			}
+			pr_debug("restarting from disable\n");
+			goto restart_from_disable;
+		}
+	} else {
+		rc = smb135x_read(chip, CMD_CHG_REG, &reg);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't read cmd reg rc=%d\n",
+					rc);
+			return rc;
+		}
+		if (reg & OTG_EN) {
+			/* if it is set, disable it before re-enabling it */
+			rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, 0);
+			if (rc < 0) {
+				dev_err(chip->dev, "Couldn't disable OTG mode rc=%d\n",
+						rc);
+				return rc;
+			}
+		}
+		rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, OTG_EN);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't enable OTG mode rc=%d\n",
+					rc);
+			return rc;
+		}
 	}
+
+	return rc;
+}
+
+static int smb135x_chg_otg_regulator_enable(struct regulator_dev *rdev)
+{
+	int rc = 0;
+	struct smb135x_chg *chip = rdev_get_drvdata(rdev);
+
+	chip->otg_oc_count = 0;
+	rc = smb135x_chg_otg_enable(chip);
+	if (rc)
+		dev_err(chip->dev, "Couldn't enable otg regulator rc=%d\n", rc);
+
 	return rc;
 }
 
@@ -2343,7 +2834,9 @@ static int smb135x_chg_otg_regulator_disable(struct regulator_dev *rdev)
 	int rc = 0;
 	struct smb135x_chg *chip = rdev_get_drvdata(rdev);
 
-	cancel_delayed_work_sync(&chip->ocp_clear_work);
+	mutex_lock(&chip->otg_oc_count_lock);
+	cancel_delayed_work_sync(&chip->reset_otg_oc_count_work);
+	mutex_unlock(&chip->otg_oc_count_lock);
 	rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, 0);
 	if (rc < 0)
 		dev_err(chip->dev, "Couldn't disable OTG mode rc=%d\n", rc);
@@ -2371,6 +2864,52 @@ struct regulator_ops smb135x_chg_otg_reg_ops = {
 	.disable	= smb135x_chg_otg_regulator_disable,
 	.is_enabled	= smb135x_chg_otg_regulator_is_enable,
 };
+
+static int smb135x_set_current_tables(struct smb135x_chg *chip)
+{
+	switch (chip->version) {
+	case V_SMB1356:
+		chip->usb_current_table = usb_current_table_smb1356;
+		chip->usb_current_arr_size
+			= ARRAY_SIZE(usb_current_table_smb1356);
+		chip->dc_current_table = dc_current_table_smb1356;
+		chip->dc_current_arr_size
+			= ARRAY_SIZE(dc_current_table_smb1356);
+		chip->fastchg_current_table = NULL;
+		chip->fastchg_current_arr_size = 0;
+		break;
+	case V_SMB1357:
+		chip->usb_current_table = usb_current_table_smb1357_smb1358;
+		chip->usb_current_arr_size
+			= ARRAY_SIZE(usb_current_table_smb1357_smb1358);
+		chip->dc_current_table = dc_current_table;
+		chip->dc_current_arr_size = ARRAY_SIZE(dc_current_table);
+		chip->fastchg_current_table = fastchg_current_table;
+		chip->fastchg_current_arr_size
+			= ARRAY_SIZE(fastchg_current_table);
+		break;
+	case V_SMB1358:
+		chip->usb_current_table = usb_current_table_smb1357_smb1358;
+		chip->usb_current_arr_size
+			= ARRAY_SIZE(usb_current_table_smb1357_smb1358);
+		chip->dc_current_table = dc_current_table;
+		chip->dc_current_arr_size = ARRAY_SIZE(dc_current_table);
+		chip->fastchg_current_table = fastchg_current_table;
+		chip->fastchg_current_arr_size
+			= ARRAY_SIZE(fastchg_current_table);
+		break;
+	case V_SMB1359:
+		chip->usb_current_table = usb_current_table_smb1359;
+		chip->usb_current_arr_size
+			= ARRAY_SIZE(usb_current_table_smb1359);
+		chip->dc_current_table = dc_current_table;
+		chip->dc_current_arr_size = ARRAY_SIZE(dc_current_table);
+		chip->fastchg_current_table = NULL;
+		chip->fastchg_current_arr_size = 0;
+		break;
+	}
+	return 0;
+}
 
 #define SMB1356_VERSION3_BIT	BIT(7)
 #define SMB1357_VERSION1_VAL	0x01
@@ -2471,39 +3010,7 @@ wrkarnd_and_input_current_values:
 
 	pr_debug("workaround_flags = %x\n", chip->workaround_flags);
 
-	switch (chip->version) {
-	case V_SMB1356:
-		chip->usb_current_table = usb_current_table_smb1356;
-		chip->usb_current_arr_size
-			= ARRAY_SIZE(usb_current_table_smb1356);
-		chip->dc_current_table = dc_current_table_smb1356;
-		chip->dc_current_arr_size
-			= ARRAY_SIZE(dc_current_table_smb1356);
-		break;
-	case V_SMB1357:
-		chip->usb_current_table = usb_current_table_smb1357_smb1358;
-		chip->usb_current_arr_size
-			= ARRAY_SIZE(usb_current_table_smb1357_smb1358);
-		chip->dc_current_table = dc_current_table;
-		chip->dc_current_arr_size = ARRAY_SIZE(dc_current_table);
-		break;
-	case V_SMB1358:
-		chip->usb_current_table = usb_current_table_smb1357_smb1358;
-		chip->usb_current_arr_size
-			= ARRAY_SIZE(usb_current_table_smb1357_smb1358);
-		chip->dc_current_table = dc_current_table;
-		chip->dc_current_arr_size = ARRAY_SIZE(dc_current_table);
-		break;
-	case V_SMB1359:
-		chip->usb_current_table = usb_current_table_smb1359;
-		chip->usb_current_arr_size
-			= ARRAY_SIZE(usb_current_table_smb1359);
-		chip->dc_current_table = dc_current_table;
-		chip->dc_current_arr_size = ARRAY_SIZE(dc_current_table);
-		break;
-	}
-
-	return 0;
+	return smb135x_set_current_tables(chip);
 }
 
 static int smb135x_regulator_init(struct smb135x_chg *chip)
@@ -2883,6 +3390,12 @@ static int chg_hot_handler(struct smb135x_chg *chip, u8 rt_stat)
 static int chg_term_handler(struct smb135x_chg *chip, u8 rt_stat)
 {
 	pr_debug("rt_stat = 0x%02x\n", rt_stat);
+
+	/*
+	 * This handler gets called even when the charger based termination
+	 * is disabled (due to change in RT status). However, in a bms
+	 * controlled design the battery status should not be updated.
+	 */
 	if (!chip->iterm_disabled)
 		chip->chg_done_batt_full = !!rt_stat;
 	return 0;
@@ -2897,17 +3410,26 @@ static int taper_handler(struct smb135x_chg *chip, u8 rt_stat)
 static int fast_chg_handler(struct smb135x_chg *chip, u8 rt_stat)
 {
 	pr_debug("rt_stat = 0x%02x\n", rt_stat);
-	if (rt_stat & IRQ_C_FAST_CHG_BIT) {
+
+	if (rt_stat & IRQ_C_FASTCHG_BIT)
 		chip->chg_done_batt_full = false;
-		chip->float_charge_start_time = 0;
-	}
-	power_supply_changed(&chip->batt_psy);
+
 	return 0;
 }
 
 static int recharge_handler(struct smb135x_chg *chip, u8 rt_stat)
 {
+	int rc;
+
 	pr_debug("rt_stat = 0x%02x\n", rt_stat);
+
+	if (chip->bms_controlled_charging) {
+		rc = smb135x_charging_enable(chip, true);
+		if (rc < 0)
+			dev_err(chip->dev, "Couldn't enable charging rc = %d\n",
+					rc);
+	}
+
 	return 0;
 }
 
@@ -2937,18 +3459,60 @@ static int power_ok_handler(struct smb135x_chg *chip, u8 rt_stat)
 	return 0;
 }
 
+static int rid_handler(struct smb135x_chg *chip, u8 rt_stat)
+{
+	bool usb_slave_present;
+
+	usb_slave_present = is_usb_slave_present(chip);
+
+	if (chip->usb_slave_present ^ usb_slave_present) {
+		chip->usb_slave_present = usb_slave_present;
+		if (chip->usb_psy) {
+			pr_debug("setting usb psy usb_otg = %d\n",
+					chip->usb_slave_present);
+			power_supply_set_usb_otg(chip->usb_psy,
+				chip->usb_slave_present);
+		}
+	}
+	return 0;
+}
+
+#define RESET_OTG_OC_COUNT_MS	100
+static void reset_otg_oc_count_work(struct work_struct *work)
+{
+	struct smb135x_chg *chip =
+		container_of(work, struct smb135x_chg,
+				reset_otg_oc_count_work.work);
+
+	mutex_lock(&chip->otg_oc_count_lock);
+	pr_debug("It has been %dmS since OverCurrent interrupt resetting the count\n",
+			RESET_OTG_OC_COUNT_MS);
+	chip->otg_oc_count = 0;
+	mutex_unlock(&chip->otg_oc_count_lock);
+}
+
 #define MAX_OTG_RETRY	3
 static int otg_oc_handler(struct smb135x_chg *chip, u8 rt_stat)
 {
-	if (!(rt_stat & IRQ_F_OTG_OC_BIT)) {
-		pr_err("Spurious OTG OC irq\n");
-		return 0;
+	int rc;
+
+	mutex_lock(&chip->otg_oc_count_lock);
+	cancel_delayed_work_sync(&chip->reset_otg_oc_count_work);
+	++chip->otg_oc_count;
+	if (chip->otg_oc_count < MAX_OTG_RETRY) {
+		rc = smb135x_chg_otg_enable(chip);
+		if (rc < 0)
+			dev_err(chip->dev, "Couldn't enable  OTG mode rc=%d\n",
+				rc);
+	} else {
+		pr_warn_ratelimited("Tried enabling OTG %d times, the USB slave is nonconformant.\n",
+			chip->otg_oc_count);
 	}
 
-	schedule_delayed_work(&chip->ocp_clear_work,
-		msecs_to_jiffies(0));
-
-	pr_err("rt_stat = 0x%02x\n", rt_stat);
+	pr_debug("rt_stat = 0x%02x\n", rt_stat);
+	schedule_delayed_work(&chip->reset_otg_oc_count_work,
+			msecs_to_jiffies(RESET_OTG_OC_COUNT_MS));
+	mutex_unlock(&chip->otg_oc_count_lock);
 	return 0;
 }
 
@@ -3078,24 +3642,38 @@ static int handle_usb_removal(struct smb135x_chg *chip)
 				POWER_SUPPLY_TYPE_UNKNOWN);
 		pr_debug("setting usb psy present = %d\n", chip->usb_present);
 		power_supply_set_present(chip->usb_psy, chip->usb_present);
+		pr_debug("setting usb psy allow detection 0\n");
+		power_supply_set_allow_detection(chip->usb_psy, 0);
 	}
 
 	smb_relax(&chip->smb_wake_source);
 	return 0;
 }
 
-static int notify_usb_removal(struct smb135x_chg *chip)
+static int rerun_apsd(struct smb135x_chg *chip)
 {
 	int rc;
 
-	rc = handle_usb_removal(chip);
-
-	if (rc >= 0) {
-		if (chip->usb_psy)
-			power_supply_changed(chip->usb_psy);
-		power_supply_changed(&chip->batt_psy);
+	pr_debug("Reruning APSD\nDisabling APSD\n");
+	rc = smb135x_masked_write(chip, CFG_11_REG, AUTO_SRC_DET_EN_BIT, 0);
+	if (rc) {
+		dev_err(chip->dev, "Couldn't Disable APSD rc=%d\n", rc);
+		return rc;
 	}
-
+	pr_debug("Allow only 9V chargers\n");
+	rc = smb135x_masked_write(chip, CFG_C_REG,
+			USBIN_ADAPTER_ALLOWANCE_MASK, ALLOW_9V_ONLY);
+	if (rc)
+		dev_err(chip->dev, "Couldn't Allow 9V rc=%d\n", rc);
+	pr_debug("Enabling APSD\n");
+	rc = smb135x_masked_write(chip, CFG_11_REG, AUTO_SRC_DET_EN_BIT, 1);
+	if (rc)
+		dev_err(chip->dev, "Couldn't Enable APSD rc=%d\n", rc);
+	pr_debug("Allow 5V-9V\n");
+	rc = smb135x_masked_write(chip, CFG_C_REG,
+			USBIN_ADAPTER_ALLOWANCE_MASK, ALLOW_5V_TO_9V);
+	if (rc)
+		dev_err(chip->dev, "Couldn't Allow 5V-9V rc=%d\n", rc);
 	return rc;
 }
 
@@ -3149,26 +3727,42 @@ static int handle_usb_insertion(struct smb135x_chg *chip)
 	chip->aicl_weak_detect = false;
 	usb_type_name = get_usb_type_name(reg);
 	usb_supply_type = get_usb_supply_type(reg);
-	pr_debug("inserted %s, usb psy type = %d stat_5 = 0x%02x\n",
-			usb_type_name, usb_supply_type, reg);
+	pr_debug("inserted %s, usb psy type = %d stat_5 = 0x%02x apsd_rerun = %d\n",
+			usb_type_name, usb_supply_type, reg, chip->apsd_rerun);
+
+	if (chip->batt_present && !chip->apsd_rerun && chip->usb_psy) {
+		if (usb_supply_type == POWER_SUPPLY_TYPE_USB) {
+			pr_debug("setting usb psy allow detection 1 SDP and rerun\n");
+			power_supply_set_allow_detection(chip->usb_psy, 1);
+			chip->apsd_rerun = true;
+			rerun_apsd(chip);
+			/* rising edge of src detect will happen in few mS */
+			return 0;
+		} else {
+			pr_debug("setting usb psy allow detection 1 DCP and no rerun\n");
+			power_supply_set_allow_detection(chip->usb_psy, 1);
+		}
+	}
+
 	if (chip->usb_psy) {
+		if (chip->bms_controlled_charging) {
+			/* enable charging on USB insertion */
+			rc = smb135x_charging_enable(chip, true);
+			if (rc < 0)
+				dev_err(chip->dev, "Couldn't enable charging rc = %d\n",
+						rc);
+		}
 		pr_debug("setting usb psy type = %d\n", usb_supply_type);
 		power_supply_set_supply_type(chip->usb_psy, usb_supply_type);
 		pr_debug("setting usb psy present = %d\n", chip->usb_present);
 		power_supply_set_present(chip->usb_psy, chip->usb_present);
 	}
-	smb_stay_awake(&chip->smb_wake_source);
-
-	chip->charger_rate =  POWER_SUPPLY_CHARGE_RATE_NORMAL;
-	chip->rate_check_count = 0;
-	cancel_delayed_work(&chip->rate_check_work);
-	schedule_delayed_work(&chip->rate_check_work,
-			      msecs_to_jiffies(500));
+	chip->apsd_rerun = false;
 	return 0;
 }
 
 /**
- * usbin_uv_handler() - this is called when USB charger is removed
+ * usbin_uv_handler() - It is called for DCP charger removal
  * @chip: pointer to smb135x_chg chip
  * @rt_stat: the status bit indicating chg insertion/removal
  */
@@ -3181,44 +3775,21 @@ static int usbin_uv_handler(struct smb135x_chg *chip, u8 rt_stat)
 	 * should be marked removed
 	 */
 	bool usb_present = !rt_stat;
+	union power_supply_propval prop = {0, };
 
 	pr_debug("chip->usb_present = %d usb_present = %d\n",
 			chip->usb_present, usb_present);
-
-	if (ignore_disconnect) {
-		pr_info("Ignore usbin_uv - usb_present = %d\n", usb_present);
-		return 0;
-	}
-
-	if (is_usb_plugged_in(chip)) {
-		if (!chip->aicl_disabled) {
-			rc = smb135x_read(chip, STATUS_0_REG, &reg);
-			if (rc < 0)
-				pr_err("Failed to Read Status 0x46\n");
-			else if (!reg)
-				toggle_usbin_aicl(chip);
-		} else if (!usb_present) {
-			rc = smb135x_masked_write(chip,
-						  IRQ_CFG_REG,
-						  IRQ_USBIN_UV_BIT, 0);
-			if (rc < 0)
-				pr_err("Failed to Disable USBIN UV IRQ\n");
-			cancel_delayed_work(&chip->aicl_check_work);
-			schedule_delayed_work(&chip->aicl_check_work,
-					      msecs_to_jiffies(0));
+	if (chip->usb_psy && !chip->usb_psy->get_property(chip->usb_psy,
+				POWER_SUPPLY_PROP_TYPE, &prop)) {
+		if (prop.intval == POWER_SUPPLY_TYPE_USB_DCP) {
+			if (chip->usb_present && !usb_present) {
+				/* For DCP and HVDCP removing */
+				chip->usb_present = usb_present;
+				handle_usb_removal(chip);
+			}
 		}
-		return 0;
 	}
 
-	if (chip->usb_present && !usb_present) {
-		/* USB removed */
-		chip->usb_present = usb_present;
-		if (!usb_present && !is_dc_plugged_in(chip)) {
-			chip->chg_done_batt_full = false;
-			chip->float_charge_start_time = 0;
-		}
-		notify_usb_removal(chip);
-	}
 	return 0;
 }
 
@@ -3246,11 +3817,11 @@ static int usbin_ov_handler(struct smb135x_chg *chip, u8 rt_stat)
 	} else if (chip->usb_present && !usb_present) {
 		/* USB removed */
 		chip->usb_present = usb_present;
-		if (!is_dc_plugged_in(chip)) {
-			chip->chg_done_batt_full = false;
-			chip->float_charge_start_time = 0;
-		}
-		notify_usb_removal(chip);
+		handle_usb_removal(chip);
+	} else if (!chip->usb_present && usb_present) {
+		/* USB inserted */
+		chip->usb_present = usb_present;
+		handle_usb_insertion(chip);
 	}
 
 	if (chip->usb_psy) {
@@ -3336,14 +3907,18 @@ static int smb135x_setup_vbat_monitoring(struct smb135x_chg *chip)
 }
 
 /**
- * src_detect_handler() - this is called when USB charger type is detected, use
- *			it for handling USB charger insertion/removal
+ * src_detect_handler() - this is called on rising edge when USB
+ *			charger type is detected and on falling edge when
+ *			USB voltage falls below the coarse detect voltage
+ *			(1V), use it for handling USB charger insertion
+ *			and CDP or SDP removal.
  * @chip: pointer to smb135x_chg chip
  * @rt_stat: the status bit indicating chg insertion/removal
  */
 static int src_detect_handler(struct smb135x_chg *chip, u8 rt_stat)
 {
 	bool usb_present = !!rt_stat;
+	union power_supply_propval prop = {0, };
 
 	pr_info("chip->usb_present = %d usb_present = %d\n",
 			chip->usb_present, usb_present);
@@ -3352,12 +3927,18 @@ static int src_detect_handler(struct smb135x_chg *chip, u8 rt_stat)
 		/* USB inserted */
 		chip->usb_present = usb_present;
 		handle_usb_insertion(chip);
-	} else if (chip->usb_present && !usb_present) {
-		/* USB removed */
-		chip->usb_present = usb_present;
-		if (!is_dc_plugged_in(chip))
-			chip->chg_done_batt_full = false;
-		notify_usb_removal(chip);
+	} else if (usb_present && chip->apsd_rerun) {
+		handle_usb_insertion(chip);
+	} else if (chip->usb_psy && !chip->usb_psy->get_property(
+				chip->usb_psy, POWER_SUPPLY_PROP_TYPE,
+						&prop)) {
+		if (((prop.intval == POWER_SUPPLY_TYPE_USB_CDP) ||
+			(prop.intval == POWER_SUPPLY_TYPE_USB)) &&
+				chip->usb_present && !usb_present) {
+				/* CDP or SDP removed */
+				chip->usb_present = !chip->usb_present;
+				handle_usb_removal(chip);
+			}
 	}
 
 	return 0;
@@ -3371,7 +3952,8 @@ static int chg_inhibit_handler(struct smb135x_chg *chip, u8 rt_stat)
 	 * battery full
 	 */
 	pr_debug("rt_stat = 0x%02x\n", rt_stat);
-	if (!chip->iterm_disabled)
+
+	if (!chip->inhibit_disabled)
 		chip->chg_done_batt_full = !!rt_stat;
 	return 0;
 }
@@ -3497,7 +4079,8 @@ static struct irq_handler_info handlers[] = {
 				.smb_irq	= power_ok_handler,
 			},
 			{
-				.name		= "unused",
+				.name		= "rid",
+				.smb_irq	= rid_handler,
 			},
 			{
 				.name		= "otg_fail",
@@ -3812,7 +4395,7 @@ DEFINE_SIMPLE_ATTRIBUTE(force_irq_ops, NULL, force_irq_set, "0x%02llx\n");
 
 static int force_rechg_set(void *data, u64 val)
 {
-	int rc;
+	int rc = 0;
 	struct smb135x_chg *chip = data;
 
 	if (!chip->chg_enabled) {
@@ -3820,19 +4403,27 @@ static int force_rechg_set(void *data, u64 val)
 		return -EINVAL;
 	}
 
-	rc = smb135x_masked_write(chip, CFG_14_REG, EN_CHG_INHIBIT_BIT, 0);
-	if (rc)
-		dev_err(chip->dev,
-			"Couldn't disable charge-inhibit rc=%d\n", rc);
-	/* delay for charge-inhibit to take affect */
-	msleep(500);
+	if (!chip->inhibit_disabled) {
+		rc = smb135x_masked_write(chip, CFG_14_REG, EN_CHG_INHIBIT_BIT,
+					0);
+		if (rc)
+			dev_err(chip->dev,
+				"Couldn't disable charge-inhibit rc=%d\n", rc);
+
+		/* delay for charge-inhibit to take affect */
+		msleep(500);
+	}
+
 	rc |= smb135x_charging(chip, false);
 	rc |= smb135x_charging(chip, true);
-	rc |= smb135x_masked_write(chip, CFG_14_REG, EN_CHG_INHIBIT_BIT,
-						EN_CHG_INHIBIT_BIT);
-	if (rc)
-		dev_err(chip->dev,
-			"Couldn't enable charge-inhibit rc=%d\n", rc);
+
+	if (!chip->inhibit_disabled) {
+		rc |= smb135x_masked_write(chip, CFG_14_REG,
+				EN_CHG_INHIBIT_BIT, EN_CHG_INHIBIT_BIT);
+		if (rc)
+			dev_err(chip->dev,
+				"Couldn't enable charge-inhibit rc=%d\n", rc);
+	}
 
 	return rc;
 }
@@ -3958,6 +4549,14 @@ static int determine_initial_status(struct smb135x_chg *chip)
 				smb135x_path_suspend(chip, DC, CURRENT, true);
 		}
 	}
+
+	chip->usb_slave_present = is_usb_slave_present(chip);
+	if (chip->usb_psy && !chip->id_line_not_connected) {
+		pr_debug("setting usb psy usb_otg = %d\n",
+				chip->usb_slave_present);
+		power_supply_set_usb_otg(chip->usb_psy,
+			chip->usb_slave_present);
+	}
 	return 0;
 }
 
@@ -3967,6 +4566,17 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 	int i;
 	u8 reg, mask;
 
+	if (chip->pinctrl_state_name) {
+		chip->smb_pinctrl = pinctrl_get_select(chip->dev,
+						chip->pinctrl_state_name);
+		if (IS_ERR(chip->smb_pinctrl)) {
+			pr_err("Could not get/set %s pinctrl state rc = %ld\n",
+						chip->pinctrl_state_name,
+						PTR_ERR(chip->smb_pinctrl));
+			return PTR_ERR(chip->smb_pinctrl);
+		}
+	}
+
 	if (chip->therm_bias_vreg) {
 		rc = regulator_enable(chip->therm_bias_vreg);
 		if (rc) {
@@ -3975,11 +4585,26 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 		}
 	}
 
+	/*
+	 * Enable USB data line pullup regulator this is needed for the D+
+	 * line to be at proper voltage for HVDCP charger detection.
+	 */
+	if (chip->usb_pullup_vreg) {
+		rc = regulator_enable(chip->usb_pullup_vreg);
+		if (rc) {
+			pr_err("Unable to enable data line pull-up regulator rc=%d\n",
+					rc);
+			if (chip->therm_bias_vreg)
+				regulator_disable(chip->therm_bias_vreg);
+			return rc;
+		}
+	}
+
 	rc = smb135x_enable_volatile_writes(chip);
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't configure for volatile rc = %d\n",
 				rc);
-		return rc;
+		goto free_regulator;
 	}
 
 	/*
@@ -3994,26 +4619,10 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 		/* this ignores APSD results */
 		reg = USE_REGISTER_FOR_CURRENT;
 
-	if (chip->aicl_disabled) {
-		/* Disable AICL */
-		rc = smb135x_masked_write(chip, CFG_D_REG, AICL_ENABLE, 0);
-		if (rc < 0) {
-			dev_err(chip->dev, "Couldn't Disable AICL\n");
-			return rc;
-		}
-	} else {
-		/* Set AICL Glich to 20 ms */
-		rc = smb135x_masked_write(chip, CFG_D_REG, AICL_GLITCH, 0);
-		if (rc < 0) {
-			dev_err(chip->dev, "Couldn't set 20 ms AICL glitch\n");
-			return rc;
-		}
-	}
-
 	rc = smb135x_masked_write(chip, CMD_INPUT_LIMIT, mask, reg);
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't set input limit cmd rc=%d\n", rc);
-		return rc;
+		goto free_regulator;
 	}
 
 	/* set bit 0 = 100mA bit 1 = 500mA and set register control */
@@ -4022,21 +4631,26 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 			POLARITY_100_500_BIT);
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't set usbin cfg rc=%d\n", rc);
-		return rc;
+		goto free_regulator;
 	}
 
 	/*
 	 * set chg en by cmd register, set chg en by writing bit 1,
 	 * enable auto pre to fast, enable current termination, enable
-	 * auto recharge, disable chg inhibition
+	 * auto recharge, enable chg inhibition based on the dt flag
 	 */
+	if (chip->inhibit_disabled)
+		reg = 0;
+	else
+		reg = EN_CHG_INHIBIT_BIT;
+
 	rc = smb135x_masked_write(chip, CFG_14_REG,
 			CHG_EN_BY_PIN_BIT | CHG_EN_ACTIVE_LOW_BIT
 			| PRE_TO_FAST_REQ_CMD_BIT | DISABLE_AUTO_RECHARGE_BIT
-			| EN_CHG_INHIBIT_BIT, 0);
+			| EN_CHG_INHIBIT_BIT, reg);
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't set cfg 14 rc=%d\n", rc);
-		return rc;
+		goto free_regulator;
 	}
 
 	/* control USB suspend via command bits */
@@ -4053,7 +4667,7 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 		if (rc < 0) {
 			dev_err(chip->dev,
 				"Couldn't set float voltage rc = %d\n", rc);
-			return rc;
+			goto free_regulator;
 		}
 	}
 
@@ -4071,7 +4685,8 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 	if (chip->iterm_ma != -EINVAL) {
 		if (chip->iterm_disabled) {
 			dev_err(chip->dev, "Error: Both iterm_disabled and iterm_ma set\n");
-			return -EINVAL;
+			rc = -EINVAL;
+			goto free_regulator;
 		} else {
 			if (chip->iterm_ma <= 50)
 				reg = CHG_ITERM_50MA;
@@ -4095,7 +4710,7 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 			if (rc) {
 				dev_err(chip->dev,
 					"Couldn't set iterm rc = %d\n", rc);
-				return rc;
+				goto free_regulator;
 			}
 
 			rc = smb135x_masked_write(chip, CFG_14_REG,
@@ -4103,7 +4718,7 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 			if (rc) {
 				dev_err(chip->dev,
 					"Couldn't enable iterm rc = %d\n", rc);
-				return rc;
+				goto free_regulator;
 			}
 		}
 	} else  if (chip->iterm_disabled) {
@@ -4113,7 +4728,7 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 		if (rc) {
 			dev_err(chip->dev, "Couldn't set iterm rc = %d\n",
 								rc);
-			return rc;
+			goto free_regulator;
 		}
 	}
 
@@ -4149,13 +4764,14 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 	if (chip->safety_time != -EINVAL) {
 		if (chip->safety_time == 0) {
 			/* safety timer disabled */
+			reg = 1 << SAFETY_TIME_EN_SHIFT;
 			rc = smb135x_masked_write(chip, CFG_16_REG,
-							SAFETY_TIME_EN_BIT, 0);
+						SAFETY_TIME_EN_BIT, reg);
 			if (rc < 0) {
 				dev_err(chip->dev,
 				"Couldn't disable safety timer rc = %d\n",
 				rc);
-				return rc;
+				goto free_regulator;
 			}
 		} else {
 			for (i = 0; i < ARRAY_SIZE(chg_time); i++) {
@@ -4166,12 +4782,12 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 			}
 			rc = smb135x_masked_write(chip, CFG_16_REG,
 				SAFETY_TIME_EN_BIT | SAFETY_TIME_MINUTES_MASK,
-				SAFETY_TIME_EN_BIT | reg);
+				reg);
 			if (rc < 0) {
 				dev_err(chip->dev,
 					"Couldn't set safety timer rc = %d\n",
 					rc);
-				return rc;
+				goto free_regulator;
 			}
 		}
 	}
@@ -4184,7 +4800,44 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't set batt_missing config = %d\n",
 									rc);
-		return rc;
+		goto free_regulator;
+	}
+
+	/* set maximum fastchg current */
+	if (chip->fastchg_ma != -EINVAL) {
+		rc = smb135x_set_fastchg_current(chip, chip->fastchg_ma);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't set fastchg current = %d\n",
+									rc);
+			goto free_regulator;
+		}
+	}
+
+	if (chip->usb_pullup_vreg) {
+		/* enable 9V HVDCP adapter support */
+		rc = smb135x_masked_write(chip, CFG_E_REG, HVDCP_5_9_BIT,
+					HVDCP_5_9_BIT);
+		if (rc < 0) {
+			dev_err(chip->dev,
+				"Couldn't request for 5 or 9V rc=%d\n", rc);
+			goto free_regulator;
+		}
+	}
+
+	if (chip->gamma_setting) {
+		rc = smb135x_masked_write(chip, CFG_1B_REG, COLD_HARD_MASK,
+				chip->gamma_setting[0] << COLD_HARD_SHIFT);
+
+		rc |= smb135x_masked_write(chip, CFG_1B_REG, HOT_HARD_MASK,
+				chip->gamma_setting[1] << HOT_HARD_SHIFT);
+
+		rc |= smb135x_masked_write(chip, CFG_1B_REG, COLD_SOFT_MASK,
+				chip->gamma_setting[2] << COLD_SOFT_SHIFT);
+
+		rc |= smb135x_masked_write(chip, CFG_1B_REG, HOT_SOFT_MASK,
+				chip->gamma_setting[3] << HOT_SOFT_SHIFT);
+		if (rc < 0)
+			goto free_regulator;
 	}
 
 	__smb135x_charging(chip, chip->chg_enabled);
@@ -4198,7 +4851,7 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 		if (rc < 0) {
 			dev_err(chip->dev, "Couldn't set irq config rc = %d\n",
 					rc);
-			return rc;
+			goto free_regulator;
 		}
 
 		/* enabling only interesting interrupts */
@@ -4217,45 +4870,17 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 			| IRQ2_VBAT_LOW_BIT);
 
 		rc |= smb135x_write(chip, IRQ3_CFG_REG, IRQ3_SRC_DETECT_BIT
-				| IRQ3_DCIN_UV_BIT);
+				| IRQ3_DCIN_UV_BIT | IRQ3_RID_DETECT_BIT);
 		if (rc < 0) {
 			dev_err(chip->dev, "Couldn't set irq enable rc = %d\n",
 					rc);
-			return rc;
+			goto free_regulator;
 		}
 	}
 
 	/* resume threshold */
 	if (chip->resume_delta_mv != -EINVAL) {
-		if (chip->resume_delta_mv < 100)
-			reg = CHG_INHIBIT_50MV_VAL;
-		else if (chip->resume_delta_mv < 200)
-			reg = CHG_INHIBIT_100MV_VAL;
-		else if (chip->resume_delta_mv < 300)
-			reg = CHG_INHIBIT_200MV_VAL;
-		else
-			reg = CHG_INHIBIT_300MV_VAL;
-
-		rc = smb135x_masked_write(chip, CFG_4_REG,
-						CHG_INHIBIT_MASK, reg);
-		if (rc < 0) {
-			dev_err(chip->dev, "Couldn't set inhibit val rc = %d\n",
-					rc);
-			return rc;
-		}
-
-		if (chip->resume_delta_mv < 200)
-			reg = 0;
-		else
-			 reg = RECHARGE_200MV_BIT;
-
-		rc = smb135x_masked_write(chip, CFG_5_REG,
-						RECHARGE_200MV_BIT, reg);
-		if (rc < 0) {
-			dev_err(chip->dev, "Couldn't set recharge  rc = %d\n",
-					rc);
-			return rc;
-		}
+		smb135x_set_resume_threshold(chip, chip->resume_delta_mv);
 	}
 
 	/* DC path current settings */
@@ -4264,7 +4889,7 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 		if (rc < 0) {
 			dev_err(chip->dev, "Couldn't set dc charge current rc = %d\n",
 					rc);
-			return rc;
+			goto free_regulator;
 		}
 
 		/* Configure Command mode for DCIN */
@@ -4312,10 +4937,39 @@ static int smb135x_hw_init(struct smb135x_chg *chip)
 		if (rc < 0) {
 			dev_err(chip->dev, "Couldn't disable soft vfloat rc = %d\n",
 					rc);
-			return rc;
+			goto free_regulator;
 		}
 	}
 
+	if (chip->soft_current_comp_disabled) {
+		mask = HOT_SOFT_CURRENT_COMP_EN_BIT
+				| COLD_SOFT_CURRENT_COMP_EN_BIT;
+		rc = smb135x_masked_write(chip, CFG_1A_REG, mask, 0);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't disable soft current rc = %d\n",
+					rc);
+			goto free_regulator;
+		}
+	}
+
+	/*
+	 * Command mode for OTG control. This gives us RID interrupts but keeps
+	 * enabling the 5V OTG via i2c register control
+	 */
+	rc = smb135x_masked_write(chip, USBIN_OTG_REG, OTG_CNFG_MASK,
+			OTG_CNFG_COMMAND_CTRL);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't write to otg cfg reg rc = %d\n",
+				rc);
+		goto free_regulator;
+	}
+	return 0;
+
+free_regulator:
+	if (chip->therm_bias_vreg)
+		regulator_disable(chip->therm_bias_vreg);
+	if (chip->usb_pullup_vreg)
+		regulator_disable(chip->usb_pullup_vreg);
 	return rc;
 }
 
@@ -4413,34 +5067,38 @@ static int smb135x_hw_init_fac(struct smb135x_chg *chip)
 }
 
 static struct of_device_id smb135x_match_table[] = {
-	{ .compatible = "qcom,smb1356-charger", },
-	{ .compatible = "qcom,smb1357-charger", },
-	{ .compatible = "qcom,smb1358-charger", },
-	{ .compatible = "qcom,smb1359-charger", },
+	{
+		.compatible	= "qcom,smb1356-charger",
+		.data		= &version_data[V_SMB1356],
+	},
+	{
+		.compatible	= "qcom,smb1357-charger",
+		.data		= &version_data[V_SMB1357],
+	},
+	{
+		.compatible	= "qcom,smb1358-charger",
+		.data		= &version_data[V_SMB1358],
+	},
+	{
+		.compatible	= "qcom,smb1359-charger",
+		.data		= &version_data[V_SMB1359],
+	},
 	{ },
 };
 
 #define DC_MA_MIN 300
 #define DC_MA_MAX 2000
+#define NUM_GAMMA_VALUES 4
 static int smb_parse_dt(struct smb135x_chg *chip)
 {
 	int rc;
 	struct device_node *node = chip->dev->of_node;
-	const struct of_device_id *match;
 	const char *dc_psy_type;
 
 	if (!node) {
 		dev_err(chip->dev, "device tree info. missing\n");
 		return -EINVAL;
 	}
-
-	match = of_match_node(smb135x_match_table, node);
-	if (match == NULL) {
-		dev_err(chip->dev, "device tree match not found\n");
-		return -EINVAL;
-	}
-
-	chip->usb_current_arr_size = (int)match->data;
 
 	rc = of_property_read_u32(node, "qcom,float-voltage-mv",
 						&chip->vfloat_mv);
@@ -4538,16 +5196,30 @@ static int smb_parse_dt(struct smb135x_chg *chip)
 	chip->iterm_disabled = of_property_read_bool(node,
 						"qcom,iterm-disabled");
 
-	chip->chg_enabled = !(of_property_read_bool(node,
+	chip->chg_disabled_permanently = (of_property_read_bool(node,
 						"qcom,charging-disabled"));
+	chip->chg_enabled = !chip->chg_disabled_permanently;
+
+	chip->inhibit_disabled  = of_property_read_bool(node,
+						"qcom,inhibit-disabled");
+
+	chip->bms_controlled_charging  = of_property_read_bool(node,
+					"qcom,bms-controlled-charging");
 
 	rc = of_property_read_string(node, "qcom,bms-psy-name",
 						&chip->bms_psy_name);
 	if (rc)
 		chip->bms_psy_name = NULL;
 
+	rc = of_property_read_u32(node, "qcom,fastchg-ma", &chip->fastchg_ma);
+	if (rc < 0)
+		chip->fastchg_ma = -EINVAL;
+
 	chip->soft_vfloat_comp_disabled = of_property_read_bool(node,
 					"qcom,soft-vfloat-comp-disabled");
+
+	chip->soft_current_comp_disabled = of_property_read_bool(node,
+					"qcom,soft-current-comp-disabled");
 
 	if (of_find_property(node, "therm-bias-supply", NULL)) {
 		/* get the thermistor bias regulator */
@@ -4555,6 +5227,37 @@ static int smb_parse_dt(struct smb135x_chg *chip)
 							"therm-bias");
 		if (IS_ERR(chip->therm_bias_vreg))
 			return PTR_ERR(chip->therm_bias_vreg);
+	}
+
+	/*
+	 * Gamma value indicates the ratio of the pull up resistors and NTC
+	 * resistor in battery pack. There are 4 options, refer to the graphic
+	 * user interface and choose the right one.
+	 */
+	if (of_find_property(node, "qcom,gamma-setting",
+					&chip->gamma_setting_num)) {
+		chip->gamma_setting_num = chip->gamma_setting_num /
+					sizeof(chip->gamma_setting_num);
+		if (NUM_GAMMA_VALUES != chip->gamma_setting_num) {
+			pr_err("Gamma setting not correct!\n");
+			return -EINVAL;
+		}
+
+		chip->gamma_setting = devm_kzalloc(chip->dev,
+			chip->gamma_setting_num *
+				sizeof(chip->gamma_setting_num), GFP_KERNEL);
+		if (!chip->gamma_setting) {
+			pr_err("gamma setting kzalloc failed!\n");
+			return -ENOMEM;
+		}
+
+		rc = of_property_read_u32_array(node,
+					"qcom,gamma-setting",
+				chip->gamma_setting, chip->gamma_setting_num);
+		if (rc) {
+			pr_err("Couldn't read gamma setting, rc = %d\n", rc);
+			return rc;
+		}
 	}
 
 	if (of_find_property(node, "qcom,thermal-mitigation",
@@ -4602,476 +5305,131 @@ static int smb_parse_dt(struct smb135x_chg *chip)
 	} else
 		chip->dc_thermal_levels = 0;
 
+	if (of_find_property(node, "usb-pullup-supply", NULL)) {
+		/* get the data line pull-up regulator */
+		chip->usb_pullup_vreg = devm_regulator_get(chip->dev,
+							"usb-pullup");
+		if (IS_ERR(chip->usb_pullup_vreg))
+			return PTR_ERR(chip->usb_pullup_vreg);
+	}
+
+	chip->pinctrl_state_name = of_get_property(node, "pinctrl-names", NULL);
+
+	chip->id_line_not_connected = of_property_read_bool(node,
+						"qcom,id-line-not-connected");
 	return 0;
 }
 
-#define CHG_SHOW_MAX_SIZE 50
-#define USB_SUSPEND_BIT BIT(4)
-static ssize_t force_chg_usb_suspend_store(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
+static int create_debugfs_entries(struct smb135x_chg *chip)
 {
-	unsigned long r;
-	unsigned long mode;
+	chip->debug_root = debugfs_create_dir("smb135x", NULL);
+	if (!chip->debug_root)
+		dev_err(chip->dev, "Couldn't create debug dir\n");
 
-	r = kstrtoul(buf, 0, &mode);
-	if (r) {
-		pr_err("Invalid usb suspend mode value = %lu\n", mode);
-		return -EINVAL;
+	if (chip->debug_root) {
+		struct dentry *ent;
+
+		ent = debugfs_create_file("config_registers", S_IFREG | S_IRUGO,
+					  chip->debug_root, chip,
+					  &cnfg_debugfs_ops);
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create cnfg debug file\n");
+
+		ent = debugfs_create_file("status_registers", S_IFREG | S_IRUGO,
+					  chip->debug_root, chip,
+					  &status_debugfs_ops);
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create status debug file\n");
+
+		ent = debugfs_create_file("cmd_registers", S_IFREG | S_IRUGO,
+					  chip->debug_root, chip,
+					  &cmd_debugfs_ops);
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create cmd debug file\n");
+
+		ent = debugfs_create_x32("address", S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root,
+					  &(chip->peek_poke_address));
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create address debug file\n");
+
+		ent = debugfs_create_file("data", S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root, chip,
+					  &poke_poke_debug_ops);
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create data debug file\n");
+
+		ent = debugfs_create_file("force_irq",
+					  S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root, chip,
+					  &force_irq_ops);
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create force_irq debug file\n");
+
+		ent = debugfs_create_x32("skip_writes",
+					  S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root,
+					  &(chip->skip_writes));
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create skip writes debug file\n");
+
+		ent = debugfs_create_x32("skip_reads",
+					  S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root,
+					  &(chip->skip_reads));
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create skip reads debug file\n");
+
+		ent = debugfs_create_file("irq_count", S_IFREG | S_IRUGO,
+					  chip->debug_root, chip,
+					  &irq_count_debugfs_ops);
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create irq_count debug file\n");
+
+		ent = debugfs_create_file("force_recharge",
+					  S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root, chip,
+					  &force_rechg_ops);
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create force recharge debug file\n");
+
+		ent = debugfs_create_x32("usb_suspend_votes",
+					  S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root,
+					  &(chip->usb_suspended));
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create usb_suspend_votes file\n");
+
+		ent = debugfs_create_x32("dc_suspend_votes",
+					  S_IFREG | S_IWUSR | S_IRUGO,
+					  chip->debug_root,
+					  &(chip->dc_suspended));
+		if (!ent)
+			dev_err(chip->dev,
+				"Couldn't create dc_suspend_votes file\n");
 	}
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		return -ENODEV;
-	}
-
-	r = smb135x_masked_write_fac(the_chip, CFG_11_REG,
-				     USB_SUSPEND_BIT,
-				     mode ? USB_SUSPEND_BIT : 0);
-
-	return r ? r : count;
+	return 0;
 }
 
-#define USB_SUSPEND_STATUS_BIT BIT(3)
-static ssize_t force_chg_usb_suspend_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
+static int is_parallel_charger(struct i2c_client *client)
 {
-	int state;
-	int ret;
-	u8 value;
+	struct device_node *node = client->dev.of_node;
 
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		return -ENODEV;
-	}
-
-	ret = smb135x_read(the_chip, STATUS_1_REG, &value);
-	if (ret) {
-		pr_err("USB_SUSPEND_STATUS_BIT failed ret = %d\n", ret);
-		state = -EFAULT;
-		goto end;
-	}
-
-	state = (USB_SUSPEND_STATUS_BIT & value) ? 1 : 0;
-
-end:
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", state);
+	return of_property_read_bool(node, "qcom,parallel-charger");
 }
 
-static DEVICE_ATTR(force_chg_usb_suspend, 0664,
-		force_chg_usb_suspend_show,
-		force_chg_usb_suspend_store);
-
-static ssize_t force_chg_fail_clear_store(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
-{
-	unsigned long r;
-	unsigned long mode;
-
-	r = kstrtoul(buf, 0, &mode);
-	if (r) {
-		pr_err("Invalid chg fail mode value = %lu\n", mode);
-		return -EINVAL;
-	}
-
-	/* do nothing for SMB135X */
-	r = 0;
-
-	return r ? r : count;
-}
-
-static ssize_t force_chg_fail_clear_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	/* do nothing for SMB135X */
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "0\n");
-}
-
-static DEVICE_ATTR(force_chg_fail_clear, 0664,
-		force_chg_fail_clear_show,
-		force_chg_fail_clear_store);
-
-static ssize_t force_chg_auto_enable_store(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
-{
-	unsigned long r;
-	unsigned long mode;
-
-	r = kstrtoul(buf, 0, &mode);
-	if (r) {
-		pr_err("Invalid chrg enable value = %lu\n", mode);
-		return -EINVAL;
-	}
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		return -ENODEV;
-	}
-
-	r = smb135x_masked_write_fac(the_chip, CMD_CHG_REG,
-				     CMD_CHG_EN, mode ? 0 : CMD_CHG_EN);
-	if (r < 0) {
-		dev_err(the_chip->dev,
-			"Couldn't set CHG_ENABLE_BIT enable = %d r = %d\n",
-			(int)mode, (int)r);
-		return r;
-	}
-
-	return r ? r : count;
-}
-
-static ssize_t force_chg_auto_enable_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	int state;
-	int ret;
-	u8 value;
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		state = -ENODEV;
-		goto end;
-	}
-
-	ret = smb135x_read(the_chip, STATUS_4_REG, &value);
-	if (ret) {
-		pr_err("CHG_EN_BIT failed ret = %d\n", ret);
-		state = -EFAULT;
-		goto end;
-	}
-
-	state = (CHG_EN_BIT & value) ? 1 : 0;
-
-end:
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", state);
-}
-
-static DEVICE_ATTR(force_chg_auto_enable, 0664,
-		force_chg_auto_enable_show,
-		force_chg_auto_enable_store);
-
-#define MAX_IBATT_LEVELS 31
-static ssize_t force_chg_ibatt_store(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
-{
-	unsigned long r;
-	unsigned long chg_current;
-	int i;
-
-	r = kstrtoul(buf, 0, &chg_current);
-	if (r) {
-		pr_err("Invalid ibatt value = %lu\n", chg_current);
-		return -EINVAL;
-	}
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		return -ENODEV;
-	}
-
-	for (i = MAX_IBATT_LEVELS - 1; i >= 0; i--) {
-		if (chg_current >= batt_current_table[i])
-			break;
-	}
-
-	r = smb135x_masked_write_fac(the_chip, CFG_1C_REG,
-				     BATT_CURR_MASK, i);
-	if (r < 0) {
-		dev_err(the_chip->dev,
-			"Couldn't set Fast Charge Current = %d r = %d\n",
-			(int)chg_current, (int)r);
-		return r;
-	}
-
-	return r ? r : count;
-}
-
-static ssize_t force_chg_ibatt_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	int state;
-	int ret;
-	u8 value;
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		state = -ENODEV;
-		goto end;
-	}
-
-	ret = smb135x_read(the_chip, 0x49, &value);
-	if (ret ||
-	    ((value & SMB135X_MASK(4, 0)) > (MAX_IBATT_LEVELS - 1))) {
-		pr_err("Fast Charge Current failed ret = %d\n", ret);
-		state = -EFAULT;
-		goto end;
-	}
-
-	state = batt_current_table[(value & SMB135X_MASK(4, 0))];
-
-end:
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", state);
-}
-
-static DEVICE_ATTR(force_chg_ibatt, 0664,
-		force_chg_ibatt_show,
-		force_chg_ibatt_store);
-
-static ssize_t force_chg_iusb_store(struct device *dev,
-					struct device_attribute *attr,
-					const char *buf, size_t count)
-{
-	unsigned long r;
-	unsigned long usb_curr;
-	int i;
-
-	r = kstrtoul(buf, 0, &usb_curr);
-	if (r) {
-		pr_err("Invalid iusb value = %lu\n", usb_curr);
-		return -EINVAL;
-	}
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		return -ENODEV;
-	}
-
-	for (i = the_chip->usb_current_arr_size - 1; i >= 0; i--) {
-		if (usb_curr >= the_chip->usb_current_table[i])
-			break;
-	}
-
-	r = smb135x_masked_write_fac(the_chip, CFG_C_REG,
-				     USBIN_INPUT_MASK, i);
-	if (r < 0) {
-		dev_err(the_chip->dev,
-			"Couldn't set USBIN Current = %d r = %d\n",
-			(int)usb_curr, (int)r);
-		return r;
-	}
-	return r ? r : count;
-}
-
-static ssize_t force_chg_iusb_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	int state;
-	int ret;
-	u8 value;
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		ret = -ENODEV;
-		goto end;
-	}
-
-	ret = smb135x_read(the_chip, 0x46, &value);
-	if (ret ||
-	    ((value & USBIN_INPUT_MASK) >
-	     (the_chip->usb_current_arr_size - 1))) {
-		pr_err("USBIN Current failed ret = %d\n", ret);
-		state = -EFAULT;
-		goto end;
-	}
-
-	state = the_chip->usb_current_table[(value & USBIN_INPUT_MASK)];
-end:
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", state);
-}
-
-static DEVICE_ATTR(force_chg_iusb, 0664,
-		force_chg_iusb_show,
-		force_chg_iusb_store);
-
-
-#define PRECHG_OFFSET 100
-#define PRECHG_STEP 50
-#define PRECHG_MAX 250
-#define PRECHG_REG_SHIFT 5
-static ssize_t force_chg_itrick_store(struct device *dev,
-				      struct device_attribute *attr,
-				      const char *buf, size_t count)
-{
-	unsigned long r;
-	unsigned long chg_current;
-	int i;
-
-	r = kstrtoul(buf, 0, &chg_current);
-	if (r) {
-		pr_err("Invalid pre-charge value = %lu\n", chg_current);
-		return -EINVAL;
-	}
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		return -ENODEV;
-	}
-
-	for (i = PRECHG_MAX; i > PRECHG_OFFSET; i = i - PRECHG_STEP) {
-		if (chg_current >= i)
-			break;
-	}
-
-	i = (i - PRECHG_OFFSET) / PRECHG_STEP;
-
-	i = (i << PRECHG_REG_SHIFT) & SMB135X_MASK(7, 5);
-
-	r = smb135x_masked_write_fac(the_chip, CFG_1C_REG,
-				     BATT_CURR_MASK, i);
-	if (r < 0) {
-		dev_err(the_chip->dev,
-			"Couldn't set Pre-Charge Current = %d r = %d\n",
-			(int)chg_current, (int)r);
-		return r;
-	}
-
-
-	return r ? r : count;
-}
-
-static ssize_t force_chg_itrick_show(struct device *dev,
-				     struct device_attribute *attr,
-				     char *buf)
-{
-	int state;
-	int ret;
-	u8 value;
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		state = -ENODEV;
-		goto end;
-	}
-
-	ret = smb135x_read(the_chip, 0x49, &value);
-	if (ret) {
-		pr_err("Pre-Charge Current failed ret = %d\n", ret);
-		state = -EFAULT;
-		goto end;
-	}
-
-	state = (value & SMB135X_MASK(7, 5)) >> PRECHG_REG_SHIFT;
-
-	state = (state * PRECHG_STEP) + PRECHG_OFFSET;
-end:
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", state);
-}
-
-static DEVICE_ATTR(force_chg_itrick, 0664,
-		   force_chg_itrick_show,
-		   force_chg_itrick_store);
-
-#define OTG_EN_BIT BIT(0)
-static ssize_t force_chg_usb_otg_ctl_show(struct device *dev,
-				     struct device_attribute *attr,
-				     char *buf)
-{
-	int state;
-	int ret;
-	u8 value;
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		state = -ENODEV;
-		goto end;
-	}
-
-	ret = smb135x_read(the_chip, CMD_CHG_REG, &value);
-	if (ret) {
-		pr_err("OTG_EN_BIT failed ret = %d\n", ret);
-		state = -EFAULT;
-		goto end;
-	}
-
-	state = (OTG_EN_BIT & value) ? 1 : 0;
-end:
-	return scnprintf(buf, CHG_SHOW_MAX_SIZE, "%d\n", state);
-}
-
-static ssize_t force_chg_usb_otg_ctl_store(struct device *dev,
-				      struct device_attribute *attr,
-				      const char *buf, size_t count)
-{
-	unsigned long r;
-	unsigned long mode;
-
-	r = kstrtoul(buf, 0, &mode);
-	if (r) {
-		pr_err("Invalid otg ctl value = %lu\n", mode);
-		return -EINVAL;
-	}
-
-	if (!the_chip) {
-		pr_err("chip not valid\n");
-		return -ENODEV;
-	}
-
-	if (mode) {
-		r = smb135x_masked_write_fac(the_chip, CMD_CHG_REG,
-					     (CMD_CHG_EN | OTG_EN_BIT),
-					     (CMD_CHG_EN | OTG_EN_BIT));
-	} else {
-		r = smb135x_masked_write_fac(the_chip, CMD_CHG_REG,
-					     (CMD_CHG_EN | OTG_EN_BIT),
-					     0);
-	}
-
-	if (r < 0)
-		dev_err(the_chip->dev,
-			"Couldn't set OTG mode = %d r = %d\n",
-			(int)mode, (int)r);
-
-	return r ? r : count;
-}
-
-static DEVICE_ATTR(force_chg_usb_otg_ctl, 0664,
-		   force_chg_usb_otg_ctl_show,
-		   force_chg_usb_otg_ctl_store);
-
-static bool smb135x_charger_mmi_factory(void)
-{
-	struct device_node *np = of_find_node_by_path("/chosen");
-	bool factory = false;
-
-	if (np)
-		factory = of_property_read_bool(np, "mmi,factory-cable");
-
-	of_node_put(np);
-
-	return factory;
-}
-
-static int smb135x_charger_reboot(struct notifier_block *nb,
-				unsigned long event, void *unused)
-{
-	struct smb135x_chg *chip =
-			container_of(nb, struct smb135x_chg, smb_reboot);
-	int rc = 0;
-
-	dev_dbg(chip->dev, "SMB Reboot\n");
-
-	rc = smb135x_masked_write(chip, CMD_CHG_REG, OTG_EN, 0);
-	if (rc < 0)
-		dev_err(chip->dev, "Couldn't disable OTG mode rc=%d\n", rc);
-
-	/* force usb/dc shutdown on halt */
-	if (event == SYS_HALT) {
-		smb135x_path_suspend(chip, USB, USER, true);
-		smb135x_path_suspend(chip, DC, USER, true);
-	}
-
-	return NOTIFY_DONE;
-}
-
-static int smb135x_charger_probe(struct i2c_client *client,
+static int smb135x_main_charger_probe(struct i2c_client *client,
 				const struct i2c_device_id *id)
 {
 	int rc;
@@ -5079,25 +5437,28 @@ static int smb135x_charger_probe(struct i2c_client *client,
 	struct power_supply *usb_psy;
 	u8 reg = 0;
 
-	usb_psy = power_supply_get_by_name("usb");
-	if (!usb_psy) {
-		dev_dbg(&client->dev, "USB supply not found; defer probe\n");
-		return -EPROBE_DEFER;
-	}
-
 	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip) {
 		dev_err(&client->dev, "Unable to allocate memory\n");
 		return -ENOMEM;
 	}
 
-	chip->factory_mode = smb135x_charger_mmi_factory();
-	if (chip->factory_mode)
-		chip->apsd_rerun_cnt = 1;
-
 	chip->client = client;
 	chip->dev = &client->dev;
+
+	rc = smb_parse_dt(chip);
+	if (rc < 0) {
+		dev_err(&client->dev, "Unable to parse DT nodes\n");
+		return rc;
+	}
+
+	usb_psy = power_supply_get_by_name("usb");
+	if (!usb_psy && chip->chg_enabled) {
+		dev_dbg(&client->dev, "USB supply not found; defer probe\n");
+		return -EPROBE_DEFER;
+	}
 	chip->usb_psy = usb_psy;
+
 	chip->fake_battery_soc = -EINVAL;
 	chip->charger_rate =  POWER_SUPPLY_CHARGE_RATE_NONE;
 	chip->aicl_weak_detect = false;
@@ -5127,9 +5488,13 @@ static int smb135x_charger_probe(struct i2c_client *client,
 	INIT_DELAYED_WORK(&chip->ocp_clear_work,
 					ocp_clear_work);
 
+	INIT_DELAYED_WORK(&chip->reset_otg_oc_count_work,
+					reset_otg_oc_count_work);
 	mutex_init(&chip->path_suspend_lock);
 	mutex_init(&chip->current_change_lock);
 	mutex_init(&chip->read_write_lock);
+	mutex_init(&chip->otg_oc_count_lock);
+	device_init_wakeup(chip->dev, true);
 	/* probe the device to check if its actually connected */
 	rc = smb135x_read(chip, CMD_INPUT_LIMIT, &reg);
 	if (rc) {
@@ -5141,12 +5506,6 @@ static int smb135x_charger_probe(struct i2c_client *client,
 			chip->usb_suspended = 0x1; /* USER bit */
 		if (reg & DC_SHUTDOWN_BIT)
 			chip->dc_suspended = 0x1; /* USER bit */
-	}
-
-	rc = smb_parse_dt(chip);
-	if (rc < 0) {
-		dev_err(&client->dev, "Unable to parse DT nodes\n");
-		return rc;
 	}
 
 	i2c_set_clientdata(client, chip);
@@ -5218,6 +5577,12 @@ static int smb135x_charger_probe(struct i2c_client *client,
 	chip->batt_psy.external_power_changed = smb135x_external_power_changed;
 	chip->batt_psy.property_is_writeable = smb135x_battery_is_writeable;
 
+	if (chip->bms_controlled_charging) {
+		chip->batt_psy.supplied_to	= pm_batt_supplied_to;
+		chip->batt_psy.num_supplicants	=
+					ARRAY_SIZE(pm_batt_supplied_to);
+	}
+
 	rc = power_supply_register(chip->dev, &chip->batt_psy);
 	if (rc < 0) {
 		dev_err(&client->dev,
@@ -5260,184 +5625,7 @@ static int smb135x_charger_probe(struct i2c_client *client,
 		enable_irq_wake(client->irq);
 	}
 
-	chip->smb_reboot.notifier_call = smb135x_charger_reboot;
-	chip->smb_reboot.next = NULL;
-	chip->smb_reboot.priority = 1;
-	rc = register_reboot_notifier(&chip->smb_reboot);
-	if (rc)
-		dev_err(chip->dev, "register for reboot failed\n");
-
-	chip->debug_root = debugfs_create_dir("smb135x", NULL);
-	if (!chip->debug_root)
-		dev_err(chip->dev, "Couldn't create debug dir\n");
-
-	if (chip->debug_root) {
-		struct dentry *ent;
-
-		ent = debugfs_create_file("config_registers", S_IFREG | S_IRUGO,
-					  chip->debug_root, chip,
-					  &cnfg_debugfs_ops);
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create cnfg debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_file("status_registers", S_IFREG | S_IRUGO,
-					  chip->debug_root, chip,
-					  &status_debugfs_ops);
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create status debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_file("cmd_registers", S_IFREG | S_IRUGO,
-					  chip->debug_root, chip,
-					  &cmd_debugfs_ops);
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create cmd debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_x32("address", S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root,
-					  &(chip->peek_poke_address));
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create address debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_file("data", S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root, chip,
-					  &poke_poke_debug_ops);
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create data debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_file("force_irq",
-					  S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root, chip,
-					  &force_irq_ops);
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create data debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_x32("skip_writes",
-					  S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root,
-					  &(chip->skip_writes));
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create data debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_x32("skip_reads",
-					  S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root,
-					  &(chip->skip_reads));
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create data debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_file("irq_count", S_IFREG | S_IRUGO,
-					  chip->debug_root, chip,
-					  &irq_count_debugfs_ops);
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create count debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_file("force_recharge",
-					  S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root, chip,
-					  &force_rechg_ops);
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create recharge debug file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_x32("usb_suspend_votes",
-					  S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root,
-					  &(chip->usb_suspended));
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create usb vote file rc = %d\n",
-				rc);
-
-		ent = debugfs_create_x32("dc_suspend_votes",
-					  S_IFREG | S_IWUSR | S_IRUGO,
-					  chip->debug_root,
-					  &(chip->dc_suspended));
-		if (!ent)
-			dev_err(chip->dev,
-				"Couldn't create dc vote file rc = %d\n",
-				rc);
-		}
-
-	the_chip = chip;
-
-	if (chip->factory_mode) {
-		rc = device_create_file(chip->dev,
-					&dev_attr_force_chg_usb_suspend);
-		if (rc) {
-			pr_err("couldn't create force_chg_usb_suspend\n");
-			goto unregister_dc_psy;
-		}
-
-		rc = device_create_file(chip->dev,
-					&dev_attr_force_chg_fail_clear);
-		if (rc) {
-			pr_err("couldn't create force_chg_fail_clear\n");
-			goto unregister_dc_psy;
-		}
-
-		rc = device_create_file(chip->dev,
-					&dev_attr_force_chg_auto_enable);
-		if (rc) {
-			pr_err("couldn't create force_chg_auto_enable\n");
-			goto unregister_dc_psy;
-		}
-
-		rc = device_create_file(chip->dev,
-				&dev_attr_force_chg_ibatt);
-		if (rc) {
-			pr_err("couldn't create force_chg_ibatt\n");
-			goto unregister_dc_psy;
-		}
-
-		rc = device_create_file(chip->dev,
-					&dev_attr_force_chg_iusb);
-		if (rc) {
-			pr_err("couldn't create force_chg_iusb\n");
-			goto unregister_dc_psy;
-		}
-
-		rc = device_create_file(chip->dev,
-					&dev_attr_force_chg_itrick);
-		if (rc) {
-			pr_err("couldn't create force_chg_itrick\n");
-			goto unregister_dc_psy;
-		}
-
-		rc = device_create_file(chip->dev,
-				&dev_attr_force_chg_usb_otg_ctl);
-		if (rc) {
-			pr_err("couldn't create force_chg_usb_otg_ctl\n");
-			goto unregister_dc_psy;
-		}
-
-	}
-
-	rc = smb135x_setup_vbat_monitoring(chip);
-	if (rc < 0)
-		pr_err("failed to set up voltage notifications: %d\n", rc);
-
-	schedule_delayed_work(&chip->heartbeat_work,
-			      msecs_to_jiffies(60000));
-
+	create_debugfs_entries(chip);
 	dev_info(chip->dev, "SMB135X version = %s revision = %s successfully probed batt=%d dc = %d usb = %d\n",
 			version_str[chip->version],
 			revision_str[chip->revision],
@@ -5456,10 +5644,100 @@ free_regulator:
 	return rc;
 }
 
+static int smb135x_parallel_charger_probe(struct i2c_client *client,
+				const struct i2c_device_id *id)
+{
+	int rc;
+	struct smb135x_chg *chip;
+	const struct of_device_id *match;
+	struct device_node *node = client->dev.of_node;
+
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
+	if (!chip) {
+		dev_err(&client->dev, "Unable to allocate memory\n");
+		return -ENOMEM;
+	}
+
+	chip->client = client;
+	chip->dev = &client->dev;
+	chip->parallel_charger = true;
+	chip->dc_psy_type = -EINVAL;
+
+	chip->chg_enabled = !(of_property_read_bool(node,
+						"qcom,charging-disabled"));
+
+	rc = of_property_read_u32(node, "qcom,recharge-thresh-mv",
+						&chip->resume_delta_mv);
+	if (rc < 0)
+		chip->resume_delta_mv = -EINVAL;
+
+	rc = of_property_read_u32(node, "qcom,float-voltage-mv",
+						&chip->vfloat_mv);
+	if (rc < 0)
+		chip->vfloat_mv = -EINVAL;
+
+	mutex_init(&chip->path_suspend_lock);
+	mutex_init(&chip->current_change_lock);
+	mutex_init(&chip->read_write_lock);
+
+	match = of_match_node(smb135x_match_table, node);
+	if (match == NULL) {
+		dev_err(chip->dev, "device tree match not found\n");
+		return -EINVAL;
+	}
+
+	chip->version = *(int *)match->data;
+	smb135x_set_current_tables(chip);
+
+	i2c_set_clientdata(client, chip);
+
+	chip->parallel_psy.name		= "usb-parallel";
+	chip->parallel_psy.type		= POWER_SUPPLY_TYPE_USB_PARALLEL;
+	chip->parallel_psy.get_property	= smb135x_parallel_get_property;
+	chip->parallel_psy.set_property	= smb135x_parallel_set_property;
+	chip->parallel_psy.properties	= smb135x_parallel_properties;
+	chip->parallel_psy.property_is_writeable
+				= smb135x_parallel_is_writeable;
+	chip->parallel_psy.num_properties
+				= ARRAY_SIZE(smb135x_parallel_properties);
+
+	rc = power_supply_register(chip->dev, &chip->parallel_psy);
+	if (rc < 0) {
+		dev_err(&client->dev,
+			"Unable to register parallel_psy rc = %d\n", rc);
+		return rc;
+	}
+
+	chip->resume_completed = true;
+	mutex_init(&chip->irq_complete);
+
+	create_debugfs_entries(chip);
+
+	dev_info(chip->dev, "SMB135X USB PARALLEL CHARGER version = %s successfully probed\n",
+			version_str[chip->version]);
+	return 0;
+}
+
+static int smb135x_charger_probe(struct i2c_client *client,
+				const struct i2c_device_id *id)
+{
+	if (is_parallel_charger(client))
+		return smb135x_parallel_charger_probe(client, id);
+	else
+		return smb135x_main_charger_probe(client, id);
+}
+
 static int smb135x_charger_remove(struct i2c_client *client)
 {
 	int rc;
 	struct smb135x_chg *chip = i2c_get_clientdata(client);
+
+	debugfs_remove_recursive(chip->debug_root);
+
+	if (chip->parallel_charger) {
+		power_supply_unregister(&chip->parallel_psy);
+		goto mutex_destroy;
+	}
 
 	if (chip->therm_bias_vreg) {
 		rc = regulator_disable(chip->therm_bias_vreg);
@@ -5467,35 +5745,21 @@ static int smb135x_charger_remove(struct i2c_client *client)
 			pr_err("Couldn't disable therm-bias rc = %d\n", rc);
 	}
 
-	unregister_reboot_notifier(&chip->smb_reboot);
-	debugfs_remove_recursive(chip->debug_root);
+	if (chip->usb_pullup_vreg) {
+		rc = regulator_disable(chip->usb_pullup_vreg);
+		if (rc)
+			pr_err("Couldn't disable data-pullup rc = %d\n", rc);
+	}
 
 	if (chip->dc_psy_type != -EINVAL)
 		power_supply_unregister(&chip->dc_psy);
 
 	power_supply_unregister(&chip->batt_psy);
 
-	mutex_destroy(&chip->irq_complete);
-	if (chip->factory_mode) {
-		device_remove_file(chip->dev,
-				   &dev_attr_force_chg_usb_suspend);
-		device_remove_file(chip->dev,
-				   &dev_attr_force_chg_fail_clear);
-		device_remove_file(chip->dev,
-				   &dev_attr_force_chg_auto_enable);
-		device_remove_file(chip->dev,
-				   &dev_attr_force_chg_ibatt);
-		device_remove_file(chip->dev,
-				   &dev_attr_force_chg_iusb);
-		device_remove_file(chip->dev,
-				   &dev_attr_force_chg_itrick);
-		device_remove_file(chip->dev,
-				   &dev_attr_force_chg_usb_otg_ctl);
-	}
-
 	smb135x_regulator_deinit(chip);
-	wakeup_source_trash(&chip->smb_wake_source.source);
 
+mutex_destroy:
+	mutex_destroy(&chip->irq_complete);
 	return 0;
 }
 
@@ -5505,8 +5769,9 @@ static int smb135x_suspend(struct device *dev)
 	struct smb135x_chg *chip = i2c_get_clientdata(client);
 	int i, rc;
 
-	if (chip->hb_running)
-		return -EAGAIN;
+	/* no suspend resume activities for parallel charger */
+	if (chip->parallel_charger)
+		return 0;
 
 	/* Save the current IRQ config */
 	for (i = 0; i < 3; i++) {
@@ -5528,7 +5793,7 @@ static int smb135x_suspend(struct device *dev)
 		dev_err(chip->dev, "Couldn't set irq2_cfg rc = %d\n", rc);
 
 	rc = smb135x_write(chip, IRQ3_CFG_REG, IRQ3_SRC_DETECT_BIT
-			| IRQ3_DCIN_UV_BIT);
+			| IRQ3_DCIN_UV_BIT | IRQ3_RID_DETECT_BIT);
 	if (rc < 0)
 		dev_err(chip->dev, "Couldn't set irq3_cfg rc = %d\n", rc);
 
@@ -5544,6 +5809,10 @@ static int smb135x_suspend_noirq(struct device *dev)
 	struct i2c_client *client = to_i2c_client(dev);
 	struct smb135x_chg *chip = i2c_get_clientdata(client);
 
+	/* no suspend resume activities for parallel charger */
+	if (chip->parallel_charger)
+		return 0;
+
 	if (chip->irq_waiting) {
 		pr_err_ratelimited("Aborting suspend, an interrupt was detected while suspending\n");
 		return -EBUSY;
@@ -5557,6 +5826,9 @@ static int smb135x_resume(struct device *dev)
 	struct smb135x_chg *chip = i2c_get_clientdata(client);
 	int i, rc;
 
+	/* no suspend resume activities for parallel charger */
+	if (chip->parallel_charger)
+		return 0;
 	/* Restore the IRQ config */
 	for (i = 0; i < 3; i++) {
 		rc = smb135x_write(chip, IRQ_CFG_REG + i,
@@ -5589,6 +5861,23 @@ static const struct i2c_device_id smb135x_charger_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, smb135x_charger_id);
 
+static void smb135x_shutdown(struct i2c_client *client)
+{
+	int rc;
+	struct smb135x_chg *chip = i2c_get_clientdata(client);
+
+	if (chip->usb_pullup_vreg) {
+		/*
+		 * switch to 5V adapter to prevent any errorneous request of 12V
+		 * when USB D+ line pull-up regulator turns off.
+		 */
+		rc = smb135x_masked_write(chip, CFG_E_REG, HVDCP_5_9_BIT, 0);
+		if (rc < 0)
+			dev_err(chip->dev,
+				"Couldn't request for 5V rc=%d\n", rc);
+	}
+}
+
 static struct i2c_driver smb135x_charger_driver = {
 	.driver		= {
 		.name		= "smb135x-charger",
@@ -5599,6 +5888,7 @@ static struct i2c_driver smb135x_charger_driver = {
 	.probe		= smb135x_charger_probe,
 	.remove		= smb135x_charger_remove,
 	.id_table	= smb135x_charger_id,
+	.shutdown	= smb135x_shutdown,
 };
 
 module_i2c_driver(smb135x_charger_driver);

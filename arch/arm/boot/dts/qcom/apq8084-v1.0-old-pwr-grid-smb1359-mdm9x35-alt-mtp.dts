@@ -18,7 +18,7 @@
 #include "apq8084-taiko-i2s-codec.dtsi"
 
 / {
-	model = "Qualcomm APQ 8084 v1.0, Old Pwr Grid, SMB1359 MDM9x35 ALT MTP";
+	model = "Qualcomm Technologies, Inc. APQ 8084 v1.0, Old Pwr Grid, SMB1359 MDM9x35 ALT MTP";
 	compatible = "qcom,apq8084-mtp", "qcom,apq8084", "qcom,mtp";
 	qcom,board-id = <8 4>;
 };
@@ -71,7 +71,7 @@
 	qcom,msm-bus,num-paths = <1>;
 	qcom,msm-bus,vectors-KBps =
 			<100 512 0 0>,
-			<100 512 625000000 625000000>;
+			<100 512 1200000000 1200000000>;
 };
 &usb3 {
 	vbus_dwc3-supply = <&smb1359_otg_vreg>;
@@ -125,7 +125,7 @@
 			"DMIC4", "MIC BIAS3 External",
 			"MIC BIAS3 External", "Digital Mic4";
 
-		qcom,codec-mclk-clk-freq = <12288000>;
+		qcom,taiko-mclk-clk-freq = <12288000>;
 		qcom,cdc-micbias2-headset-only;
 		qcom,mclk-ctrl-gpio  = <&pma8084_gpios 1 0>;
 		qcom,prim-auxpcm-gpio-set = "prim-gpio-prim";

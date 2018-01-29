@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,21 +29,10 @@
 struct msm_ois_ctrl_t;
 
 enum msm_ois_state_t {
-	OIS_POWER_UP,
-	OIS_POWER_DOWN,
-};
-
-struct msm_ois_func_tbl {
-	int32_t (*ini_set_ois)(struct msm_ois_ctrl_t *,
-		struct msm_ois_set_info_t *);
-	int32_t (*enable_ois)(struct msm_ois_ctrl_t *,
-		struct msm_ois_set_info_t *);
-	int32_t (*disable_ois)(struct msm_ois_ctrl_t *,
-		struct msm_ois_set_info_t *);
-};
-
-struct msm_ois {
-	struct msm_ois_func_tbl func_tbl;
+	OIS_ENABLE_STATE,
+	OIS_OPS_ACTIVE,
+	OIS_OPS_INACTIVE,
+	OIS_DISABLE_STATE,
 };
 
 struct msm_ois_vreg {
@@ -60,7 +49,6 @@ struct msm_ois_ctrl_t {
 	enum msm_camera_device_type_t ois_device_type;
 	struct msm_sd_subdev msm_sd;
 	struct mutex *ois_mutex;
-	struct msm_ois_func_tbl *func_tbl;
 	enum msm_camera_i2c_data_type i2c_data_type;
 	struct v4l2_subdev sdev;
 	struct v4l2_subdev_ops *ois_v4l2_subdev_ops;

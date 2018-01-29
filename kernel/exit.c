@@ -455,9 +455,6 @@ static void exit_mm(struct task_struct * tsk)
 {
 	struct mm_struct *mm = tsk->mm;
 	struct core_state *core_state;
-#ifndef CONFIG_UML
-	int mm_released;
-#endif
 
 	mm_release(tsk, mm);
 	if (!mm)
@@ -503,12 +500,7 @@ static void exit_mm(struct task_struct * tsk)
 	enter_lazy_tlb(mm, current);
 	task_unlock(tsk);
 	mm_update_next_owner(mm);
-
-#ifndef CONFIG_UML
-	mm_released = mmput(mm);
-	if (mm_released)
-		set_tsk_thread_flag(tsk, TIF_MM_RELEASED);
-#endif
+	mmput(mm);
 }
 
 /*
@@ -757,8 +749,12 @@ void do_exit(long code)
 	 * leave this task alone and wait for reboot.
 	 */
 	if (unlikely(tsk->flags & PF_EXITING)) {
+#ifdef CONFIG_PANIC_ON_RECURSIVE_FAULT
+		panic("Recursive fault!\n");
+#else
 		printk(KERN_ALERT
 			"Fixing recursive fault but reboot is needed!\n");
+#endif
 		/*
 		 * We can do this unlocked here. The futex code uses
 		 * this flag just to verify whether the pi state
@@ -774,6 +770,9 @@ void do_exit(long code)
 	}
 
 	exit_signals(tsk);  /* sets PF_EXITING */
+
+	sched_exit(tsk);
+
 	/*
 	 * tsk->flags are checked in the futex code to protect against
 	 * an exiting task cleaning up the robust pi futexes.

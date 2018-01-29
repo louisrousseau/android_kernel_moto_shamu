@@ -100,7 +100,7 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_WM8782
 	select SND_SOC_WM8804 if SND_SOC_I2C_AND_SPI
 	select SND_SOC_WM8900 if I2C
-	select SND_SOC_WM8903 if I2C && GENERIC_HARDIRQS
+	select SND_SOC_WM8903 if I2C
 	select SND_SOC_WM8904 if I2C
 	select SND_SOC_WM8940 if I2C
 	select SND_SOC_WM8955 if I2C
@@ -384,6 +384,9 @@ config SND_SOC_WCD_CPE
 	tristate
 	default y if SND_SOC_WCD9330=y
 
+config SND_SOC_MSM8909_WCD
+	tristate
+
 config SND_SOC_WL1273
 	tristate
 
@@ -558,7 +561,7 @@ config SND_SOC_MSM_STUB
 
 config SND_SOC_MSM_HDMI_CODEC_RX
 	bool "HDMI Audio Playback"
-	depends on FB_MSM_MDSS_HDMI_PANEL && (SND_SOC_MSM8974 || SND_SOC_APQ8084 || SND_SOC_MPQ8092)
+	depends on FB_MSM_MDSS_HDMI_PANEL && (SND_SOC_MSM8974 || SND_SOC_APQ8084 || SND_SOC_MSM8994)
 	help
 	HDMI audio drivers should be built only if the platform
         supports hdmi panel.

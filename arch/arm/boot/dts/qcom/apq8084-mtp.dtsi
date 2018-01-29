@@ -26,6 +26,15 @@
 };
 
 &soc {
+
+	spk_ext_vreg: spk_ext_vreg {
+		compatible = "regulator-fixed";
+		regulator-name = "spk_ext_vreg";
+		gpio = <&pma8084_mpps 3 0>;
+		status = "ok";
+		enable-active-high;
+	};
+
 	sound {
 		qcom,model = "apq8084-taiko-mtp-snd-card";
 
@@ -52,6 +61,8 @@
 			"MIC BIAS1 External", "Digital Mic4";
 
 		qcom,hdmi-audio-rx;
+		asoc-codec = <&stub_codec>, <&hdmi_audio>;
+		asoc-codec-names = "msm-stub-codec.1", "msm-hdmi-audio-codec-rx";
 		qcom,cdc-micbias2-headset-only;
 		qcom,ext-mclk-gpio  = <&msmgpio 47 0>;
 	};
@@ -60,6 +71,7 @@
 		qcom,model = "apq8084-tomtom-mtp-snd-card";
 
 		qcom,audio-routing =
+			"AIF4 VI", "MCLK",
 			"RX_BIAS", "MCLK",
 			"LDO_H", "MCLK",
 			"AIF4 MAD", "MCLK",
@@ -81,6 +93,8 @@
 			"MIC BIAS1 External", "Digital Mic4";
 
 		qcom,hdmi-audio-rx;
+		asoc-codec = <&stub_codec>, <&hdmi_audio>;
+		asoc-codec-names = "msm-stub-codec.1", "msm-hdmi-audio-codec-rx";
 		qcom,cdc-micbias2-headset-only;
 		qcom,ext-mclk-gpio  = <&msmgpio 47 0>;
 	};
@@ -189,55 +203,6 @@
 	status = "ok";
 };
 
-/* CoreSight */
-&tpiu {
-	qcom,seta-gpios = <&msmgpio 4 0>,
-			  <&msmgpio 5 0>,
-			  <&msmgpio 6 0>,
-			  <&msmgpio 7 0>,
-			  <&msmgpio 48 0>,
-			  <&msmgpio 49 0>,
-			  <&msmgpio 50 0>,
-			  <&msmgpio 51 0>,
-			  <&msmgpio 52 0>,
-			  <&msmgpio 53 0>,
-			  <&msmgpio 54 0>,
-			  <&msmgpio 55 0>,
-			  <&msmgpio 56 0>,
-			  <&msmgpio 57 0>,
-			  <&msmgpio 63 0>,
-			  <&msmgpio 64 0>,
-			  <&msmgpio 75 0>,
-			  <&msmgpio 122 0>;
-	qcom,seta-gpios-func = <4 4 4 4 5 4 4 5 5 4 4 4 4 4 4 5 2 1>;
-	qcom,seta-gpios-drv =  <7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7>;
-	qcom,seta-gpios-pull = <0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0>;
-	qcom,seta-gpios-dir =  <2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2>;
-
-	qcom,setb-gpios = <&msmgpio 10 0>,
-			  <&msmgpio 11 0>,
-			  <&msmgpio 29 0>,
-			  <&msmgpio 30 0>,
-			  <&msmgpio 39 0>,
-			  <&msmgpio 40 0>,
-			  <&msmgpio 43 0>,
-			  <&msmgpio 44 0>,
-			  <&msmgpio 45 0>,
-			  <&msmgpio 46 0>,
-			  <&msmgpio 67 0>,
-			  <&msmgpio 68 0>,
-			  <&msmgpio 69 0>,
-			  <&msmgpio 70 0>,
-			  <&msmgpio 71 0>,
-			  <&msmgpio 72 0>,
-			  <&msmgpio 102 0>,
-			  <&msmgpio 121 0>;
-	qcom,setb-gpios-func = <4 4 5 4 4 4 4 4 4 4 3 3 2 4 3 3 2 1>;
-	qcom,setb-gpios-drv =  <7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7>;
-	qcom,setb-gpios-pull = <0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0>;
-	qcom,setb-gpios-dir =  <2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2>;
-};
-
 &ufsphy1 {
 	status = "disabled";
 };
@@ -256,10 +221,9 @@
 	qcom,vdd-io-voltage-level = <1800000 1800000>;
 	qcom,vdd-io-current-level = <200 154000>;
 
-	qcom,pad-pull-on = <0x0 0x3 0x3 0x1>; /* no-pull, pull-up, pull-up, pull-down */
-	qcom,pad-pull-off = <0x0 0x3 0x3 0x1>; /* no-pull, pull-up, pull-up, pull-down */
-	qcom,pad-drv-on = <0x7 0x4 0x4>; /* 16mA, 10mA, 10mA */
-	qcom,pad-drv-off = <0x0 0x0 0x0>; /* 2mA, 2mA, 2mA */
+	pinctrl-names = "active", "sleep";
+	pinctrl-0 = <&sdc1_clk_on &sdc1_cmd_on &sdc1_data_on &sdc1_rclk_on >;
+	pinctrl-1 = <&sdc1_clk_off &sdc1_cmd_off &sdc1_data_off &sdc1_rclk_off>;
 
 	qcom,clk-rates = <400000 20000000 25000000 50000000 100000000 192000000 384000000>;
 	qcom,nonremovable;
@@ -276,10 +240,9 @@
 	qcom,vdd-io-voltage-level = <1800000 2950000>;
 	qcom,vdd-io-current-level = <200 22000>;
 
-	qcom,pad-pull-on = <0x0 0x3 0x3>; /* no-pull, pull-up, pull-up */
-	qcom,pad-pull-off = <0x0 0x3 0x3>; /* no-pull, pull-up, pull-up */
-	qcom,pad-drv-on = <0x7 0x4 0x4>; /* 16mA, 10mA, 10mA */
-	qcom,pad-drv-off = <0x0 0x0 0x0>; /* 2mA, 2mA, 2mA */
+	pinctrl-names = "active", "sleep";
+	pinctrl-0 = <&sdc2_clk_on &sdc2_cmd_on &sdc2_data_on &sdhc2_cd_on>;
+	pinctrl-1 = <&sdc2_clk_off &sdc2_cmd_off &sdc2_data_off &sdhc2_cd_off>;
 
 	qcom,clk-rates = <400000 20000000 25000000 50000000 100000000 200000000>;
 	qcom,bus-speed-mode = "SDR12", "SDR25", "SDR50", "DDR50", "SDR104";
@@ -328,9 +291,9 @@
 		 * spkrdrv supply in MTP device is from VPH_PWR which is
 		 * always ON. Give a dummy supply to make codec driver happy.
 		 */
-		cdc-vdd-spkdrv-supply = <&vph_pwr_vreg>;
-		qcom,cdc-vdd-spkdrv-voltage = <0 0>;
-		qcom,cdc-vdd-spkdrv-current = <0>;
+		cdc-vdd-spkdrv-supply = <&spk_ext_vreg>;
+		qcom,cdc-vdd-spkdrv-voltage = <5000000 5000000>;
+		qcom,cdc-vdd-spkdrv-current = <1250000>;
 
 		qcom,cdc-on-demand-supplies = "cdc-vdd-spkdrv";
 	};
@@ -700,7 +663,7 @@
 		qcom,invert = <0>;		/* Output low initially */
 		qcom,vin-sel = <2>;		/* VIN 2 */
 		qcom,src-sel = <2>;		/* Function 1 */
-		qcom,out-strength = <2>;	/* Medium */
+		qcom,out-strength = <3>;	/* High */
 		qcom,master-en = <1>;		/* Enable GPIO */
 	};
 

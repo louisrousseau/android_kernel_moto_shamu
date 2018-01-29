@@ -2,7 +2,7 @@
  * Diag Function Device - Route ARM9 and ARM11 DIAG messages
  * between HOST and DEVICE.
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2008-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2008-2015, The Linux Foundation. All rights reserved.
  * Author: Brian Swetland <swetland@google.com>
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -17,16 +17,11 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/platform_device.h>
 #include <linux/ratelimit.h>
 
-#include <mach/usbdiag.h>
-
-#ifdef CONFIG_DIAG_OVER_TTY
-#include <mach/tty_diag.h>
-#include <linux/diagchar.h>
-#endif
-
+#include <linux/usb/usbdiag.h>
 #include <linux/usb/composite.h>
 #include <linux/usb/gadget.h>
 #include <linux/workqueue.h>
@@ -161,6 +156,7 @@ struct diag_context {
 	struct usb_composite_dev *cdev;
 	int (*update_pid_and_serial_num)(uint32_t, const char *);
 	struct usb_diag_ch *ch;
+	struct kref kref;
 
 	/* pkt counters */
 	unsigned long dpkts_tolaptop;
@@ -198,6 +194,16 @@ struct legacy_dev {
 static inline struct diag_context *func_to_diag(struct usb_function *f)
 {
 	return container_of(f, struct diag_context, function);
+}
+
+/* Called with ctxt->lock held; i.e. only use with kref_put_spinlock_irqsave */
+static void diag_context_release(struct kref *kref)
+{
+	struct diag_context *ctxt =
+		container_of(kref, struct diag_context, kref);
+
+	spin_unlock(&ctxt->lock);
+	kfree(ctxt);
 }
 
 static void diag_update_pid_and_serial_num(struct diag_context *ctxt)
@@ -256,6 +262,8 @@ static void diag_write_complete(struct usb_ep *ep,
 			/* Queue zero length packet */
 			if (!usb_ep_queue(ctxt->in, req, GFP_ATOMIC))
 				return;
+		} else {
+			ctxt->dpkts_tolaptop++;
 		}
 	}
 
@@ -269,6 +277,9 @@ static void diag_write_complete(struct usb_ep *ep,
 
 	if (ctxt->ch && ctxt->ch->notify)
 		ctxt->ch->notify(ctxt->ch->priv, USB_DIAG_WRITE_DONE, d_req);
+
+	kref_put_spinlock_irqsave(&ctxt->kref, diag_context_release,
+			&ctxt->lock);
 }
 
 static void diag_read_complete(struct usb_ep *ep,
@@ -289,6 +300,9 @@ static void diag_read_complete(struct usb_ep *ep,
 
 	if (ctxt->ch && ctxt->ch->notify)
 		ctxt->ch->notify(ctxt->ch->priv, USB_DIAG_READ_DONE, d_req);
+
+	kref_put_spinlock_irqsave(&ctxt->kref, diag_context_release,
+			&ctxt->lock);
 }
 
 /**
@@ -529,6 +543,7 @@ int usb_diag_read(struct usb_diag_ch *ch, struct diag_request *d_req)
 
 	req = list_first_entry(&ctxt->read_pool, struct usb_request, list);
 	list_del(&req->list);
+	kref_get(&ctxt->kref); /* put called in complete callback */
 	spin_unlock_irqrestore(&ctxt->lock, flags);
 
 	req->buf = d_req->buf;
@@ -538,6 +553,8 @@ int usb_diag_read(struct usb_diag_ch *ch, struct diag_request *d_req)
 	/* make sure context is still valid after releasing lock */
 	if (ctxt != ch->priv_usb) {
 		usb_ep_free_request(out, req);
+		kref_put_spinlock_irqsave(&ctxt->kref, diag_context_release,
+				&ctxt->lock);
 		return -EIO;
 	}
 
@@ -545,11 +562,16 @@ int usb_diag_read(struct usb_diag_ch *ch, struct diag_request *d_req)
 		/* If error add the link to linked list again*/
 		spin_lock_irqsave(&ctxt->lock, flags);
 		list_add_tail(&req->list, &ctxt->read_pool);
-		spin_unlock_irqrestore(&ctxt->lock, flags);
 		/* 1 error message for every 10 sec */
 		if (__ratelimit(&rl))
 			ERROR(ctxt->cdev, "%s: cannot queue"
 				" read request\n", __func__);
+
+		if (kref_put(&ctxt->kref, diag_context_release))
+			/* diag_context_release called spin_unlock already */
+			local_irq_restore(flags);
+		else
+			spin_unlock_irqrestore(&ctxt->lock, flags);
 		return -EIO;
 	}
 
@@ -608,6 +630,7 @@ int usb_diag_write(struct usb_diag_ch *ch, struct diag_request *d_req)
 
 	req = list_first_entry(&ctxt->write_pool, struct usb_request, list);
 	list_del(&req->list);
+	kref_get(&ctxt->kref); /* put called in complete callback */
 	spin_unlock_irqrestore(&ctxt->lock, flags);
 
 	req->buf = d_req->buf;
@@ -617,23 +640,35 @@ int usb_diag_write(struct usb_diag_ch *ch, struct diag_request *d_req)
 	/* make sure context is still valid after releasing lock */
 	if (ctxt != ch->priv_usb) {
 		usb_ep_free_request(in, req);
+		kref_put_spinlock_irqsave(&ctxt->kref, diag_context_release,
+				&ctxt->lock);
 		return -EIO;
 	}
 
+	ctxt->dpkts_tolaptop_pending++;
 	if (usb_ep_queue(in, req, GFP_ATOMIC)) {
 		/* If error add the link to linked list again*/
 		spin_lock_irqsave(&ctxt->lock, flags);
 		list_add_tail(&req->list, &ctxt->write_pool);
-		spin_unlock_irqrestore(&ctxt->lock, flags);
+		ctxt->dpkts_tolaptop_pending--;
 		/* 1 error message for every 10 sec */
 		if (__ratelimit(&rl))
 			ERROR(ctxt->cdev, "%s: cannot queue"
 				" read request\n", __func__);
+
+		if (kref_put(&ctxt->kref, diag_context_release))
+			/* diag_context_release called spin_unlock already */
+			local_irq_restore(flags);
+		else
+			spin_unlock_irqrestore(&ctxt->lock, flags);
 		return -EIO;
 	}
 
-	ctxt->dpkts_tolaptop++;
-	ctxt->dpkts_tolaptop_pending++;
+	/*
+	 * It's possible that both write completion AND unbind could have been
+	 * completed asynchronously by this point. Since they both release the
+	 * kref, ctxt is _NOT_ guaranteed to be valid here.
+	 */
 
 	return 0;
 }
@@ -740,10 +775,12 @@ static void diag_function_unbind(struct usb_configuration *c,
 	/* Free any pending USB requests from last session */
 	spin_lock_irqsave(&ctxt->lock, flags);
 	free_reqs(ctxt);
-	spin_unlock_irqrestore(&ctxt->lock, flags);
-	kfree(ctxt);
-	if (diag_ch_index)
-		diag_ch_index--;
+
+	if (kref_put(&ctxt->kref, diag_context_release))
+		/* diag_context_release called spin_unlock already */
+		local_irq_restore(flags);
+	else
+		spin_unlock_irqrestore(&ctxt->lock, flags);
 }
 
 static int diag_function_bind(struct usb_configuration *c,
@@ -872,6 +909,7 @@ int diag_function_add(struct usb_configuration *c, const char *name,
 	dev->function.unbind = diag_function_unbind;
 	dev->function.set_alt = diag_function_set_alt;
 	dev->function.disable = diag_function_disable;
+	kref_init(&dev->kref);
 	spin_lock_init(&dev->lock);
 	INIT_LIST_HEAD(&dev->read_pool);
 	INIT_LIST_HEAD(&dev->write_pool);
@@ -898,8 +936,10 @@ static ssize_t debug_read_stats(struct file *file, char __user *ubuf,
 
 	list_for_each_entry(ch, &usb_diag_ch_list, list) {
 		struct diag_context *ctxt = ch->priv_usb;
+		unsigned long flags;
 
-		if (ctxt)
+		if (ctxt) {
+			spin_lock_irqsave(&ctxt->lock, flags);
 			temp += scnprintf(buf + temp, PAGE_SIZE - temp,
 					"---Name: %s---\n"
 					"endpoints: %s, %s\n"
@@ -911,6 +951,8 @@ static ssize_t debug_read_stats(struct file *file, char __user *ubuf,
 					ctxt->dpkts_tolaptop,
 					ctxt->dpkts_tomodem,
 					ctxt->dpkts_tolaptop_pending);
+			spin_unlock_irqrestore(&ctxt->lock, flags);
+		}
 	}
 
 	return simple_read_from_buffer(ubuf, count, ppos, buf, temp);
@@ -923,11 +965,14 @@ static ssize_t debug_reset_stats(struct file *file, const char __user *buf,
 
 	list_for_each_entry(ch, &usb_diag_ch_list, list) {
 		struct diag_context *ctxt = ch->priv_usb;
+		unsigned long flags;
 
 		if (ctxt) {
+			spin_lock_irqsave(&ctxt->lock, flags);
 			ctxt->dpkts_tolaptop = 0;
 			ctxt->dpkts_tomodem = 0;
 			ctxt->dpkts_tolaptop_pending = 0;
+			spin_unlock_irqrestore(&ctxt->lock, flags);
 		}
 	}
 

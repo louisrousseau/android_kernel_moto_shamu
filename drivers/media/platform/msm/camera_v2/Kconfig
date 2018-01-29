@@ -1,6 +1,8 @@
 config MSM_CAMERA_SENSOR
 	    bool "Qualcomm MSM camera sensor support"
 	    depends on MSMB_CAMERA
+	    select NEW_LEDS
+	    select LEDS_CLASS
         ---help---
           This flag enables support for Camera Sensor.
           The sensor driver is capable of providing real time
@@ -111,24 +113,6 @@ config MSM_ISPIF_V1
           of any CID of MSM_CSI22_HEADER can be routed to of pixel
           or raw data interface in VFE.
 
-config S5K3L1YX
-	bool "Sensor S5K3L1YX (BAYER 12M)"
-	depends on MSMB_CAMERA
-	---help---
-		Samsung 12 MP Bayer Sensor with auto focus, uses
-		4 mipi lanes, preview config = 1984 * 1508 at 30 fps,
-		snapshot config = 4000 * 3000 at 20 fps,
-		hfr video at 60, 90 and 120 fps.
-
-config IMX135
-	bool "Sensor IMX135 (BAYER 12M)"
-	depends on MSMB_CAMERA
-	---help---
-		Sony 12 MP Bayer Sensor with auto focus, uses
-		4 mipi lanes, preview config = 2104 x 1560 at 49 fps,
-		snapshot config = 4208 x 3120 at 24 fps,
-		Video HDR support.
-
 config IMX134
 	bool "Sensor IMX134 (BAYER 8M)"
 	depends on MSMB_CAMERA
@@ -146,15 +130,6 @@ config IMX132
 		2 mipi lanes, preview config = 1920 x 1080 at 30 fps,
 		snapshot config = 1920 x 1080 at 30 fps,
 		Video HDR support.
-
-config OV2720
-	bool "Sensor OV2720 (BAYER 2M)"
-	depends on MSMB_CAMERA
-	---help---
-		OmniVision 2 MP Bayer Sensor, supports 2 mipi lanes,
-		preview and snapshot config at 1932 * 1092 at 30 fps,
-		hfr video at 60, 90 and 120 fps. This sensor driver does
-		not support auto focus.
 
 config OV9724
 	bool "Sensor OV9724 (BAYER 2M)"
@@ -191,6 +166,23 @@ config MT9M114
 		and snapshot. The preview and snapshot resolution shall be
 		1280 * 270. It does not support auto focus. It supports
 		few special effects like saturation.
+config OV5645
+	bool "Sensor OV5645 (YUV 5.0MP)"
+	depends on MSMB_CAMERA
+	---help---
+		OV5645 is Omnivision YUV sensor. It supports 5.0 MP preview
+		and snapshot. The preview and snapshot resolution shall be
+		1280 * 270. It does not support auto focus. It supports
+		few special effects like saturation.
+
+config OV7695
+	bool "Sensor OV7695 (YUV 0.3MP)"
+	depends on MSMB_CAMERA
+	---help---
+		OV7695 is Omnivision YUV sensor. It supports 0.3 MP preview
+		and snapshot. The preview and snapshot resolution shall be
+		VGA. It does not support auto focus. It supports
+		few special effects like saturation.
 
 config SP1628
 	bool "Sensor SP1628 (YUV 720P)"
@@ -207,6 +199,15 @@ config GC0339
 	---help---
 		gc0339 is a Galaxycore .3 MP Bayer Sensor.
 		It supports 1 or 2 mipi lanes.
+		Preview and snapshot resolution shall be 640*480 at 30 fps,
+		It does not support auto focus.
+
+config GC0310
+	bool "Sensor GC0310 (YUV .3M)"
+	depends on MSMB_CAMERA
+	---help---
+		0310 is a Galaxycore .3 MP YUV Sensor.
+		It supports 1 mipi lane.
 		Preview and snapshot resolution shall be 640*480 at 30 fps,
 		It does not support auto focus.
 

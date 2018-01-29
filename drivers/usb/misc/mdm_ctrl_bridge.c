@@ -24,7 +24,7 @@
 #include <linux/usb/cdc.h>
 #include <linux/termios.h>
 #include <asm/unaligned.h>
-#include <mach/usb_bridge.h>
+#include <linux/usb/usb_bridge.h>
 
 #define ACM_CTRL_DTR		(1 << 0)
 #define DEFAULT_READ_URB_LENGTH	4096
@@ -260,7 +260,7 @@ static void notification_available_cb(struct urb *urb)
 		dev->rx_state = RX_BUSY;
 		spin_unlock_irqrestore(&dev->lock, flags);
 		dev->resp_avail++;
-		usb_autopm_get_interface_no_resume(dev->intf);
+		usb_autopm_get_interface_async(dev->intf);
 		usb_fill_control_urb(dev->readurb, dev->udev,
 					usb_rcvctrlpipe(dev->udev, 0),
 					(unsigned char *)dev->in_ctlreq,

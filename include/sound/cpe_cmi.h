@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2015, Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,6 +17,7 @@
 #include <linux/types.h>
 
 #define CPE_AFE_PORT_1_TX 1
+#define CPE_AFE_PORT_ID_2_OUT 0x02
 #define CMI_INBAND_MESSAGE_SIZE 127
 
 /*
@@ -38,6 +39,8 @@
 #define CPE_BOOT_SUCCESS 0x00
 #define CPE_BOOT_FAILED 0x01
 
+#define CPE_CORE_VERSION_SYSTEM_BOOT_EVENT 0x01
+
 /* LSM Service command opcodes */
 #define CPE_LSM_SESSION_CMD_OPEN_TX		(0x2000)
 #define CPE_LSM_SESSION_CMD_SET_PARAMS		(0x2001)
@@ -50,23 +53,23 @@
 #define CPE_LSM_SESSION_CMD_SHARED_MEM_ALLOC	(0x2008)
 #define CPE_LSM_SESSION_CMDRSP_SHARED_MEM_ALLOC (0x2009)
 #define CPE_LSM_SESSION_CMD_SHARED_MEM_DEALLOC	(0x200A)
+#define CPE_LSM_SESSION_CMD_TX_BUFF_OUTPUT_CONFIG (0x200f)
 
 /* LSM Service module and param IDs */
-#define LSM_MODULE_ID_VOICE_WAKEUP		(0x00012C00)
-#define LSM_PARAM_ID_ENDPOINT_DETECT_THRESHOLD	(0x00012C01)
-#define LSM_PARAM_ID_OPERATION_MODE		(0x00012C02)
-#define LSM_PARAM_ID_GAIN			(0x00012C03)
-#define LSM_PARAM_ID_CONNECT_TO_PORT		(0x00012C04)
-#define LSM_PARAM_ID_MIN_CONFIDENCE_LEVELS	(0x00012C07)
+#define CPE_LSM_MODULE_ID_VOICE_WAKEUP		(0x00012C00)
+#define CPE_LSM_PARAM_ID_ENDPOINT_DETECT_THRESHOLD (0x00012C01)
+#define CPE_LSM_PARAM_ID_OPERATION_MODE		(0x00012C02)
+#define CPE_LSM_PARAM_ID_GAIN			(0x00012C03)
+#define CPE_LSM_PARAM_ID_CONNECT_TO_PORT	(0x00012C04)
+#define CPE_LSM_PARAM_ID_MIN_CONFIDENCE_LEVELS	(0x00012C07)
 
 /* LSM LAB command opcodes */
 #define CPE_LSM_SESSION_CMD_EOB		0x0000200B
-#define LSM_MODULE_ID_LAB		0x00012C08
+#define CPE_LSM_MODULE_ID_LAB		0x00012C08
 /* used for enable/disable lab*/
-#define LSM_PARAM_ID_LAB_ENABLE		0x00012C09
+#define CPE_LSM_PARAM_ID_LAB_ENABLE	0x00012C09
 /* used for T in LAB config DSP internal buffer*/
-#define LSM_PARAM_ID_LAB_CONFIG		0x00012C0A
-
+#define CPE_LSM_PARAM_ID_LAB_CONFIG	0x00012C0A
 
 /* AFE Service command opcodes */
 #define CPE_AFE_PORT_CMD_START			(0x1001)
@@ -76,6 +79,8 @@
 #define CPE_AFE_PORT_CMD_SHARED_MEM_ALLOC	(0x1005)
 #define CPE_AFE_PORT_CMDRSP_SHARED_MEM_ALLOC	(0x1006)
 #define CPE_AFE_PORT_CMD_SHARED_MEM_DEALLOC	(0x1007)
+#define CPE_AFE_PORT_CMD_GENERIC_CONFIG		(0x1008)
+#define CPE_AFE_SVC_CMD_LAB_MODE		(0x1009)
 
 /* AFE Service module and param IDs */
 #define CPE_AFE_CMD_SET_PARAM			(0x1000)
@@ -222,6 +227,9 @@ struct cmi_obm_msg {
 
 struct cmi_core_svc_event_system_boot {
 	u8 status;
+	u8 version;
+	u16 sfr_buff_size;
+	u32 sfr_buff_address;
 } __packed;
 
 struct cmi_core_svc_cmd_shared_mem_alloc {
@@ -288,11 +296,24 @@ struct cpe_afe_port_cfg {
 	u32 sample_rate;
 } __packed;
 
+struct cpe_afe_cmd_port_cfg {
+	struct cmi_hdr hdr;
+	u8 bit_width;
+	u8 num_channels;
+	u16 buffer_size;
+	u32 sample_rate;
+} __packed;
+
 struct cpe_afe_params {
 	struct cmi_hdr hdr;
 	struct cpe_afe_hw_mad_ctrl hw_mad_ctrl;
 	struct cpe_afe_port_cfg port_cfg;
 };
+
+struct cpe_afe_svc_cmd_mode {
+	struct cmi_hdr hdr;
+	u8 mode;
+} __packed;
 
 struct cpe_lsm_operation_mode {
 	struct cpe_param_data param;
@@ -316,6 +337,13 @@ struct cpe_lsm_conf_level {
 	struct cmi_hdr hdr;
 	struct cpe_param_data param;
 	u8 num_active_models;
+} __packed;
+
+struct cpe_lsm_output_format_cfg {
+	struct cmi_hdr hdr;
+	u8 format;
+	u8 packing;
+	u8 data_path_events;
 } __packed;
 
 struct cpe_lsm_params {
@@ -379,4 +407,15 @@ struct cpe_lsm_lab_latency_config {
 
 #define SHMEM_DEALLOC_CMD_PLD_SIZE (sizeof(struct cpe_cmd_shmem_dealloc) - \
 				      sizeof(struct cmi_hdr))
+#define OUT_FMT_CFG_CMD_PAYLOAD_SIZE ( \
+		sizeof(struct cpe_lsm_output_format_cfg) - \
+		sizeof(struct cmi_hdr))
+
+#define CPE_AFE_CMD_PORT_CFG_PAYLOAD_SIZE \
+		(sizeof(struct cpe_afe_cmd_port_cfg) - \
+		 sizeof(struct cmi_hdr))
+
+#define CPE_AFE_CMD_MODE_PAYLOAD_SIZE \
+		(sizeof(struct cpe_afe_svc_cmd_mode) - \
+		 sizeof(struct cmi_hdr))
 #endif /* __CPE_CMI_H__ */

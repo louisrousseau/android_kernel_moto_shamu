@@ -150,7 +150,9 @@ static int snd_pcm_control_ioctl(struct snd_card *card,
 				err = -ENXIO;
 				goto _error;
 			}
+			mutex_lock(&pcm->open_mutex);
 			err = snd_pcm_info_user(substream, info);
+			mutex_unlock(&pcm->open_mutex);
 		_error:
 			mutex_unlock(&register_mutex);
 			return err;
@@ -1125,6 +1127,10 @@ static int snd_pcm_dev_disconnect(struct snd_device *device)
 		if (pcm->streams[cidx].vol_kctl) {
 			snd_ctl_remove(pcm->card, pcm->streams[cidx].vol_kctl);
 			pcm->streams[cidx].vol_kctl = NULL;
+		}
+		if (pcm->streams[cidx].usr_kctl) {
+			snd_ctl_remove(pcm->card, pcm->streams[cidx].usr_kctl);
+			pcm->streams[cidx].usr_kctl = NULL;
 		}
 	}
 	mutex_unlock(&pcm->open_mutex);

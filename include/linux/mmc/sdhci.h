@@ -17,6 +17,7 @@
 #include <linux/io.h>
 #include <linux/mmc/host.h>
 #include <linux/pm_qos.h>
+#include <linux/ratelimit.h>
 
 struct sdhci_next {
 	unsigned int sg_count;
@@ -25,7 +26,13 @@ struct sdhci_next {
 
 enum sdhci_power_policy {
 	SDHCI_PERFORMANCE_MODE,
+	SDHCI_PERFORMANCE_MODE_INIT,
 	SDHCI_POWER_SAVE_MODE,
+};
+
+enum sdhci_cluster_info {
+	SDHCI_LITTLE_CLUSTER,
+	SDHCI_BIG_CLUSTER,
 };
 
 struct sdhci_host {
@@ -117,39 +124,37 @@ struct sdhci_host {
  * be called twice.
  */
 #define SDHCI_QUIRK2_SLOW_INT_CLR			(1<<5)
-/* Ignore CMD CRC errors for tuning commands */
-#define SDHCI_QUIRK2_IGNORE_CMDCRC_FOR_TUNING		(1<<6)
 /*
  * If the base clock can be scalable, then there should be no further
  * clock dividing as the input clock itself will be scaled down to
  * required frequency.
  */
-#define SDHCI_QUIRK2_ALWAYS_USE_BASE_CLOCK		(1<<7)
+#define SDHCI_QUIRK2_ALWAYS_USE_BASE_CLOCK		(1<<6)
 /*
  * Dont use the max_discard_to in sdhci driver so that the maximum discard
  * unit gets picked by the mmc queue. Otherwise, it takes a long time for
  * secure discard kind of operations to complete.
  */
-#define SDHCI_QUIRK2_USE_MAX_DISCARD_SIZE		(1<<8)
+#define SDHCI_QUIRK2_USE_MAX_DISCARD_SIZE		(1<<7)
 /*
  * Ignore data timeout error for R1B commands as there will be no
  * data associated and the busy timeout value for these commands
  * could be lager than the maximum timeout value that controller
  * can handle.
  */
-#define SDHCI_QUIRK2_IGNORE_DATATOUT_FOR_R1BCMD		(1<<9)
+#define SDHCI_QUIRK2_IGNORE_DATATOUT_FOR_R1BCMD		(1<<8)
 /*
  * The preset value registers are not properly initialized by
  * some hardware and hence preset value must not be enabled for
  * such controllers.
  */
-#define SDHCI_QUIRK2_BROKEN_PRESET_VALUE		(1<<10)
+#define SDHCI_QUIRK2_BROKEN_PRESET_VALUE		(1<<9)
 /*
  * Some controllers define the usage of 0xF in data timeout counter
  * register (0x2E) which is actually a reserved bit as per
  * specification.
  */
-#define SDHCI_QUIRK2_USE_RESERVED_MAX_TIMEOUT		(1<<11)
+#define SDHCI_QUIRK2_USE_RESERVED_MAX_TIMEOUT		(1<<10)
 /*
  * This is applicable for controllers that advertize timeout clock
  * value in capabilities register (bit 5-0) as just 50MHz whereas the
@@ -162,13 +167,22 @@ struct sdhci_host {
  * will be used in such cases to avoid controller mulplication when timeout is
  * calculated based on the base clock.
  */
-#define SDHCI_QUIRK2_DIVIDE_TOUT_BY_4 (1 << 12)
+#define SDHCI_QUIRK2_DIVIDE_TOUT_BY_4 (1 << 11)
 
 /*
  * Some SDHC controllers are unable to handle data-end bit error in
  * 1-bit mode of SDIO.
  */
-#define SDHCI_QUIRK2_IGN_DATA_END_BIT_ERROR             (1<<9)
+#define SDHCI_QUIRK2_IGN_DATA_END_BIT_ERROR             (1<<12)
+
+/*
+ * Some SDHC controllers do not require data buffers alignment, skip
+ * the bounce buffer logic when preparing data
+ */
+#define SDHCI_QUIRK2_ADMA_SKIP_DATA_ALIGNMENT             (1<<13)
+/* Use reset workaround in case sdhci reset timeouts */
+#define SDHCI_QUIRK2_USE_RESET_WORKAROUND (1 << 15)
+
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
 
@@ -257,7 +271,10 @@ struct sdhci_host {
 #define SDHCI_TUNING_MODE_1	0
 	struct timer_list	tuning_timer;	/* Timer for tuning */
 
-	unsigned int cpu_dma_latency_us;
+	unsigned int *cpu_dma_latency_us;
+	unsigned int cpu_dma_latency_tbl_sz;
+	enum sdhci_cluster_info pm_qos_index;
+	unsigned int *cpu_affinity_mask;
 	struct pm_qos_request pm_qos_req_dma;
 	unsigned int pm_qos_timeout_us;         /* timeout for PM QoS request */
 	struct device_attribute pm_qos_tout;
@@ -271,6 +288,11 @@ struct sdhci_host {
 	bool async_int_supp;  /* async support to rxv int, when clks are off */
 	bool disable_sdio_irq_deferred; /* status of disabling sdio irq */
 	u32 auto_cmd_err_sts;
+	struct ratelimit_state dbg_dump_rs;
+	int reset_wa_applied; /* reset workaround status */
+	ktime_t reset_wa_t; /* time when the reset workaround is applied */
+	int reset_wa_cnt; /* total number of times workaround is used */
+
 	unsigned long private[0] ____cacheline_aligned;
 };
 #endif /* LINUX_MMC_SDHCI_H */

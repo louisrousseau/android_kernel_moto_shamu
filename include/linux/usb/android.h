@@ -36,6 +36,8 @@ struct android_usb_platform_data {
 	u8 usb_core_id;
 	char streaming_func[MAX_STREAMING_FUNCS][FUNC_NAME_LEN];
 	int  streaming_func_count;
+	u8 uicc_nluns;
+	bool cdrom;
 };
 
 #ifndef CONFIG_TARGET_CORE
@@ -60,6 +62,11 @@ extern int gport_setup(struct usb_configuration *c);
 extern void gport_cleanup(void);
 extern int gserial_init_port(int port_num, const char *name,
 					const char *port_name);
+extern bool gserial_is_connected(void);
+extern bool gserial_is_dun_w_softap_enabled(void);
+extern void gserial_dun_w_softap_enable(bool enable);
+extern bool gserial_is_dun_w_softap_active(void);
+
 
 int acm_port_setup(struct usb_configuration *c);
 void acm_port_cleanup(void);

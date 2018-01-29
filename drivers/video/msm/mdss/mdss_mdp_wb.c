@@ -19,8 +19,9 @@
 #include <linux/module.h>
 #include <linux/uaccess.h>
 #include <linux/iommu.h>
+#include <linux/switch.h>
 
-#include <mach/iommu.h>
+#include <linux/qcom_iommu.h>
 #include <linux/msm_iommu_domains.h>
 
 #include "mdss_mdp.h"
@@ -213,10 +214,10 @@ int mdss_mdp_wb_set_secure(struct msm_fb_data_type *mfd, int enable)
 	if (!pipe) {
 		pipe = mdss_mdp_pipe_alloc(mixer, MDSS_MDP_PIPE_TYPE_RGB,
 			NULL);
-		if (!pipe)
+		if (IS_ERR_OR_NULL(pipe))
 			pipe = mdss_mdp_pipe_alloc(mixer,
 				MDSS_MDP_PIPE_TYPE_VIG, NULL);
-		if (!pipe) {
+		if (IS_ERR_OR_NULL(pipe)) {
 			pr_err("Unable to get pipe to set secure session\n");
 			return -ENOMEM;
 		}
@@ -416,11 +417,27 @@ static struct mdss_mdp_wb_data *get_user_node(struct msm_fb_data_type *mfd,
 	int ret;
 
 	if (!list_empty(&wb->register_queue)) {
+		struct ion_client *iclient = mdss_get_ionclient();
+		struct ion_handle *ihdl;
+
+		if (IS_ERR_OR_NULL(iclient)) {
+			pr_err("unable to get mdss ion client\n");
+			return NULL;
+		}
+		ihdl = ion_import_dma_buf(iclient, data->memory_id);
+		if (IS_ERR_OR_NULL(ihdl)) {
+			pr_err("unable to import fd %d\n", data->memory_id);
+			return NULL;
+		}
+		/* only interested in ptr address, so we can free handle */
+		ion_free(iclient, ihdl);
+
 		list_for_each_entry(node, &wb->register_queue, registered_entry)
-			if ((node->buf_info.memory_id == data->memory_id) &&
+			if ((node->buf_data.p[0].srcp_ihdl == ihdl) &&
 				    (node->buf_info.offset == data->offset)) {
-				pr_debug("found node fd=%x off=%x addr=%pa\n",
-						data->memory_id, data->offset,
+				pr_debug("found fd=%d hdl=%pK off=%x addr=%pa\n",
+						data->memory_id, ihdl,
+						data->offset,
 						&node->buf_data.p[0].addr);
 				return node;
 			}
@@ -435,7 +452,6 @@ static struct mdss_mdp_wb_data *get_user_node(struct msm_fb_data_type *mfd,
 	node->user_alloc = true;
 	if (wb->is_secure)
 		flags |= MDP_SECURE_OVERLAY_SESSION;
-
 
 	ret = mdss_mdp_data_get(&node->buf_data, data, 1, flags);
 	if (IS_ERR_VALUE(ret)) {
@@ -484,8 +500,10 @@ static void mdss_mdp_wb_free_node(struct mdss_mdp_wb_data *node)
 
 	if (node->user_alloc) {
 		buf = &node->buf_data.p[0];
-		pr_debug("free user node mem_id=%d offset=%u addr=0x%pa\n",
+
+		pr_debug("free user mem_id=%d ihdl=%pK, offset=%u addr=0x%pa\n",
 				node->buf_info.memory_id,
+				buf->srcp_ihdl,
 				node->buf_info.offset,
 				&buf->addr);
 
@@ -566,10 +584,16 @@ static int mdss_mdp_wb_dequeue(struct msm_fb_data_type *mfd,
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
 	struct mdss_mdp_wb_data *node = NULL;
+	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
 	int ret;
 
 	if (!wb) {
 		pr_err("unable to dequeue, writeback is not initialized\n");
+		return -ENODEV;
+	}
+
+	if (!ctl) {
+		pr_err("unable to dequeue, ctl is not initialized\n");
 		return -ENODEV;
 	}
 
@@ -582,6 +606,7 @@ static int mdss_mdp_wb_dequeue(struct msm_fb_data_type *mfd,
 	mutex_lock(&wb->lock);
 	if (wb->state == WB_STOPING) {
 		pr_debug("wfd stopped\n");
+		mdss_mdp_display_wait4comp(ctl);
 		wb->state = WB_STOP;
 		ret = -ENOBUFS;
 	} else if (!list_empty(&wb->busy_queue)) {
@@ -603,7 +628,8 @@ static int mdss_mdp_wb_dequeue(struct msm_fb_data_type *mfd,
 	return ret;
 }
 
-int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
+int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd,
+		struct mdss_mdp_commit_cb *commit_cb)
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
 	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
@@ -658,6 +684,17 @@ int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 		goto kickoff_fail;
 	}
 	mdss_mdp_display_wait4comp(ctl);
+
+	if (commit_cb)
+		commit_cb->commit_cb_fnc(
+			MDP_COMMIT_STAGE_SETUP_DONE,
+			commit_cb->data);
+
+	mdss_mdp_display_wait4comp(ctl);
+
+	if (commit_cb)
+		commit_cb->commit_cb_fnc(MDP_COMMIT_STAGE_READY_FOR_KICKOFF,
+			commit_cb->data);
 
 	if (wb && node) {
 		mutex_lock(&wb->lock);

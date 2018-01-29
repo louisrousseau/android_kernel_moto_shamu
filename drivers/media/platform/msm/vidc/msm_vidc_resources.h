@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,10 +17,13 @@
 #include <linux/platform_device.h>
 #include <media/msm_vidc.h>
 #define MAX_BUFFER_TYPES 32
+#define IDLE_TIME_WINDOW_SIZE 30
+
 
 struct load_freq_table {
 	u32 load;
 	u32 freq;
+	u32 supported_codecs;
 };
 
 struct reg_value_pair {
@@ -36,6 +39,11 @@ struct reg_set {
 struct addr_range {
 	u32 start;
 	u32 size;
+};
+
+struct addr_set {
+	struct addr_range *addr_tbl;
+	int count;
 };
 
 struct iommu_info {
@@ -79,7 +87,7 @@ struct clock_info {
 	struct clk *clk;
 	struct load_freq_table *load_freq_tbl;
 	u32 count; /* == has_scaling iff count != 0 */
-	bool has_sw_power_collapse;
+	bool has_gating;
 };
 
 struct clock_set {
@@ -91,6 +99,8 @@ struct bus_info {
 	struct msm_bus_scale_pdata *pdata;
 	u32 priv;
 	u32 sessions_supported; /* bitmask */
+	bool passive;
+	bool low_power;
 };
 
 struct bus_set {
@@ -99,13 +109,14 @@ struct bus_set {
 };
 
 struct msm_vidc_platform_resources {
-	uint32_t fw_base_addr;
-	uint32_t register_base;
+	phys_addr_t firmware_base;
+	phys_addr_t register_base;
 	uint32_t register_size;
 	uint32_t irq;
 	struct load_freq_table *load_freq_tbl;
 	uint32_t load_freq_tbl_size;
 	struct reg_set reg_set;
+	struct addr_set qdss_addr_set;
 	struct iommu_set iommu_group_set;
 	struct buffer_usage_set buffer_usage_set;
 	uint32_t ocmem_size;
@@ -114,6 +125,12 @@ struct msm_vidc_platform_resources {
 	struct regulator_set regulator_set;
 	struct clock_set clock_set;
 	struct bus_set bus_set;
+	bool dynamic_bw_update;
+	bool use_non_secure_pil;
+	bool sw_power_collapsible;
+	bool sys_idle_indicator;
+	bool early_fw_load;
+	bool thermal_mitigable;
 };
 
 static inline int is_iommu_present(struct msm_vidc_platform_resources *res)

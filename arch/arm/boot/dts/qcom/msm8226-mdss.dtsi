@@ -29,12 +29,16 @@
 			<22 512 0 6400000>;
 
 		/* Fudge factors */
-		qcom,mdss-ab-factor = <2 1>;		/* 2 times    */
-		qcom,mdss-ib-factor = <6 5>;		/* 1.2 times  */
+		qcom,mdss-ab-factor = <1 1>;		/* 1 times    */
+		qcom,mdss-ib-factor = <2 1>;		/* 2 times  */
 		qcom,mdss-clk-factor = <5 4>;		/* 1.25 times */
 
+		/* Clock levels */
+		qcom,mdss-clk-levels = <92310000 100000000
+				    133330000 177780000 200000000>;
+		qcom,max-mixer-width = <2048>;
 		qcom,mdss-mdp-reg-offset = <0x00000100>;
-		qcom,max-bandwidth-low-kbps = <1660000>;
+		qcom,max-bandwidth-low-kbps = <1100000>;
 		qcom,max-bandwidth-high-kbps = <1660000>;
 		qcom,max-clk-rate = <200000000>;
 		qcom,mdss-pipe-vig-off = <0x00001200>;
@@ -59,6 +63,8 @@
 
 		qcom,mdss-smp-data = <7 4096>;
 
+		qcom,mdss-no-lut-read;
+
 		qcom,mdss-ctl-off = <0x00000600 0x00000700>;
 		qcom,mdss-mixer-intf-off = <0x00003200>;
 		qcom,mdss-mixer-wb-off = <0x00003E00>;
@@ -75,8 +81,16 @@
 		qcom,vbif-settings = <0x004 0x00000001>,
 				     <0x0D8 0x00000707>,
 				     <0x124 0x00000003>;
-		qcom,mdp-settings = <0x02E0 0x000000A5>,
-				    <0x02E4 0x00000055>;
+		qcom,mdp-settings = <0x000002E0 0x000000A5>,
+				    <0x000002E4 0x00000055>,
+				    <0x000003AC 0xC0000CCC>,
+				    <0x000003B4 0xC0000000>,
+				    <0x000003BC 0x00C00C00>,
+				    <0x000004A8 0x0CCCC000>,
+				    <0x000004B0 0xC0000000>,
+				    <0x000004B8 0xC0000000>,
+				    <0x00011148 0x00000058>,
+				    <0x00013148 0x00000058>;
 
 		/* buffer parameters to calculate prefill bandwidth */
 		qcom,mdss-prefill-outstanding-buffer-bytes = <1024>;
@@ -104,9 +118,10 @@
 		label = "MDSS DSI CTRL->0";
 		cell-index = <0>;
 		reg = 	<0xfd922800 0x1f8>,
-			<0xfd922b00 0x2b0>,
+			<0xfd922b00 0x280>,
+			<0xfd922d80 0x30>,
 			<0xfd828000 0x108>;
-		reg-names = "dsi_ctrl", "dsi_phy", "mmss_misc_phys";
+		reg-names = "dsi_ctrl", "dsi_phy", "dsi_phy_regulator", "mmss_misc_phys";
 		qcom,mdss-fb-map = <&mdss_fb0>;
 		qcom,mdss-mdp = <&mdss_mdp>;
 		gdsc-supply = <&gdsc_mdss>;
@@ -117,12 +132,15 @@
 		qcom,platform-te-gpio = <&msmgpio 24 0>;
 		qcom,platform-strength-ctrl = [ff 06];
 		qcom,platform-bist-ctrl = [00 00 b1 ff 00 00];
-		qcom,platform-regulator-settings = [07 09 03 00 20 00 01];
+		qcom,platform-regulator-settings = [07 08 07 00 20 07 01];
 		qcom,platform-lane-config = [00 00 00 00 00 00 00 01 97
 			00 00 00 00 05 00 00 01 97
 			00 00 00 00 0a 00 00 01 97
 			00 00 00 00 0f 00 00 01 97
 			00 c0 00 00 00 00 00 01 bb];
+
+		qcom,mmss-ulp-clamp-ctrl-offset = <0x14>;
+		qcom,mmss-phyreset-ctrl-offset = <0x108>;
 
 		qcom,core-supply-entries {
 			#address-cells = <1>;

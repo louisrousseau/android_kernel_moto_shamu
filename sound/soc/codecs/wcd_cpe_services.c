@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -46,6 +46,20 @@
 #define TOMTOM_A_SVASS_SPE_INBOX(N)	(TOMTOM_A_SVASS_SPE_INBOX_0 + (N))
 #define TOMTOM_A_SVASS_SPE_OUTBOX(N)	(TOMTOM_A_SVASS_SPE_OUTBOX_0 + (N))
 #define CHUNK_SIZE 16
+
+#define CPE_SVC_GRAB_LOCK(lock, name)		\
+{						\
+	pr_debug("%s: %s lock acquire\n",	\
+		 __func__, name);		\
+	mutex_lock(lock);			\
+}
+
+#define CPE_SVC_REL_LOCK(lock, name)		\
+{						\
+	pr_debug("%s: %s lock release\n",	\
+		 __func__, name);		\
+	mutex_unlock(lock);			\
+}
 
 static const struct cpe_svc_hw_cfg cpe_svc_tomtom_info = {
 	TOMTOM_A_SVASS_SPE_DRAM_SIZE,
@@ -111,6 +125,8 @@ struct cpe_info {
 	struct list_head main_queue;
 	struct completion cmd_complete;
 	void *thread_handler;
+	bool stop_thread;
+	struct mutex msg_lock;
 	enum cpe_state state;
 	enum cpe_substate substate;
 	struct list_head client_list;
@@ -201,11 +217,12 @@ static struct cpe_info *cpe_default_handle;
 static void (*cpe_irq_control_callback)(u32 enable);
 static u32 cpe_msg_buffer;
 static struct mutex cpe_api_mutex;
+static struct cpe_svc_boot_event cpe_debug_vector;
 
 static enum cpe_svc_result
 cpe_is_command_valid(const struct cpe_info *t_info,
 	enum cpe_command command);
-
+static enum cpe_svc_result __cpe_svc_shutdown(void *cpe_handle);
 static void *cdc_priv;
 
 static int cpe_register_read(u32 reg, u8 *val)
@@ -300,25 +317,53 @@ static int cpe_worker_thread(void *context)
 
 	while (!kthread_should_stop()) {
 		wait_for_completion(&t_info->cmd_complete);
+
+		CPE_SVC_GRAB_LOCK(&t_info->msg_lock, "msg_lock");
 		cpe_cmd_received(t_info);
 		INIT_COMPLETION(t_info->cmd_complete);
+		if (t_info->stop_thread)
+			goto unlock_and_exit;
+		CPE_SVC_REL_LOCK(&t_info->msg_lock, "msg_lock");
+
 	};
 
+	pr_debug("%s: exiting thread\n", __func__);
+
+	return 0;
+
+unlock_and_exit:
+	pr_debug("%s: thread stopped\n", __func__);
+	CPE_SVC_REL_LOCK(&t_info->msg_lock, "msg_lock");
 	return 0;
 }
 
 static void cpe_create_worker_thread(struct cpe_info *t_info)
 {
+	pr_debug("%s:\n", __func__);
 	INIT_LIST_HEAD(&t_info->main_queue);
 	init_completion(&t_info->cmd_complete);
+	t_info->stop_thread = false;
 	t_info->thread_handler = kthread_run(cpe_worker_thread,
 		(void *)t_info, "cpe-worker-thread");
 }
 
 static void cpe_cleanup_worker_thread(struct cpe_info *t_info)
 {
-	if (t_info->thread_handler != NULL)
-		kthread_stop(t_info->thread_handler);
+	if (!t_info->thread_handler) {
+		pr_err("%s: thread not create\n", __func__);
+		return;
+	}
+
+	/*
+	 * Wake up the command handler in case
+	 * it is waiting for an command to be processed.
+	 */
+	CPE_SVC_GRAB_LOCK(&t_info->msg_lock, "msg_lock");
+	t_info->stop_thread = true;
+	complete(&t_info->cmd_complete);
+	CPE_SVC_REL_LOCK(&t_info->msg_lock, "msg_lock");
+
+	kthread_stop(t_info->thread_handler);
 
 	t_info->thread_handler = NULL;
 }
@@ -350,6 +395,7 @@ cpe_send_cmd_to_thread(struct cpe_info *t_info,
 	list_add_tail(&(cmd->list), &(t_info->main_queue));
 
 	complete(&t_info->cmd_complete);
+
 	return rc;
 }
 
@@ -628,7 +674,7 @@ static void cpe_process_irq_int(u32 irq,
 		return;
 	}
 
-	mutex_lock(&cpe_api_mutex);
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	switch (irq) {
 	case CPE_IRQ_OUTBOX_IRQ:
 		size = t_info->tgt->tgt_get_cpe_info()->outbox_size;
@@ -644,9 +690,7 @@ static void cpe_process_irq_int(u32 irq,
 	case CPE_IRQ_WDOG_BITE:
 	case CPE_IRQ_RCO_WDOG_INT:
 		err_irq = true;
-		mutex_unlock(&cpe_api_mutex);
-		cpe_svc_shutdown(t_info);
-		mutex_lock(&cpe_api_mutex);
+		__cpe_svc_shutdown(t_info);
 		break;
 
 	case CPE_IRQ_FLL_LOCK_LOST:
@@ -658,7 +702,7 @@ static void cpe_process_irq_int(u32 irq,
 	if (err_irq) {
 		pr_err("%s: CPE error IRQ %u occured\n",
 			__func__, irq);
-		mutex_unlock(&cpe_api_mutex);
+		CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 		return;
 	}
 
@@ -701,8 +745,6 @@ static void cpe_process_irq_int(u32 irq,
 			temp_node.data = m->payload;
 			t_info->substate = CPE_SS_MSG_SENT;
 			t_info->cpe_process_command(&temp_node);
-			kfree(m);
-			t_info->pending = NULL;
 			break;
 
 		default:
@@ -725,7 +767,7 @@ static void cpe_process_irq_int(u32 irq,
 		break;
 	}
 
-	mutex_unlock(&cpe_api_mutex);
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 }
 
 
@@ -801,6 +843,20 @@ static bool cpe_mt_process_cmd(struct cpe_command_node *command_node)
 			break;
 		}
 
+		/* boot was successful */
+		if (ev_boot->version ==
+		    CPE_CORE_VERSION_SYSTEM_BOOT_EVENT) {
+			cpe_debug_vector.debug_address =
+					ev_boot->sfr_buff_address;
+			cpe_debug_vector.debug_buffer_size =
+					ev_boot->sfr_buff_size;
+			cpe_debug_vector.status = ev_boot->status;
+			payload.event = CPE_SVC_BOOT;
+			payload.result = CPE_SVC_SUCCESS;
+			payload.payload = (void *)&cpe_debug_vector;
+			cpe_broadcast_notification(t_info, &payload);
+		}
+
 		t_info->substate = CPE_SS_BOOT_INIT;
 		cpe_send_msg_to_inbox(t_info, NULL);
 		break;
@@ -856,29 +912,21 @@ static bool cpe_mt_process_cmd(struct cpe_command_node *command_node)
 		break;
 
 	case CPE_CMD_SEND_MSG_COMPLETE:
+
 		hdr = CMI_GET_HEADER(t_info->tgt->outbox);
 		service = CMI_HDR_GET_SERVICE(hdr);
+		cpe_command_cleanup(command_node);
+		t_info->state = CPE_STATE_IDLE;
+		kfree(t_info->pending);
+		t_info->pending = NULL;
 		pr_debug("%s: msg send success, notifying clients\n",
 			 __func__);
 		cpe_notify_cmi_client(t_info,
 			t_info->tgt->outbox, CPE_SVC_SUCCESS);
-		cpe_command_cleanup(command_node);
-		t_info->state = CPE_STATE_IDLE;
 		break;
 
 	case CPE_CMD_KILL_THREAD:
 
-		if (t_info->pending) {
-			struct cpe_send_msg *m =
-				(struct cpe_send_msg *)t_info->pending;
-			cpe_notify_cmi_client(t_info, m->payload,
-				CPE_SVC_SHUTTING_DOWN);
-			kfree(t_info->pending);
-			t_info->pending = NULL;
-		}
-
-		cpe_command_cleanup(command_node);
-		kfree(command_node);
 		payload.result = CPE_SVC_SHUTTING_DOWN;
 		payload.event = CPE_SVC_OFFLINE;
 		payload.payload = NULL;
@@ -889,7 +937,6 @@ static bool cpe_mt_process_cmd(struct cpe_command_node *command_node)
 		t_info->state = CPE_STATE_OFFLINE;
 		t_info->substate = CPE_SS_IDLE;
 		cpe_broadcast_notification(t_info, &payload);
-		cpe_cleanup_worker_thread(t_info);
 		break;
 
 	default:
@@ -907,7 +954,7 @@ static enum cpe_svc_result cpe_mt_validate_cmd(
 {
 	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
 
-	if (t_info && t_info->initialized == false) {
+	if ((t_info == NULL) || t_info->initialized == false) {
 		pr_err("%s: cpe service is not ready\n",
 			__func__);
 		return CPE_SVC_NOT_READY;
@@ -919,6 +966,7 @@ static enum cpe_svc_result cpe_mt_validate_cmd(
 		switch (command) {
 		case CPE_CMD_RESET:
 		case CPE_CMD_DL_SEGMENT:
+		case CPE_CMD_RAMDUMP:
 		case CPE_CMD_PROCESS_IRQ:
 		case CPE_CMD_KILL_THREAD:
 		case CPE_CMD_DEINITIALIZE:
@@ -958,6 +1006,21 @@ static enum cpe_svc_result cpe_mt_validate_cmd(
 		break;
 
 	case CPE_STATE_IDLE:
+		switch (command) {
+		case CPE_CMD_SEND_MSG:
+		case CPE_CMD_SEND_MSG_COMPLETE:
+		case CPE_CMD_PROCESS_IRQ:
+		case CPE_CMD_RESET:
+		case CPE_CMD_SHUTDOWN:
+		case CPE_CMD_KILL_THREAD:
+			rc = CPE_SVC_SUCCESS;
+			break;
+		default:
+			rc = CPE_SVC_FAILED;
+			break;
+		}
+		break;
+
 	case CPE_STATE_SENDING_MSG:
 		switch (command) {
 		case CPE_CMD_SEND_MSG:
@@ -965,6 +1028,7 @@ static enum cpe_svc_result cpe_mt_validate_cmd(
 		case CPE_CMD_PROCESS_IRQ:
 		case CPE_CMD_SHUTDOWN:
 		case CPE_CMD_KILL_THREAD:
+			rc = CPE_SVC_SUCCESS;
 			break;
 		default:
 			rc = CPE_SVC_FAILED;
@@ -1048,6 +1112,7 @@ void *cpe_svc_initialize(
 
 	memset(t_info->tgt->outbox, 0, cap->outbox_size);
 	memset(t_info->tgt->inbox, 0, cap->inbox_size);
+	mutex_init(&t_info->msg_lock);
 	cpe_irq_control_callback = irq_control_callback;
 	t_info->cpe_process_command = cpe_mt_process_cmd;
 	t_info->cpe_cmd_validate = cpe_mt_validate_cmd;
@@ -1102,12 +1167,16 @@ void *cpe_svc_register(void *cpe_handle,
 			(const struct cpe_svc_notification *parameter),
 		u32 mask, const char *name)
 {
+	void *reg_handle;
+
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!cpe_default_handle) {
 		cpe_default_handle = kzalloc(sizeof(struct cpe_info),
 					     GFP_KERNEL);
 		if (!cpe_default_handle) {
 			pr_err("%s: no_mem for cpe handle, sz = %zu\n",
 				__func__, sizeof(struct cpe_info));
+			CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 			return NULL;
 		}
 
@@ -1118,19 +1187,28 @@ void *cpe_svc_register(void *cpe_handle,
 	if (!cpe_handle)
 		cpe_handle = cpe_default_handle;
 
-	return cpe_register_generic((struct cpe_info *)cpe_handle,
-		notification_callback,
-		NULL,
-		mask, CPE_NO_SERVICE, name);
+	reg_handle = cpe_register_generic((struct cpe_info *)cpe_handle,
+					   notification_callback,
+					   NULL,
+					   mask, CPE_NO_SERVICE, name);
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
+
+	return reg_handle;
 }
 
 enum cpe_svc_result cpe_svc_deregister(void *cpe_handle, void *reg_handle)
 {
+	enum cpe_svc_result rc;
+
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!cpe_handle)
 		cpe_handle = cpe_default_handle;
 
-	return cpe_deregister_generic((struct cpe_info *)cpe_handle,
-		reg_handle);
+	rc = cpe_deregister_generic((struct cpe_info *)cpe_handle,
+				    reg_handle);
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
+
+	return rc;
 }
 
 enum cpe_svc_result cpe_svc_download_segment(void *cpe_handle,
@@ -1139,6 +1217,7 @@ enum cpe_svc_result cpe_svc_download_segment(void *cpe_handle,
 	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
 	struct cpe_info *t_info = (struct cpe_info *)cpe_handle;
 
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!t_info)
 		t_info = cpe_default_handle;
 
@@ -1147,16 +1226,16 @@ enum cpe_svc_result cpe_svc_download_segment(void *cpe_handle,
 	if (rc != CPE_SVC_SUCCESS) {
 		pr_err("%s: cmd validation fail, cmd = %d\n",
 			__func__, CPE_CMD_DL_SEGMENT);
+		CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 		return rc;
 	}
 
-	mutex_lock(&cpe_api_mutex);
 	cpe_toggle_irq_notification(t_info, false);
 	t_info->state = CPE_STATE_DOWNLOADING;
 	t_info->substate = CPE_SS_DL_DOWNLOADING;
 	rc = t_info->tgt->tgt_write_ram(t_info, segment);
 	cpe_toggle_irq_notification(t_info, true);
-	mutex_unlock(&cpe_api_mutex);
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 
 	return rc;
 }
@@ -1166,6 +1245,7 @@ enum cpe_svc_result cpe_svc_boot(void *cpe_handle, int debug_mode)
 	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
 	struct cpe_info *t_info = (struct cpe_info *)cpe_handle;
 
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!t_info)
 		t_info = cpe_default_handle;
 
@@ -1174,10 +1254,9 @@ enum cpe_svc_result cpe_svc_boot(void *cpe_handle, int debug_mode)
 	if (rc != CPE_SVC_SUCCESS) {
 		pr_err("%s: cmd validation fail, cmd = %d\n",
 			__func__, CPE_CMD_BOOT);
+		CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 		return rc;
 	}
-
-	mutex_lock(&cpe_api_mutex);
 
 	if (rc == CPE_SVC_SUCCESS) {
 		t_info->tgt->tgt_boot(debug_mode);
@@ -1187,7 +1266,7 @@ enum cpe_svc_result cpe_svc_boot(void *cpe_handle, int debug_mode)
 			 __func__);
 	}
 
-	mutex_unlock(&cpe_api_mutex);
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 	return rc;
 }
 
@@ -1210,21 +1289,25 @@ enum cpe_svc_result cpe_svc_route_notification(void *cpe_handle,
 		enum cpe_svc_module module, enum cpe_svc_route_dest dest)
 {
 	struct cpe_info *t_info = (struct cpe_info *)cpe_handle;
+	enum cpe_svc_result rc = CPE_SVC_NOT_READY;
 
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!t_info)
 		t_info = cpe_default_handle;
 
 	if (t_info->tgt)
-		return t_info->tgt->tgt_route_notification(module, dest);
+		rc = t_info->tgt->tgt_route_notification(module, dest);
 
-	return CPE_SVC_NOT_READY;
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
+	return rc;
 }
 
-enum cpe_svc_result cpe_svc_shutdown(void *cpe_handle)
+static enum cpe_svc_result __cpe_svc_shutdown(void *cpe_handle)
 {
 	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
 	struct cpe_info *t_info = (struct cpe_info *)cpe_handle;
 	struct cpe_command_node *n = NULL;
+	struct cpe_command_node kill_cmd;
 
 	if (!t_info)
 		t_info = cpe_default_handle;
@@ -1237,8 +1320,6 @@ enum cpe_svc_result cpe_svc_shutdown(void *cpe_handle)
 		return rc;
 	}
 
-	mutex_lock(&cpe_api_mutex);
-
 	while (!list_empty(&t_info->main_queue)) {
 		n = list_first_entry(&t_info->main_queue,
 				     struct cpe_command_node, list);
@@ -1248,6 +1329,11 @@ enum cpe_svc_result cpe_svc_shutdown(void *cpe_handle)
 				CPE_SVC_SHUTTING_DOWN);
 		}
 
+		/*
+		 * Since command cannot be processed,
+		 * delete it from the list and perform cleanup
+		 */
+		list_del(&n->list);
 		cpe_command_cleanup(n);
 		kfree(n);
 	}
@@ -1257,9 +1343,30 @@ enum cpe_svc_result cpe_svc_shutdown(void *cpe_handle)
 	t_info->state = CPE_STATE_OFFLINE;
 	t_info->substate = CPE_SS_IDLE;
 
-	rc = cpe_send_cmd_to_thread(t_info, CPE_CMD_KILL_THREAD, NULL);
-	mutex_unlock(&cpe_api_mutex);
+	memset(&kill_cmd, 0, sizeof(kill_cmd));
+	kill_cmd.command = CPE_CMD_KILL_THREAD;
 
+	if (t_info->pending) {
+		struct cpe_send_msg *m =
+			(struct cpe_send_msg *)t_info->pending;
+		cpe_notify_cmi_client(t_info, m->payload,
+			CPE_SVC_SHUTTING_DOWN);
+		kfree(t_info->pending);
+		t_info->pending = NULL;
+	}
+
+	cpe_cleanup_worker_thread(t_info);
+	t_info->cpe_process_command(&kill_cmd);
+
+	return rc;
+}
+
+enum cpe_svc_result cpe_svc_shutdown(void *cpe_handle)
+{
+	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
+	rc = __cpe_svc_shutdown(cpe_handle);
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 	return rc;
 }
 
@@ -1268,6 +1375,7 @@ enum cpe_svc_result cpe_svc_reset(void *cpe_handle)
 	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
 	struct cpe_info *t_info = (struct cpe_info *)cpe_handle;
 
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!t_info)
 		t_info = cpe_default_handle;
 
@@ -1276,18 +1384,18 @@ enum cpe_svc_result cpe_svc_reset(void *cpe_handle)
 	if (rc != CPE_SVC_SUCCESS) {
 		pr_err("%s: cmd validation fail, cmd = %d\n",
 			__func__, CPE_CMD_RESET);
+		CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 		return rc;
 	}
 
 	if (t_info && t_info->tgt) {
-		mutex_lock(&cpe_api_mutex);
 		rc = t_info->tgt->tgt_reset();
 		pr_debug("%s: cpe services in INITIALIZED state\n",
 			 __func__);
 		t_info->state = CPE_STATE_INITIALIZED;
 		t_info->substate = CPE_SS_IDLE;
-		mutex_unlock(&cpe_api_mutex);
 	}
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 
 	return rc;
 }
@@ -1298,6 +1406,7 @@ enum cpe_svc_result cpe_svc_ramdump(void *cpe_handle,
 	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
 	struct cpe_info *t_info = (struct cpe_info *)cpe_handle;
 
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!t_info)
 		t_info = cpe_default_handle;
 
@@ -1305,6 +1414,7 @@ enum cpe_svc_result cpe_svc_ramdump(void *cpe_handle,
 	if (rc != CPE_SVC_SUCCESS) {
 		pr_err("%s: cmd validation fail, cmd = %d\n",
 			__func__, CPE_CMD_RAMDUMP);
+		CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 		return rc;
 	}
 
@@ -1312,8 +1422,9 @@ enum cpe_svc_result cpe_svc_ramdump(void *cpe_handle,
 		rc = t_info->tgt->tgt_read_ram(t_info, buffer);
 	} else {
 		pr_err("%s: cpe service not ready\n", __func__);
-		return CPE_SVC_NOT_READY;
+		rc = CPE_SVC_NOT_READY;
 	}
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 
 	return rc;
 }
@@ -1321,15 +1432,17 @@ enum cpe_svc_result cpe_svc_ramdump(void *cpe_handle,
 enum cpe_svc_result cpe_svc_set_debug_mode(void *cpe_handle, u32 mode)
 {
 	struct cpe_info *t_info = (struct cpe_info *)cpe_handle;
+	enum cpe_svc_result rc = CPE_SVC_INVALID_HANDLE;
 
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	if (!t_info)
 		t_info = cpe_default_handle;
 
 	if (t_info->tgt)
-		return t_info->tgt->tgt_set_debug_mode(mode);
+		rc = t_info->tgt->tgt_set_debug_mode(mode);
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 
-	else
-		return CPE_SVC_INVALID_HANDLE;
+	return rc;
 }
 
 const struct cpe_svc_hw_cfg *cpe_svc_get_hw_cfg(void *cpe_handle)
@@ -1341,8 +1454,8 @@ const struct cpe_svc_hw_cfg *cpe_svc_get_hw_cfg(void *cpe_handle)
 
 	if (t_info->tgt)
 		return t_info->tgt->tgt_get_cpe_info();
-	else
-		return NULL;
+
+	return NULL;
 }
 
 void *cmi_register(
@@ -1350,12 +1463,19 @@ void *cmi_register(
 			const struct cmi_api_notification *parameter),
 		u32 service)
 {
-	return cpe_register_generic(cpe_default_handle,
-		NULL,
-		notification_callback,
-		CPE_SVC_CMI_MSG | CPE_SVC_OFFLINE | CPE_SVC_ONLINE,
-		service,
-		"CMI_CLIENT");
+	void *reg_handle = NULL;
+
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
+	reg_handle = cpe_register_generic(cpe_default_handle,
+			NULL,
+			notification_callback,
+			(CPE_SVC_CMI_MSG | CPE_SVC_OFFLINE |
+			 CPE_SVC_ONLINE),
+			service,
+			"CMI_CLIENT");
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
+
+	return reg_handle;
 }
 
 enum cmi_api_result cmi_deregister(void *reg_handle)
@@ -1365,6 +1485,7 @@ enum cmi_api_result cmi_deregister(void *reg_handle)
 	enum cmi_api_result rc = CMI_API_SUCCESS;
 	struct cpe_svc_notification payload;
 
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	rc = (enum cmi_api_result) cpe_deregister_generic(
 		cpe_default_handle, reg_handle);
 
@@ -1380,6 +1501,7 @@ enum cmi_api_result cmi_deregister(void *reg_handle)
 		cpe_broadcast_notification(cpe_default_handle, &payload);
 	}
 
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 	return rc;
 }
 
@@ -1388,13 +1510,22 @@ enum cmi_api_result cmi_send_msg(void *message)
 	enum cmi_api_result rc = CMI_API_SUCCESS;
 	struct cpe_send_msg *msg = NULL;
 	struct cmi_hdr *hdr;
+	struct cpe_info *t_info = cpe_default_handle;
 
+	if (!t_info) {
+		pr_err("%s: CPE svc not init'ed\n",
+			__func__);
+		return CPE_SVC_INVALID_HANDLE;
+	}
+
+	CPE_SVC_GRAB_LOCK(&cpe_api_mutex, "cpe_api");
 	hdr = CMI_GET_HEADER(message);
 	msg = kzalloc(sizeof(struct cpe_send_msg),
 		      GFP_ATOMIC);
 	if (!msg) {
 		pr_err("%s: no memory for cmi msg, sz = %zu\n",
 			__func__, sizeof(struct cpe_send_msg));
+		CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 		return CPE_SVC_NO_MEMORY;
 	}
 
@@ -1408,17 +1539,20 @@ enum cmi_api_result cmi_send_msg(void *message)
 
 	msg->payload = kzalloc(msg->size, GFP_ATOMIC);
 	if (!msg->payload) {
-		pr_err("%s: no memory for cmi payload, sz = %d\n",
+		pr_err("%s: no memory for cmi payload, sz = %zd\n",
 			__func__, msg->size);
 		kfree(msg);
+		CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 		return CPE_SVC_NO_MEMORY;
 	}
 
 	msg->address = 0;
 	memcpy((void *)msg->payload, message, msg->size);
 
+	CPE_SVC_GRAB_LOCK(&t_info->msg_lock, "msg_lock");
 	rc = (enum cmi_api_result)cpe_send_cmd_to_thread(cpe_default_handle,
 		CPE_CMD_SEND_MSG, (void *)msg);
+	CPE_SVC_REL_LOCK(&t_info->msg_lock, "msg_lock");
 
 	if (rc != 0) {
 		pr_err("%s: Failed to queue message\n", __func__);
@@ -1426,6 +1560,7 @@ enum cmi_api_result cmi_send_msg(void *message)
 		kfree(msg);
 	}
 
+	CPE_SVC_REL_LOCK(&cpe_api_mutex, "cpe_api");
 	return rc;
 }
 
@@ -1440,6 +1575,8 @@ static enum cpe_svc_result cpe_tgt_tomtom_boot(int debug_mode)
 		pr_info("%s: CPE in debug mode, WDOG disabled\n",
 			__func__);
 
+	rc = cpe_update_bits(TOMTOM_A_SVASS_CLKRST_CTL,
+			     0x02, 0x00);
 	rc = cpe_update_bits(TOMTOM_A_SVASS_CLKRST_CTL,
 			     0x0C, 0x04);
 	rc = cpe_update_bits(TOMTOM_A_SVASS_CPAR_CFG,
@@ -1468,12 +1605,17 @@ static enum cpe_svc_result cpe_tgt_tomtom_reset(void)
 {
 	enum cpe_svc_result rc = CPE_SVC_SUCCESS;
 
+	rc = cpe_update_bits(TOMTOM_A_SVASS_CPAR_WDOG_CFG,
+			     0x30, 0x00);
+
 	rc = cpe_update_bits(TOMTOM_A_SVASS_CPAR_CFG,
 			     0x01, 0x00);
 	rc = cpe_update_bits(TOMTOM_A_MEM_LEAKAGE_CTL,
 			     0x07, 0x03);
 	rc = cpe_update_bits(TOMTOM_A_SVASS_CLKRST_CTL,
 			     0x08, 0x08);
+	rc = cpe_update_bits(TOMTOM_A_SVASS_CLKRST_CTL,
+			     0x02, 0x02);
 	return rc;
 }
 
@@ -1487,7 +1629,7 @@ enum cpe_svc_result cpe_tgt_tomtom_voicetx(bool enable)
 	else
 		val = 0x00;
 	rc = cpe_update_bits(TOMTOM_A_SVASS_CFG,
-						 0x02, val);
+			     0x02, val);
 	val = 0;
 	cpe_register_read(TOMTOM_A_SVASS_CFG, &val);
 	return rc;
@@ -1577,7 +1719,7 @@ static enum cpe_svc_result cpe_get_mem_addr(struct cpe_info *t_info,
 
 	address = mem_seg->cpe_addr - offset;
 	if (address + mem_seg->size > mem_sz) {
-		pr_err("%s: wrong size %u, start adress %x, mem_type %u\n",
+		pr_err("%s: wrong size %zu, start adress %x, mem_type %u\n",
 			__func__, mem_seg->size, address, mem_type);
 		return CPE_SVC_INVALID_HANDLE;
 	}

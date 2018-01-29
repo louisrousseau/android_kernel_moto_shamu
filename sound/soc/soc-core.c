@@ -2104,10 +2104,6 @@ unsigned int snd_soc_read(struct snd_soc_codec *codec, unsigned int reg)
 	unsigned int ret;
 
         if (codec->read) {
-		if (unlikely(!snd_card_is_online_state(codec->card->snd_card))) {
-			dev_err(codec->dev, "read 0x%02x while offline\n", reg);
-			return -ENODEV;
-		}
 		ret = codec->read(codec, reg);
 		dev_dbg(codec->dev, "read %x => %x\n", reg, ret);
 		trace_snd_soc_reg_read(codec, reg, ret);
@@ -2123,10 +2119,6 @@ unsigned int snd_soc_write(struct snd_soc_codec *codec,
 			   unsigned int reg, unsigned int val)
 {
 	if (codec->write) {
-		if (unlikely(!snd_card_is_online_state(codec->card->snd_card))) {
-			dev_err(codec->dev, "write 0x%02x while offline\n", reg);
-			return -ENODEV;
-		}
 		dev_dbg(codec->dev, "write %x = %x\n", reg, val);
 		trace_snd_soc_reg_write(codec, reg, val);
 		return codec->write(codec, reg, val);
@@ -3578,8 +3570,7 @@ int snd_soc_dai_digital_mute(struct snd_soc_dai *dai, int mute,
 
 	if (dai->driver->ops->mute_stream)
 		return dai->driver->ops->mute_stream(dai, mute, direction);
-	else if (direction == SNDRV_PCM_STREAM_PLAYBACK &&
-		 dai->driver->ops->digital_mute)
+	else if (dai->driver->ops->digital_mute)
 		return dai->driver->ops->digital_mute(dai, mute);
 	else
 		return -ENOTSUPP;

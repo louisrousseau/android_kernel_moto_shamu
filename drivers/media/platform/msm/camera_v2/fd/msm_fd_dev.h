@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -75,10 +75,12 @@ struct msm_fd_format {
 
 /*
  * struct msm_fd_mem_pool - Structure contain FD memory pool information.
+ * @fd_device: Pointer to fd device.
  * @client: Pointer to ion client.
  * @domain_num: Domain number associated with FD hw.
  */
 struct msm_fd_mem_pool {
+	struct msm_fd_device *fd_device;
 	struct ion_client *client;
 	int domain_num;
 };
@@ -142,7 +144,6 @@ struct msm_fd_stats {
  * @mem_pool: FD hw memory pool.
  * @stats: Pointer to statistic buffers.
  * @work_buf: Working memory buffer handle.
- * @wait_stop_stream: Pointer to completion to wait on stop stream.
  */
 struct fd_ctx {
 	struct msm_fd_device *fd_device;
@@ -155,7 +156,7 @@ struct fd_ctx {
 	struct msm_fd_mem_pool mem_pool;
 	struct msm_fd_stats *stats;
 	struct msm_fd_buf_handle work_buf;
-	struct completion *wait_stop_stream;
+	struct mutex lock;
 };
 
 /*
@@ -185,8 +186,10 @@ enum msm_fd_mem_resources {
 
 /*
  * struct msm_fd_device - FD device structure.
+ * @hw_revision: Face detection hw revision.
  * @lock: Lock used for reference count.
  * @slock: Spinlock used to protect FD device struct.
+ * @irq_num: Face detection irq number.
  * @ref_count: Device reference count.
  * @res_mem: Array of memory resources used by FD device.
  * @iomem_base: Array of register mappings used by FD device.
@@ -194,8 +197,10 @@ enum msm_fd_mem_resources {
  * @clk_num: Number of clocks attached to the device.
  * @clk: Array of clock resources used by fd device.
  * @clk_rates: Array of clock rates set.
+ * @bus_client: Memory access bus client.
  * @iommu_domain: Pointer to FD device iommu domain handler.
  * @iommu_domain_num: FD device iommu domain number.
+ * @iommu_attached_cnt: Iommu attached devices reference count.
  * @iommu_dev: Pointer to Ion iommu device.
  * @dev: Pointer to device struct.
  * @v4l2_dev: V4l2 device.
@@ -204,10 +209,14 @@ enum msm_fd_mem_resources {
  * @buf_queue: FD device processing queue.
  * @work_queue: Pointer to FD device IRQ bottom half workqueue.
  * @work: IRQ bottom half work struct.
+ * @hw_halt_completion: Completes when face detection hw halt completes.
  */
 struct msm_fd_device {
+	u32 hw_revision;
+
 	struct mutex lock;
 	spinlock_t slock;
+	struct mutex recovery_lock;
 	int ref_count;
 
 	int irq_num;
@@ -221,8 +230,11 @@ struct msm_fd_device {
 	unsigned int clk_rates_num;
 	unsigned int clk_rates[MSM_FD_MAX_CLK_RATES][MSM_FD_MAX_CLK_NUM];
 
+	uint32_t bus_client;
+
 	struct iommu_domain *iommu_domain;
 	int iommu_domain_num;
+	unsigned int iommu_attached_cnt;
 
 	struct device *iommu_dev;
 	struct device *dev;
@@ -233,6 +245,7 @@ struct msm_fd_device {
 	struct list_head buf_queue;
 	struct workqueue_struct *work_queue;
 	struct work_struct work;
+	struct completion hw_halt_completion;
 };
 
 #endif /* __MSM_FD_DEV_H__ */

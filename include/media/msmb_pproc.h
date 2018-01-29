@@ -4,19 +4,25 @@
 #ifdef MSM_CAMERA_BIONIC
 #include <sys/types.h>
 #endif
+#ifdef CONFIG_COMPAT
+#include <linux/compat.h>
+#endif
 #include <linux/videodev2.h>
 #include <linux/types.h>
 #include <media/msmb_generic_buf_mgr.h>
 
 /* Should be same as VIDEO_MAX_PLANES in videodev2.h */
 #define MAX_PLANES VIDEO_MAX_PLANES
+/* PARTIAL_FRAME_STRIPE_COUNT must be even */
+#define PARTIAL_FRAME_STRIPE_COUNT 4
 
 #define MAX_NUM_CPP_STRIPS 8
 #define MSM_CPP_MAX_NUM_PLANES 3
 #define MSM_CPP_MIN_FRAME_LENGTH 13
-#define MSM_CPP_MAX_FRAME_LENGTH 2048
+#define MSM_CPP_MAX_FRAME_LENGTH 4096
 #define MSM_CPP_MAX_FW_NAME_LEN 32
 #define MAX_FREQ_TBL 10
+#define MSM_OUTPUT_BUF_CNT 8
 
 enum msm_cpp_frame_type {
 	MSM_CPP_OFFLINE_FRAME,
@@ -39,6 +45,32 @@ struct msm_cpp_frame_strip_info {
 	uint32_t src_end_x;
 	int32_t src_start_y;
 	uint32_t src_end_y;
+
+	/* extra 5th and 6th layer parameters */
+	int32_t extra_src_start_x;
+	int32_t extra_src_end_x;
+	int32_t extra_src_start_y;
+	int32_t extra_src_end_y;
+
+	int32_t extra_initial_vertical_count[2];
+	int32_t extra_initial_horizontal_count[2];
+
+	/* crop downscale 32x pixels */
+	int32_t extra_left_crop;
+	int32_t extra_top_crop;
+
+	int32_t extra_pad_bottom;
+	int32_t extra_pad_top;
+	int32_t extra_pad_right;
+	int32_t extra_pad_left;
+
+	int32_t extra_upscale_width;
+	int32_t extra_upscale_height;
+
+	uint32_t temporal_pad_bottom;
+	uint32_t temporal_pad_top;
+	uint32_t temporal_pad_right;
+	uint32_t temporal_pad_left;
 
 	int32_t temporal_src_start_x;
 	uint32_t temporal_src_end_x;
@@ -100,18 +132,19 @@ struct msm_cpp_frame_strip_info {
 	uint32_t output_bytes_per_pixel;
 	uint32_t temporal_bytes_per_pixel;
 
-	unsigned int source_address[2];
-	unsigned int destination_address[2];
+	uint32_t source_address[2];
+	uint32_t extra_source_address[2];
+	uint32_t destination_address[2];
 	/* source_address[1] is used for CbCR planar
 	 * to CbCr interleaved conversion
 	 */
-	unsigned int temporal_source_address[2];
+	uint32_t temporal_source_address[2];
 	/* destination_address[1] is used for CbCr interleved
 	 * to CbCr planar conversion
 	 */
-	unsigned int temporal_destination_address[2];
-	unsigned int src_stride;
-	unsigned int dst_stride;
+	uint32_t temporal_destination_address[2];
+	uint32_t src_stride;
+	uint32_t dst_stride;
 	uint32_t rotate_270;
 	uint32_t horizontal_flip;
 	uint32_t vertical_flip;
@@ -122,10 +155,15 @@ struct msm_cpp_frame_strip_info {
 	uint32_t temporal_denoise_crop_en;
 	uint32_t prescaler_spatial_denoise_crop_en;
 	uint32_t state_crop_en;
+
+	int32_t we_h_init;
+	int32_t we_v_init;
+	int32_t we_h_step;
+	int32_t we_v_step;
 };
 
 struct msm_cpp_buffer_info_t {
-	int fd;
+	int32_t fd;
 	uint32_t index;
 	uint32_t offset;
 	uint8_t native_buff;
@@ -139,6 +177,20 @@ struct msm_cpp_stream_buff_info_t {
 	struct msm_cpp_buffer_info_t *buffer_info;
 };
 
+enum msm_cpp_batch_mode_t {
+	BATCH_MODE_NONE,
+	BATCH_MODE_VIDEO,
+	BATCH_MODE_PREVIEW
+};
+
+struct msm_cpp_batch_info_t {
+	enum msm_cpp_batch_mode_t  batch_mode;
+	uint32_t batch_size;
+	uint32_t intra_plane_offset[MAX_PLANES];
+	uint32_t pick_preview_idx;
+	uint32_t cont_idx;
+};
+
 struct msm_cpp_frame_info_t {
 	int32_t frame_id;
 	struct timeval timestamp;
@@ -147,20 +199,49 @@ struct msm_cpp_frame_info_t {
 	uint32_t client_id;
 	enum msm_cpp_frame_type frame_type;
 	uint32_t num_strips;
-	struct msm_cpp_frame_strip_info *strip_info;
+	struct msm_cpp_frame_strip_info __user *strip_info;
 	uint32_t msg_len;
 	uint32_t *cpp_cmd_msg;
 	int src_fd;
 	int dst_fd;
-	struct ion_handle *src_ion_handle;
-	struct ion_handle *dest_ion_handle;
 	struct timeval in_time, out_time;
-	void *cookie;
+	void __user *cookie;
 	int32_t *status;
 	int32_t duplicate_output;
 	uint32_t duplicate_identity;
+	uint32_t feature_mask;
+	uint8_t we_disable;
 	struct msm_cpp_buffer_info_t input_buffer_info;
-	struct msm_cpp_buffer_info_t output_buffer_info[2];
+	struct msm_cpp_buffer_info_t output_buffer_info[MSM_OUTPUT_BUF_CNT];
+	struct msm_cpp_buffer_info_t duplicate_buffer_info;
+	struct msm_cpp_buffer_info_t tnr_scratch_buffer_info[2];
+	uint32_t reserved;
+	uint8_t partial_frame_indicator;
+	/* the followings are used only for partial_frame type
+	 * and is only used for offline frame processing and
+	 * only if payload big enough and need to be split into partial_frame
+	 * if first_payload, kernel acquires output buffer
+	 * first payload must have the last stripe
+	 * buffer addresses from 0 to last_stripe_index are updated.
+	 * kernel updates payload with msg_len and stripe_info
+	 * kernel sends top level, plane level, then only stripes
+	 * starting with first_stripe_index and
+	 * ends with last_stripe_index
+	 * kernel then sends trailing flag at frame done,
+	 * if last payload, kernel queues the output buffer to HAL
+	 */
+	uint8_t first_payload;
+	uint8_t last_payload;
+	uint32_t first_stripe_index;
+	uint32_t last_stripe_index;
+	uint32_t stripe_info_offset;
+	uint32_t stripe_info;
+	struct msm_cpp_batch_info_t  batch_info;
+};
+
+struct msm_cpp_pop_stream_info_t {
+	int32_t frame_id;
+	uint32_t identity;
 };
 
 struct cpp_hw_info {
@@ -184,7 +265,7 @@ struct msm_vpe_frame_strip_info {
 };
 
 struct msm_vpe_buffer_info_t {
-	int fd;
+	int32_t fd;
 	uint32_t index;
 	uint32_t offset;
 	uint8_t native_buff;
@@ -205,8 +286,8 @@ struct msm_vpe_frame_info_t {
 	uint32_t client_id;
 	enum msm_vpe_frame_type frame_type;
 	struct msm_vpe_frame_strip_info strip_info;
-	int src_fd;
-	int dst_fd;
+	unsigned long src_fd;
+	unsigned long dst_fd;
 	struct ion_handle *src_ion_handle;
 	struct ion_handle *dest_ion_handle;
 	unsigned long src_phyaddr;
@@ -223,6 +304,12 @@ struct msm_vpe_frame_info_t {
 struct msm_pproc_queue_buf_info {
 	struct msm_buf_mngr_info buff_mgr_info;
 	uint8_t is_buf_dirty;
+};
+
+struct msm_cpp_clock_settings_t {
+	unsigned long clock_rate;
+	uint64_t avg;
+	uint64_t inst;
 };
 
 #define VIDIOC_MSM_CPP_CFG \
@@ -248,7 +335,6 @@ struct msm_pproc_queue_buf_info {
 
 #define VIDIOC_MSM_CPP_DEQUEUE_STREAM_BUFF_INFO \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 7, struct msm_camera_v4l2_ioctl_t)
-
 
 #define VIDIOC_MSM_VPE_CFG \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 8, struct msm_camera_v4l2_ioctl_t)
@@ -295,7 +381,7 @@ struct msm_pproc_queue_buf_info {
 
 struct msm_camera_v4l2_ioctl_t {
 	uint32_t id;
-	uint32_t len;
+	size_t len;
 	int32_t trans_code;
 	void __user *ioctl_ptr;
 };
@@ -319,9 +405,40 @@ struct msm_cpp_frame_info32_t {
 	compat_int_t status;
 	int32_t duplicate_output;
 	uint32_t duplicate_identity;
+	uint32_t feature_mask;
+	uint8_t we_disable;
 	struct msm_cpp_buffer_info_t input_buffer_info;
-	struct msm_cpp_buffer_info_t output_buffer_info[2];
+	struct msm_cpp_buffer_info_t output_buffer_info[8];
+	struct msm_cpp_buffer_info_t duplicate_buffer_info;
 	struct msm_cpp_buffer_info_t tnr_scratch_buffer_info[2];
+	uint32_t reserved;
+	uint8_t partial_frame_indicator;
+	/* the followings are used only for partial_frame type
+	 * and is only used for offline frame processing and
+	 * only if payload big enough and need to be split into partial_frame
+	 * if first_payload, kernel acquires output buffer
+	 * first payload must have the last stripe
+	 * buffer addresses from 0 to last_stripe_index are updated.
+	 * kernel updates payload with msg_len and stripe_info
+	 * kernel sends top level, plane level, then only stripes
+	 * starting with first_stripe_index and
+	 * ends with last_stripe_index
+	 * kernel then sends trailing flag at frame done,
+	 * if last payload, kernel queues the output buffer to HAL
+	 */
+	uint8_t first_payload;
+	uint8_t last_payload;
+	uint32_t first_stripe_index;
+	uint32_t last_stripe_index;
+	uint32_t stripe_info_offset;
+	uint32_t stripe_info;
+	struct msm_cpp_batch_info_t  batch_info;
+};
+
+struct msm_cpp_clock_settings32_t {
+	compat_long_t clock_rate;
+	uint64_t avg;
+	uint64_t inst;
 };
 
 struct msm_cpp_stream_buff_info32_t {
@@ -334,6 +451,14 @@ struct msm_pproc_queue_buf_info32_t {
 	struct msm_buf_mngr_info32_t buff_mgr_info;
 	uint8_t is_buf_dirty;
 };
+
+struct cpp_hw_info_32_t {
+	uint32_t cpp_hw_version;
+	uint32_t cpp_hw_caps;
+	compat_long_t freq_tbl[MAX_FREQ_TBL];
+	uint32_t freq_tbl_count;
+};
+
 
 #define VIDIOC_MSM_CPP_CFG32 \
 	_IOWR('V', BASE_VIDIOC_PRIVATE, struct msm_camera_v4l2_ioctl32_t)
@@ -380,6 +505,9 @@ struct msm_pproc_queue_buf_info32_t {
 #define VIDIOC_MSM_CPP_QUEUE_BUF32 \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 14, struct msm_camera_v4l2_ioctl32_t)
 
+#define VIDIOC_MSM_CPP_APPEND_STREAM_BUFF_INFO32 \
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 15, struct msm_camera_v4l2_ioctl32_t)
+
 #define VIDIOC_MSM_CPP_SET_CLOCK32 \
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 16, struct msm_camera_v4l2_ioctl32_t)
 
@@ -393,7 +521,7 @@ struct msm_pproc_queue_buf_info32_t {
 	_IOWR('V', BASE_VIDIOC_PRIVATE + 19, struct msm_camera_v4l2_ioctl32_t)
 
 #define VIDIOC_MSM_CPP_DELETE_STREAM_BUFF32\
-	_IOWR('V', BASE_VIDIOC_PRIVATE + 20, struct msm_camera_v4l2_ioctl_t)
+	_IOWR('V', BASE_VIDIOC_PRIVATE + 20, struct msm_camera_v4l2_ioctl32_t)
 
 struct msm_camera_v4l2_ioctl32_t {
 	uint32_t id;

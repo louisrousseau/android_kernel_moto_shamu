@@ -31,8 +31,10 @@
 		/* Fudge factors */
 		qcom,mdss-ab-factor = <2 1>;		/* 2 times    */
 		qcom,mdss-ib-factor = <6 5>;		/* 1.2 times  */
+		qcom,mdss-ib-factor-overlap = <7 4>;	/* 1.75 times  */
 		qcom,mdss-clk-factor = <5 4>;		/* 1.25 times */
 
+		qcom,max-mixer-width = <2048>;
 		qcom,mdss-mdp-reg-offset = <0x00000100>;
 		qcom,max-bandwidth-low-kbps = <2300000>;
 		qcom,max-bandwidth-high-kbps = <3000000>;
@@ -81,14 +83,19 @@
 				     <0x017C 0x0FFF0FFF>,
 				     <0x0160 0x22222222>,
 				     <0x0164 0x00002222>;
-		qcom,mdp-settings = <0x02E0 0x000000E9>,
-				    <0x02E4 0x00000055>,
-				    <0x03AC 0xC0000CCC>,
-				    <0x03B4 0xC0000CCC>,
-				    <0x03BC 0x00CCCCCC>,
-				    <0x04A8 0x0CCCC0C0>,
-				    <0x04B0 0xCCCCC0C0>,
-				    <0x04B8 0xCCCCC000>;
+		qcom,mdp-settings = <0x000002E0 0x000000E9>,
+				    <0x000002E4 0x00000055>,
+				    <0x000003AC 0xC0000CCC>,
+				    <0x000003B4 0xC0000CCC>,
+				    <0x000003BC 0x00CCCCCC>,
+				    <0x000004A8 0x0CCCC0C0>,
+				    <0x000004B0 0xCCCCC0C0>,
+				    <0x000004B8 0xCCCCC000>,
+				    <0x00011148 0x00000058>,
+				    <0x00013148 0x00000058>,
+				    <0x00015148 0x00000058>,
+				    <0x00017148 0x00000058>,
+				    <0x00019148 0x00000058>;
 
 		/* buffer parameters to calculate prefill bandwidth */
 		qcom,mdss-prefill-outstanding-buffer-bytes = <1024>;
@@ -121,9 +128,10 @@
 		label = "MDSS DSI CTRL->0";
 		cell-index = <0>;
 		reg = 	<0xfd922800 0x1f8>,
-			<0xfd922b00 0x2b0>,
+			<0xfd922b00 0x280>,
+			<0xfd922d80 0x30>,
 			<0xfdf30000 0x108>;
-		reg-names = "dsi_ctrl", "dsi_phy", "mmss_misc_phys";
+		reg-names = "dsi_ctrl", "dsi_phy", "dsi_phy_regulator", "mmss_misc_phys";
 		gdsc-supply = <&gdsc_mdss>;
 		vdda-supply = <&pm8941_l2>;
 		vdd-supply = <&pm8941_l22>;
@@ -135,12 +143,15 @@
 		qcom,platform-te-gpio = <&msmgpio 12 0>;
 		qcom,platform-strength-ctrl = [ff 06];
 		qcom,platform-bist-ctrl = [00 00 b1 ff 00 00];
-		qcom,platform-regulator-settings = [07 09 03 00 20 00 01];
+		qcom,platform-regulator-settings = [03 09 03 00 20 00 01];
 		qcom,platform-lane-config = [00 00 00 00 00 00 00 01 97
 			00 00 00 00 05 00 00 01 97
 			00 00 00 00 0a 00 00 01 97
 			00 00 00 00 0f 00 00 01 97
 			00 c0 00 00 00 00 00 01 bb];
+
+		qcom,mmss-ulp-clamp-ctrl-offset = <0x14>;
+		qcom,mmss-phyreset-ctrl-offset = <0x108>;
 
 		qcom,core-supply-entries {
 			#address-cells = <1>;
@@ -211,9 +222,10 @@
 		label = "MDSS DSI CTRL->1";
 		cell-index = <1>;
 		reg = 	<0xfd922e00 0x1f8>,
-			<0xfd923100 0x2b0>,
+			<0xfd923100 0x280>,
+			<0xfd922d80 0x30>,
 			<0xfdf30000 0x108>;
-		reg-names = "dsi_ctrl", "dsi_phy", "mmss_misc_phys";
+		reg-names = "dsi_ctrl", "dsi_phy", "dsi_phy_regulator", "mmss_misc_phys";
 		gdsc-supply = <&gdsc_mdss>;
 		vdda-supply = <&pm8941_l2>;
 		vdd-supply = <&pm8941_l22>;
@@ -222,12 +234,15 @@
 		qcom,mdss-mdp = <&mdss_mdp>;
 		qcom,platform-strength-ctrl = [ff 06];
 		qcom,platform-bist-ctrl = [00 00 b1 ff 00 00];
-		qcom,platform-regulator-settings = [07 09 03 00 20 00 01];
+		qcom,platform-regulator-settings = [03 09 03 00 20 00 01];
 		qcom,platform-lane-config = [00 00 00 00 00 00 00 01 97
 			00 00 00 00 05 00 00 01 97
 			00 00 00 00 0a 00 00 01 97
 			00 00 00 00 0f 00 00 01 97
 			00 c0 00 00 00 00 00 01 bb];
+
+		qcom,mmss-ulp-clamp-ctrl-offset = <0x14>;
+		qcom,mmss-phyreset-ctrl-offset = <0x108>;
 
 		qcom,core-supply-entries {
 			#address-cells = <1>;

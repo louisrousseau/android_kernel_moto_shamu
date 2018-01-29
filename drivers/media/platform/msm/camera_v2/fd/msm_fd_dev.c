@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -15,7 +15,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
-#include <linux/iommu.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/ion.h>
@@ -110,12 +109,18 @@ static int msm_fd_get_format_index(struct v4l2_format *f)
 static int msm_fd_get_idx_from_value(int value, int *array, int array_size)
 {
 	int index;
+	int i;
 
-	for (index = 0; index < array_size; index++) {
-		if (value <=  array[index])
-			return index;
+	index = 0;
+	for (i = 1; i < array_size; i++) {
+		if (value == array[i]) {
+			index = i;
+			break;
+		}
+		if (abs(value - array[i]) < abs(value - array[index]))
+			index = i;
 	}
-	return index - 1;
+	return index;
 }
 
 /*
@@ -237,10 +242,17 @@ static int msm_fd_start_streaming(struct vb2_queue *q, unsigned int count)
 		return -EINVAL;
 	}
 
+	ret = msm_fd_hw_get(ctx->fd_device, ctx->settings.speed);
+	if (ret < 0) {
+		dev_err(ctx->fd_device->dev, "Can not acquire fd hw\n");
+		goto out;
+	}
+
 	ret = msm_fd_hw_schedule_and_start(ctx->fd_device);
 	if (ret < 0)
 		dev_err(ctx->fd_device->dev, "Can not start fd hw\n");
 
+out:
 	return ret;
 }
 
@@ -253,6 +265,7 @@ static int msm_fd_stop_streaming(struct vb2_queue *q)
 	struct fd_ctx *ctx = vb2_get_drv_priv(q);
 
 	msm_fd_hw_remove_buffers_from_queue(ctx->fd_device, q);
+	msm_fd_hw_put(ctx->fd_device);
 
 	return 0;
 }
@@ -356,25 +369,20 @@ static int msm_fd_open(struct file *file)
 	ctx->vb2_q.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
 	ctx->vb2_q.io_modes = VB2_USERPTR;
 	ctx->vb2_q.timestamp_type = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+	mutex_init(&ctx->lock);
 	ret = vb2_queue_init(&ctx->vb2_q);
 	if (ret < 0) {
 		dev_err(device->dev, "Error queue init\n");
 		goto error_vb2_queue_init;
 	}
 
-	ctx->mem_pool.client = msm_ion_client_create(-1, MSM_FD_DRV_NAME);
+	ctx->mem_pool.client = msm_ion_client_create(MSM_FD_DRV_NAME);
 	if (IS_ERR_OR_NULL(ctx->mem_pool.client)) {
 		dev_err(device->dev, "Error ion client create\n");
 		goto error_ion_client_create;
 	}
+	ctx->mem_pool.fd_device = ctx->fd_device;
 	ctx->mem_pool.domain_num = ctx->fd_device->iommu_domain_num;
-
-	ret = iommu_attach_device(ctx->fd_device->iommu_domain,
-		ctx->fd_device->iommu_dev);
-	if (ret) {
-		dev_err(device->dev, "Can not attach iommu domain\n");
-		goto error_iommu_attach;
-	}
 
 	ctx->stats = vmalloc(sizeof(*ctx->stats) * MSM_FD_MAX_RESULT_BUFS);
 	if (!ctx->stats) {
@@ -386,9 +394,6 @@ static int msm_fd_open(struct file *file)
 	return 0;
 
 error_stats_vmalloc:
-	iommu_detach_device(ctx->fd_device->iommu_domain,
-			ctx->fd_device->iommu_dev);
-error_iommu_attach:
 	ion_client_destroy(ctx->mem_pool.client);
 error_ion_client_create:
 	vb2_queue_release(&ctx->vb2_q);
@@ -407,15 +412,15 @@ static int msm_fd_release(struct file *file)
 {
 	struct fd_ctx *ctx = msm_fd_ctx_from_fh(file->private_data);
 
+	mutex_lock(&ctx->lock);
 	vb2_queue_release(&ctx->vb2_q);
+	mutex_unlock(&ctx->lock);
 
 	vfree(ctx->stats);
 
 	if (ctx->work_buf.handle)
 		msm_fd_hw_unmap_buffer(&ctx->work_buf);
 
-	iommu_detach_device(ctx->fd_device->iommu_domain,
-		ctx->fd_device->iommu_dev);
 	ion_client_destroy(ctx->mem_pool.client);
 
 	v4l2_fh_del(&ctx->fh);
@@ -437,7 +442,9 @@ static unsigned int msm_fd_poll(struct file *file,
 	struct fd_ctx *ctx = msm_fd_ctx_from_fh(file->private_data);
 	unsigned int ret;
 
+	mutex_lock(&ctx->lock);
 	ret = vb2_poll(&ctx->vb2_q, file, wait);
+	mutex_unlock(&ctx->lock);
 
 	if (atomic_read(&ctx->subscribed_for_event)) {
 		poll_wait(file, &ctx->fh.wait, wait);
@@ -547,6 +554,8 @@ static long msm_fd_compat_ioctl32(struct file *file,
 		break;
 	}
 	default:
+		pr_err_ratelimited("%s: unsupported compat type 0x%x\n",
+				__func__, cmd);
 		ret = -ENOIOCTLCMD;
 		break;
 
@@ -675,9 +684,9 @@ static int msm_fd_reqbufs(struct file *file,
 	int ret;
 	struct fd_ctx *ctx = msm_fd_ctx_from_fh(fh);
 
-	mutex_lock(&ctx->fd_device->recovery_lock);
+	mutex_lock(&ctx->lock);
 	ret = vb2_reqbufs(&ctx->vb2_q, req);
-	mutex_unlock(&ctx->fd_device->recovery_lock);
+	mutex_unlock(&ctx->lock);
 	return ret;
 }
 
@@ -693,9 +702,9 @@ static int msm_fd_qbuf(struct file *file, void *fh,
 	int ret;
 	struct fd_ctx *ctx = msm_fd_ctx_from_fh(fh);
 
-	mutex_lock(&ctx->fd_device->recovery_lock);
+	mutex_lock(&ctx->lock);
 	ret = vb2_qbuf(&ctx->vb2_q, pb);
-	mutex_unlock(&ctx->fd_device->recovery_lock);
+	mutex_unlock(&ctx->lock);
 	return ret;
 
 }
@@ -712,9 +721,9 @@ static int msm_fd_dqbuf(struct file *file,
 	int ret;
 	struct fd_ctx *ctx = msm_fd_ctx_from_fh(fh);
 
-	mutex_lock(&ctx->fd_device->recovery_lock);
+	mutex_lock(&ctx->lock);
 	ret = vb2_dqbuf(&ctx->vb2_q, pb, file->f_flags & O_NONBLOCK);
-	mutex_unlock(&ctx->fd_device->recovery_lock);
+	mutex_unlock(&ctx->lock);
 	return ret;
 }
 
@@ -730,16 +739,12 @@ static int msm_fd_streamon(struct file *file,
 	struct fd_ctx *ctx = msm_fd_ctx_from_fh(fh);
 	int ret;
 
-	ret = msm_fd_hw_get(ctx->fd_device, ctx->settings.speed);
-	if (ret < 0) {
-		dev_err(ctx->fd_device->dev, "Can not acquire fd hw\n");
-		goto out;
-	}
-
+	mutex_lock(&ctx->lock);
 	ret = vb2_streamon(&ctx->vb2_q, buf_type);
+	mutex_unlock(&ctx->lock);
 	if (ret < 0)
 		dev_err(ctx->fd_device->dev, "Stream on fails\n");
-out:
+
 	return ret;
 }
 
@@ -755,14 +760,12 @@ static int msm_fd_streamoff(struct file *file,
 	struct fd_ctx *ctx = msm_fd_ctx_from_fh(fh);
 	int ret;
 
+	mutex_lock(&ctx->lock);
 	ret = vb2_streamoff(&ctx->vb2_q, buf_type);
-	if (ret < 0) {
+	mutex_unlock(&ctx->lock);
+	if (ret < 0)
 		dev_err(ctx->fd_device->dev, "Stream off fails\n");
-		goto out;
-	}
 
-	msm_fd_hw_put(ctx->fd_device);
-out:
 	return ret;
 }
 
@@ -825,6 +828,7 @@ static int msm_fd_guery_ctrl(struct file *file, void *fh,
 		a->step = 1;
 		strlcpy(a->name, "msm fd face speed idx",
 			sizeof(a->name));
+		break;
 	case V4L2_CID_FD_FACE_ANGLE:
 		a->type = V4L2_CTRL_TYPE_INTEGER;
 		a->default_value =  msm_fd_angle[MSM_FD_DEF_ANGLE_IDX];
@@ -989,15 +993,19 @@ static int msm_fd_s_ctrl(struct file *file, void *fh, struct v4l2_control *a)
 			a->value = ctx->format.size->work_size;
 		break;
 	case V4L2_CID_FD_WORK_MEMORY_FD:
+		mutex_lock(&ctx->fd_device->recovery_lock);
 		if (ctx->work_buf.handle)
 			msm_fd_hw_unmap_buffer(&ctx->work_buf);
 
 		if (a->value >= 0) {
 			ret = msm_fd_hw_map_buffer(&ctx->mem_pool,
 				a->value, &ctx->work_buf);
-			if (ret < 0)
+			if (ret < 0) {
+				mutex_unlock(&ctx->fd_device->recovery_lock);
 				return ret;
+			}
 		}
+		mutex_unlock(&ctx->fd_device->recovery_lock);
 		break;
 	default:
 		return -EINVAL;
@@ -1120,6 +1128,8 @@ static const struct v4l2_ioctl_ops fd_ioctl_ops = {
 static void msm_fd_fill_results(struct msm_fd_device *fd,
 	struct msm_fd_face_data *face, int idx)
 {
+	int half_face_size;
+
 	msm_fd_hw_get_result_angle_pose(fd, idx, &face->angle, &face->pose);
 
 	msm_fd_hw_get_result_conf_size(fd, idx, &face->confidence,
@@ -1129,8 +1139,17 @@ static void msm_fd_fill_results(struct msm_fd_device *fd,
 	face->face.left = msm_fd_hw_get_result_x(fd, idx);
 	face->face.top = msm_fd_hw_get_result_y(fd, idx);
 
-	face->face.left -= (face->face.width >> 1);
-	face->face.top -= (face->face.height >> 1);
+	half_face_size = (face->face.width >> 1);
+	if (face->face.left > half_face_size)
+		face->face.left -= half_face_size;
+	else
+		face->face.left = 0;
+
+	half_face_size = (face->face.height >> 1);
+	if (face->face.top > half_face_size)
+		face->face.top -= half_face_size;
+	else
+		face->face.top = 0;
 }
 
 /*
@@ -1186,6 +1205,10 @@ static void msm_fd_wq_handler(struct work_struct *work)
 	/* We have the data from fd hw, we can start next processing */
 	msm_fd_hw_schedule_next_buffer(fd);
 
+	/* Return buffer to vb queue */
+	active_buf->vb.v4l2_buf.sequence = ctx->fh.sequence;
+	vb2_buffer_done(&active_buf->vb, VB2_BUF_STATE_DONE);
+
 	/* Sent event */
 	memset(&event, 0x00, sizeof(event));
 	event.type = MSM_EVENT_FD;
@@ -1195,29 +1218,8 @@ static void msm_fd_wq_handler(struct work_struct *work)
 	fd_event->frame_id = ctx->sequence;
 	v4l2_event_queue_fh(&ctx->fh, &event);
 
-	/* Return buffer to vb queue */
-	active_buf->vb.v4l2_buf.sequence = ctx->fh.sequence;
-	vb2_buffer_done(&active_buf->vb, VB2_BUF_STATE_DONE);
-
 	/* Release buffer from the device */
 	msm_fd_hw_buffer_done(fd, active_buf);
-}
-
-/*
- * msm_fd_irq - Fd device irq handler.
- * @irq: Pointer to work struct.
- * @dev_id: Pointer to fd device.
- */
-static irqreturn_t msm_fd_irq(int irq, void *dev_id)
-{
-	struct msm_fd_device *fd = dev_id;
-
-	if (msm_fd_hw_is_finished(fd))
-		queue_work(fd->work_queue, &fd->work);
-	else
-		dev_err(fd->dev, "Something wrong! FD still running\n");
-
-	return IRQ_HANDLED;
 }
 
 /*
@@ -1236,6 +1238,9 @@ static int fd_probe(struct platform_device *pdev)
 
 	mutex_init(&fd->lock);
 	spin_lock_init(&fd->slock);
+	mutex_init(&fd->recovery_lock);
+	init_completion(&fd->hw_halt_completion);
+	INIT_LIST_HEAD(&fd->buf_queue);
 	fd->dev = &pdev->dev;
 
 	/* Get resources */
@@ -1265,29 +1270,21 @@ static int fd_probe(struct platform_device *pdev)
 		goto error_iommu_get;
 	}
 
-	fd->irq_num = platform_get_irq(pdev, 0);
-	if (fd->irq_num < 0) {
-		dev_err(&pdev->dev, "Can not get fd irq resource\n");
-		ret = -ENODEV;
-		goto error_irq_request;
+	/* Get face detect hw before read engine revision */
+	ret = msm_fd_hw_get(fd, 0);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Fail to get hw\n");
+		goto error_hw_get_request_irq;
 	}
+	fd->hw_revision = msm_fd_hw_get_revision(fd);
 
-	ret = devm_request_irq(&pdev->dev, fd->irq_num, msm_fd_irq,
-		IRQF_TRIGGER_RISING, dev_name(&pdev->dev), fd);
-	if (ret) {
-		dev_err(&pdev->dev, "Can not claim IRQ %d\n", fd->irq_num);
-		goto error_irq_request;
-	}
+	msm_fd_hw_put(fd);
 
-	fd->work_queue = alloc_workqueue(MSM_FD_DRV_NAME,
-		WQ_HIGHPRI | WQ_NON_REENTRANT | WQ_UNBOUND, 0);
-	if (!fd->work_queue) {
-		dev_err(&pdev->dev, "Can not register workqueue\n");
-		ret = -ENOMEM;
-		goto error_alloc_workqueue;
+	ret = msm_fd_hw_request_irq(pdev, fd, msm_fd_wq_handler);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Fail request irq\n");
+		goto error_hw_get_request_irq;
 	}
-	INIT_WORK(&fd->work, msm_fd_wq_handler);
-	INIT_LIST_HEAD(&fd->buf_queue);
 
 	/* v4l2 device */
 	ret = v4l2_device_register(&pdev->dev, &fd->v4l2_dev);
@@ -1321,10 +1318,8 @@ static int fd_probe(struct platform_device *pdev)
 error_video_register:
 	v4l2_device_unregister(&fd->v4l2_dev);
 error_v4l2_register:
-	destroy_workqueue(fd->work_queue);
-error_alloc_workqueue:
-	devm_free_irq(&pdev->dev, fd->irq_num, fd);
-error_irq_request:
+	msm_fd_hw_release_irq(fd);
+error_hw_get_request_irq:
 	msm_fd_hw_put_iommu(fd);
 error_iommu_get:
 	msm_fd_hw_put_clocks(fd);
@@ -1351,9 +1346,8 @@ static int fd_device_remove(struct platform_device *pdev)
 		return 0;
 	}
 	video_unregister_device(&fd->video);
-	destroy_workqueue(fd->work_queue);
 	v4l2_device_unregister(&fd->v4l2_dev);
-	devm_free_irq(&pdev->dev, fd->irq_num, fd);
+	msm_fd_hw_release_irq(fd);
 	msm_fd_hw_put_iommu(fd);
 	msm_fd_hw_put_clocks(fd);
 	regulator_put(fd->vdd);

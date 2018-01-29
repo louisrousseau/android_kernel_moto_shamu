@@ -44,7 +44,12 @@ static const struct snd_pcm_hardware no_host_hardware = {
 	.period_bytes_max	= PAGE_SIZE >> 1,
 	.periods_min		= 2,
 	.periods_max		= 4,
-	.buffer_bytes_max	= PAGE_SIZE,
+	/*
+	 * Increase the max buffer bytes as PAGE_SIZE bytes is
+	 * not enough to encompass all the scenarios sent by
+	 * userspapce.
+	 */
+	.buffer_bytes_max	= PAGE_SIZE * 4,
 };
 
 /* DPCM stream event, send event to FE and all active BEs. */
@@ -459,6 +464,11 @@ static int soc_pcm_prepare(struct snd_pcm_substream *substream)
 
 	mutex_lock_nested(&rtd->pcm_mutex, rtd->pcm_subclass);
 
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		snd_soc_dapm_stream_event(rtd,
+		SNDRV_PCM_STREAM_PLAYBACK,
+		SND_SOC_DAPM_STREAM_START);
+
 	if (rtd->dai_link->ops && rtd->dai_link->ops->prepare) {
 		ret = rtd->dai_link->ops->prepare(substream);
 		if (ret < 0) {
@@ -502,12 +512,21 @@ static int soc_pcm_prepare(struct snd_pcm_substream *substream)
 		cancel_delayed_work(&rtd->delayed_work);
 	}
 
-	snd_soc_dapm_stream_event(rtd, substream->stream,
+	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+		if (codec_dai->capture_active == 1)
+			snd_soc_dapm_stream_event(rtd,
+			SNDRV_PCM_STREAM_CAPTURE,
 			SND_SOC_DAPM_STREAM_START);
-
+	}
 	snd_soc_dai_digital_mute(codec_dai, 0, substream->stream);
-
 out:
+	if (ret < 0 && substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		pr_err("%s: Issue stop stream for codec_dai due to op failure %d = ret\n",
+		__func__, ret);
+		snd_soc_dapm_stream_event(rtd,
+		SNDRV_PCM_STREAM_PLAYBACK,
+		SND_SOC_DAPM_STREAM_STOP);
+	}
 	mutex_unlock(&rtd->pcm_mutex);
 	return ret;
 }
@@ -527,6 +546,17 @@ static int soc_pcm_hw_params(struct snd_pcm_substream *substream,
 	int ret = 0;
 
 	mutex_lock_nested(&rtd->pcm_mutex, rtd->pcm_subclass);
+
+	/* perform any hw_params fixups */
+	if ((rtd->dai_link->no_host_mode == SND_SOC_DAI_LINK_NO_HOST) &&
+				rtd->dai_link->be_hw_params_fixup) {
+		ret = rtd->dai_link->be_hw_params_fixup(rtd,
+				params);
+		if (ret < 0) {
+			dev_err(rtd->card->dev, "ASoC: fixup failed for %s\n",
+			rtd->dai_link->name);
+		}
+	}
 
 	if (rtd->dai_link->ops && rtd->dai_link->ops->hw_params) {
 		ret = rtd->dai_link->ops->hw_params(substream, params);
@@ -1921,6 +1951,18 @@ out:
 	return ret;
 }
 
+static int soc_pcm_compat_ioctl(struct snd_pcm_substream *substream,
+		     unsigned int cmd, void *arg)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_platform *platform = rtd->platform;
+
+	if (platform->driver->ops->compat_ioctl)
+		return platform->driver->ops->compat_ioctl(substream,
+			cmd, arg);
+	return snd_pcm_lib_ioctl(substream, cmd, arg);
+}
+
 static int soc_pcm_ioctl(struct snd_pcm_substream *substream,
 		     unsigned int cmd, void *arg)
 {
@@ -2122,7 +2164,6 @@ int soc_dpcm_runtime_update(struct snd_soc_dapm_widget *widget)
 
 		paths = dpcm_path_get(fe, SNDRV_PCM_STREAM_PLAYBACK, &list);
 		if (paths < 0) {
-			dpcm_path_put(&list);
 			dev_warn(fe->dev, "ASoC: %s no valid %s path\n",
 					fe->dai_link->name,  "playback");
 			mutex_unlock(&card->mutex);
@@ -2153,7 +2194,6 @@ capture:
 
 		paths = dpcm_path_get(fe, SNDRV_PCM_STREAM_CAPTURE, &list);
 		if (paths < 0) {
-			dpcm_path_put(&list);
 			dev_warn(fe->dev, "ASoC: %s no valid %s path\n",
 					fe->dai_link->name,  "capture");
 			mutex_unlock(&card->mutex);
@@ -2217,9 +2257,14 @@ static int dpcm_fe_dai_open(struct snd_pcm_substream *fe_substream)
 	mutex_lock_nested(&fe->card->mutex, SND_SOC_CARD_CLASS_RUNTIME);
 	fe->dpcm[stream].runtime = fe_substream->runtime;
 
-	if (dpcm_path_get(fe, stream, &list) <= 0)
-		dev_dbg(fe->dev, "ASoC: %s no valid %s route\n",
-			fe->dai_link->name, stream ? "capture" : "playback");
+	ret = dpcm_path_get(fe, stream, &list);
+	if (ret < 0) {
+		dev_warn(fe->dev, "ASoC: %s no valid %s route err[%d]\n",
+			fe->dai_link->name, stream ? "capture" : "playback",
+			ret);
+		mutex_unlock(&fe->card->mutex);
+		return ret;
+	}
 
 	/* calculate valid and active FE <-> BE dpcms */
 	dpcm_process_paths(fe, stream, &list, 1);
@@ -2351,6 +2396,7 @@ int soc_new_pcm(struct snd_soc_pcm_runtime *rtd, int num)
 		rtd->ops.close		= dpcm_fe_dai_close;
 		rtd->ops.pointer	= soc_pcm_pointer;
 		rtd->ops.ioctl		= soc_pcm_ioctl;
+		rtd->ops.compat_ioctl   = soc_pcm_compat_ioctl;
 	} else {
 		rtd->ops.open		= soc_pcm_open;
 		rtd->ops.hw_params	= soc_pcm_hw_params;
@@ -2360,6 +2406,7 @@ int soc_new_pcm(struct snd_soc_pcm_runtime *rtd, int num)
 		rtd->ops.close		= soc_pcm_close;
 		rtd->ops.pointer	= soc_pcm_pointer;
 		rtd->ops.ioctl		= soc_pcm_ioctl;
+		rtd->ops.compat_ioctl   = soc_pcm_compat_ioctl;
 	}
 
 	if (platform->driver->ops) {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015, The Linux Foundation. All rights reserved.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -19,20 +19,23 @@
 #include <linux/mempool.h>
 #include <linux/slab.h>
 #include <linux/crypto.h>
+#include <linux/qcrypto.h>
 #include <linux/workqueue.h>
 #include <linux/backing-dev.h>
 #include <linux/atomic.h>
 #include <linux/scatterlist.h>
-#include <crypto/scatterwalk.h>
+#include <linux/device-mapper.h>
+#include <linux/printk.h>
+#include <linux/pft.h>
+
 #include <asm/page.h>
 #include <asm/unaligned.h>
+
+#include <crypto/scatterwalk.h>
 #include <crypto/hash.h>
 #include <crypto/md5.h>
 #include <crypto/algapi.h>
-#include <mach/qcrypto.h>
-
-#include <linux/device-mapper.h>
-
+#include <crypto/ice.h>
 
 #define DM_MSG_PREFIX "req-crypt"
 
@@ -43,35 +46,153 @@
 #define MIN_POOL_PAGES 32
 #define KEY_SIZE_XTS 32
 #define AES_XTS_IV_LEN 16
+#define MAX_MSM_ICE_KEY_LUT_SIZE 32
+#define SECTOR_SIZE 512
+#define MIN_CRYPTO_TRANSFER_SIZE (4 * 1024)
 
 #define DM_REQ_CRYPT_ERROR -1
 #define DM_REQ_CRYPT_ERROR_AFTER_PAGE_MALLOC -2
-#define FDE_CRYPTO_DEVICE 0
+
+/*
+ * ENCRYPTION_MODE_CRYPTO means dm-req-crypt would invoke crypto operations
+ * for all of the requests. Crypto operations are performed by crypto engine
+ * plugged with Linux Kernel Crypto APIs
+ */
+#define DM_REQ_CRYPT_ENCRYPTION_MODE_CRYPTO 0
+/*
+ * ENCRYPTION_MODE_TRANSPARENT means dm-req-crypt would not invoke crypto
+ * operations for any of the requests. Data would be encrypted or decrypted
+ * using Inline Crypto Engine(ICE) embedded in storage hardware
+ */
+#define DM_REQ_CRYPT_ENCRYPTION_MODE_TRANSPARENT 1
+
+#define DM_REQ_CRYPT_QUEUE_SIZE 256
 
 struct req_crypt_result {
 	struct completion completion;
 	int err;
 };
 
-struct dm_dev *dev;
+#define FDE_KEY_ID	0
+#define PFE_KEY_ID	1
+
+static struct dm_dev *dev;
 static struct kmem_cache *_req_crypt_io_pool;
-sector_t start_sector_orig;
-struct workqueue_struct *req_crypt_queue;
-mempool_t *req_io_pool;
-mempool_t *req_page_pool;
-struct crypto_ablkcipher *tfm;
+static sector_t start_sector_orig;
+static struct workqueue_struct *req_crypt_queue;
+static struct workqueue_struct *req_crypt_split_io_queue;
+static mempool_t *req_io_pool;
+static mempool_t *req_page_pool;
+static bool is_fde_enabled;
+static struct crypto_ablkcipher *tfm;
+static unsigned int encryption_mode;
+static struct ice_crypto_setting *ice_settings;
+
+unsigned int num_engines;
+unsigned int num_engines_fde, fde_cursor;
+unsigned int num_engines_pfe, pfe_cursor;
+struct crypto_engine_entry *fde_eng, *pfe_eng;
+DEFINE_MUTEX(engine_list_mutex);
 
 struct req_dm_crypt_io {
+	struct ice_crypto_setting ice_settings;
 	struct work_struct work;
 	struct request *cloned_request;
 	int error;
 	atomic_t pending;
 	struct timespec start_time;
+	bool should_encrypt;
+	bool should_decrypt;
+	u32 key_id;
 };
+
+struct req_dm_split_req_io {
+	struct work_struct work;
+	struct scatterlist *req_split_sg_read;
+	struct req_crypt_result result;
+	struct crypto_engine_entry *engine;
+	u8 IV[AES_XTS_IV_LEN];
+	int size;
+	struct request *clone;
+};
+
+#ifdef CONFIG_FIPS_ENABLE
+static struct qcrypto_func_set dm_qcrypto_func;
+#else
+static struct qcrypto_func_set dm_qcrypto_func = {
+		qcrypto_cipher_set_device_hw,
+		qcrypto_cipher_set_flag,
+		qcrypto_get_num_engines,
+		qcrypto_get_engine_list
+};
+#endif
 
 static void req_crypt_cipher_complete
 		(struct crypto_async_request *req, int err);
+static void req_cryptd_split_req_queue_cb
+		(struct work_struct *work);
+static void req_cryptd_split_req_queue
+		(struct req_dm_split_req_io *io);
+static void req_crypt_split_io_complete
+		(struct req_crypt_result *res, int err);
 
+static  bool req_crypt_should_encrypt(struct req_dm_crypt_io *req)
+{
+	int ret;
+	bool should_encrypt = false;
+	struct bio *bio = NULL;
+	u32 key_id = 0;
+	bool is_encrypted = false;
+	bool is_inplace = false;
+
+	if (!req || !req->cloned_request || !req->cloned_request->bio)
+		return false;
+
+	if (encryption_mode == DM_REQ_CRYPT_ENCRYPTION_MODE_TRANSPARENT)
+		return false;
+	bio = req->cloned_request->bio;
+
+	ret = pft_get_key_index(bio, &key_id, &is_encrypted, &is_inplace);
+	/* req->key_id = key_id; @todo support more than 1 pfe key */
+	if ((ret == 0) && (is_encrypted || is_inplace)) {
+		should_encrypt = true;
+		req->key_id = PFE_KEY_ID;
+	} else if (is_fde_enabled) {
+		should_encrypt = true;
+		req->key_id = FDE_KEY_ID;
+	}
+
+	return should_encrypt;
+}
+
+static  bool req_crypt_should_deccrypt(struct req_dm_crypt_io *req)
+{
+	int ret;
+	bool should_deccrypt = false;
+	struct bio *bio = NULL;
+	u32 key_id = 0;
+	bool is_encrypted = false;
+	bool is_inplace = false;
+
+	if (!req || !req->cloned_request || !req->cloned_request->bio)
+		return false;
+	if (encryption_mode == DM_REQ_CRYPT_ENCRYPTION_MODE_TRANSPARENT)
+		return false;
+
+	bio = req->cloned_request->bio;
+
+	ret = pft_get_key_index(bio, &key_id, &is_encrypted, &is_inplace);
+	/* req->key_id = key_id; @todo support more than 1 pfe key */
+	if ((ret == 0) && (is_encrypted && !is_inplace)) {
+		should_deccrypt = true;
+		req->key_id = PFE_KEY_ID;
+	} else if (is_fde_enabled) {
+		should_deccrypt = true;
+		req->key_id = FDE_KEY_ID;
+	}
+
+	return should_deccrypt;
+}
 
 static void req_crypt_inc_pending(struct req_dm_crypt_io *io)
 {
@@ -155,13 +276,16 @@ static void req_crypt_dec_pending_decrypt(struct req_dm_crypt_io *io)
 static void req_cryptd_crypt_read_convert(struct req_dm_crypt_io *io)
 {
 	struct request *clone = NULL;
-	int error = 0;
-	int total_sg_len = 0, rc = 0, total_bytes_in_req = 0;
-	struct ablkcipher_request *req = NULL;
-	struct req_crypt_result result;
+	int error = DM_REQ_CRYPT_ERROR;
+	int total_sg_len = 0, total_bytes_in_req = 0, temp_size = 0, i = 0;
+	struct scatterlist *sg = NULL;
 	struct scatterlist *req_sg_read = NULL;
-	int err = 0;
-	u8 IV[AES_XTS_IV_LEN];
+
+	unsigned int engine_list_total = 0;
+	struct crypto_engine_entry *curr_engine_list = NULL;
+	bool split_transfers = 0;
+	sector_t tempiv;
+	struct req_dm_split_req_io *split_io = NULL;
 
 	if (io) {
 		error = io->error;
@@ -182,46 +306,31 @@ static void req_cryptd_crypt_read_convert(struct req_dm_crypt_io *io)
 
 	req_crypt_inc_pending(io);
 
-	if (error != 0) {
-		err = error;
-		goto submit_request;
-	}
+	mutex_lock(&engine_list_mutex);
 
-	req = ablkcipher_request_alloc(tfm, GFP_KERNEL);
-	if (!req) {
-		DMERR("%s ablkcipher request allocation failed\n", __func__);
-		err = DM_REQ_CRYPT_ERROR;
-		goto ablkcipher_req_alloc_failure;
-	}
+	engine_list_total = (io->key_id == FDE_KEY_ID ? num_engines_fde :
+						   (io->key_id == PFE_KEY_ID ?
+							num_engines_pfe : 0));
 
-	ablkcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
-					req_crypt_cipher_complete, &result);
-	init_completion(&result.completion);
-	err = qcrypto_cipher_set_device(req, FDE_CRYPTO_DEVICE);
-	if (err != 0) {
-		DMERR("%s qcrypto_cipher_set_device failed with err %d\n",
-				__func__, err);
-		error = DM_REQ_CRYPT_ERROR;
-		goto ablkcipher_req_alloc_failure;
-	}
-	qcrypto_cipher_set_flag(req,
-		QCRYPTO_CTX_USE_PIPE_KEY | QCRYPTO_CTX_XTS_DU_SIZE_512B);
-	crypto_ablkcipher_clear_flags(tfm, ~0);
-	crypto_ablkcipher_setkey(tfm, NULL, KEY_SIZE_XTS);
+	curr_engine_list = (io->key_id == FDE_KEY_ID ? fde_eng :
+						   (io->key_id == PFE_KEY_ID ?
+							pfe_eng : NULL));
+
+	mutex_unlock(&engine_list_mutex);
 
 	req_sg_read = kzalloc(sizeof(struct scatterlist) *
 			MAX_SG_LIST, GFP_KERNEL);
 	if (!req_sg_read) {
 		DMERR("%s req_sg_read allocation failed\n",
 						__func__);
-		err = DM_REQ_CRYPT_ERROR;
+		error = DM_REQ_CRYPT_ERROR;
 		goto ablkcipher_req_alloc_failure;
 	}
 
-	total_sg_len = blk_rq_map_sg(clone->q, clone, req_sg_read);
+	total_sg_len = blk_rq_map_sg_no_cluster(clone->q, clone, req_sg_read);
 	if ((total_sg_len <= 0) || (total_sg_len > MAX_SG_LIST)) {
 		DMERR("%s Request Error%d", __func__, total_sg_len);
-		err = DM_REQ_CRYPT_ERROR;
+		error = DM_REQ_CRYPT_ERROR;
 		goto ablkcipher_req_alloc_failure;
 	}
 
@@ -229,52 +338,117 @@ static void req_cryptd_crypt_read_convert(struct req_dm_crypt_io *io)
 	if (total_bytes_in_req > REQ_DM_512_KB) {
 		DMERR("%s total_bytes_in_req > 512 MB %d",
 				__func__, total_bytes_in_req);
-		err = DM_REQ_CRYPT_ERROR;
+		error = DM_REQ_CRYPT_ERROR;
 		goto ablkcipher_req_alloc_failure;
 	}
 
-	memset(IV, 0, AES_XTS_IV_LEN);
-	memcpy(IV, &clone->__sector, sizeof(sector_t));
 
-	ablkcipher_request_set_crypt(req, req_sg_read, req_sg_read,
-			total_bytes_in_req, (void *) IV);
+	if ((clone->__data_len >= (MIN_CRYPTO_TRANSFER_SIZE *
+		engine_list_total))
+		&& (engine_list_total > 1))
+		split_transfers = 1;
 
-	rc = crypto_ablkcipher_decrypt(req);
-
-	switch (rc) {
-	case 0:
-		break;
-
-	case -EBUSY:
-		/*
-		 * Lets make this synchronous request by waiting on
-		 * in progress as well
-		 */
-	case -EINPROGRESS:
-		wait_for_completion_io(&result.completion);
-		if (result.err) {
-			DMERR("%s error = %d encrypting the request\n",
-				 __func__, result.err);
-			err = DM_REQ_CRYPT_ERROR;
+	if (split_transfers) {
+		split_io = kzalloc(sizeof(struct req_dm_split_req_io)
+				* engine_list_total, GFP_KERNEL);
+		if (!split_io) {
+			DMERR("%s split_io allocation failed\n", __func__);
+			error = DM_REQ_CRYPT_ERROR;
+			goto ablkcipher_req_alloc_failure;
 		}
-		break;
 
-	default:
-		err = DM_REQ_CRYPT_ERROR;
-		break;
+		split_io[0].req_split_sg_read = sg = req_sg_read;
+		split_io[engine_list_total - 1].size = total_bytes_in_req;
+		for (i = 0; i < (engine_list_total); i++) {
+			while ((sg) && i < (engine_list_total - 1)) {
+				split_io[i].size += sg->length;
+				split_io[engine_list_total - 1].size -=
+						sg->length;
+				if (split_io[i].size >=
+						(total_bytes_in_req /
+							engine_list_total)) {
+					split_io[i + 1].req_split_sg_read =
+							sg_next(sg);
+					sg_mark_end(sg);
+					break;
+				}
+				sg = sg_next(sg);
+			}
+			split_io[i].engine = &curr_engine_list[i];
+			init_completion(&split_io[i].result.completion);
+			memset(&split_io[i].IV, 0, AES_XTS_IV_LEN);
+			tempiv = clone->__sector + (temp_size / SECTOR_SIZE);
+			memcpy(&split_io[i].IV, &tempiv, sizeof(sector_t));
+			temp_size +=  split_io[i].size;
+			split_io[i].clone = clone;
+			req_cryptd_split_req_queue(&split_io[i]);
+		}
+	} else {
+		split_io = kzalloc(sizeof(struct req_dm_split_req_io),
+				GFP_KERNEL);
+		if (!split_io) {
+			DMERR("%s split_io allocation failed\n", __func__);
+			error = DM_REQ_CRYPT_ERROR;
+			goto ablkcipher_req_alloc_failure;
+		}
+		split_io->engine = &curr_engine_list[0];
+		init_completion(&split_io->result.completion);
+		memcpy(split_io->IV, &clone->__sector, sizeof(sector_t));
+		split_io->req_split_sg_read = req_sg_read;
+		split_io->size = total_bytes_in_req;
+		split_io->clone = clone;
+		req_cryptd_split_req_queue(split_io);
 	}
 
+	if (!split_transfers) {
+		wait_for_completion_interruptible(&split_io->result.completion);
+		if (split_io->result.err) {
+			DMERR("%s error = %d for request\n",
+				 __func__, split_io->result.err);
+			error = DM_REQ_CRYPT_ERROR;
+			goto ablkcipher_req_alloc_failure;
+		}
+	} else {
+		for (i = 0; i < (engine_list_total); i++) {
+			wait_for_completion_interruptible(
+					&split_io[i].result.completion);
+			if (split_io[i].result.err) {
+				DMERR("%s error = %d for %dst request\n",
+					 __func__, split_io[i].result.err, i);
+				error = DM_REQ_CRYPT_ERROR;
+				goto ablkcipher_req_alloc_failure;
+			}
+		}
+	}
+	error = 0;
 ablkcipher_req_alloc_failure:
 
-	if (req)
-		ablkcipher_request_free(req);
-
 	kfree(req_sg_read);
-
+	kfree(split_io);
 submit_request:
 	if (io)
-		io->error = err;
+		io->error = error;
 	req_crypt_dec_pending_decrypt(io);
+}
+
+/*
+ * This callback is called by the worker queue to perform non-decrypt reads
+ * and use the dm function to complete the bios and requests.
+ */
+static void req_cryptd_crypt_read_plain(struct req_dm_crypt_io *io)
+{
+	struct request *clone = NULL;
+	int error = 0;
+
+	if (!io || !io->cloned_request) {
+		DMERR("%s io is invalid\n", __func__);
+		BUG(); /* should not happen */
+	}
+
+	clone = io->cloned_request;
+
+	dm_end_request(clone, error);
+	mempool_free(io, req_io_pool);
 }
 
 /*
@@ -298,7 +472,12 @@ static void req_cryptd_crypt_write_convert(struct req_dm_crypt_io *io)
 	gfp_t gfp_mask = GFP_NOIO | __GFP_HIGHMEM;
 	struct page *page = NULL;
 	u8 IV[AES_XTS_IV_LEN];
-	int remaining_size = 0;
+	int remaining_size = 0, err = 0;
+	struct crypto_engine_entry engine;
+	unsigned int engine_list_total = 0;
+	struct crypto_engine_entry *curr_engine_list = NULL;
+	unsigned int *engine_cursor = NULL;
+
 
 	if (io) {
 		if (io->cloned_request) {
@@ -329,15 +508,44 @@ static void req_cryptd_crypt_write_convert(struct req_dm_crypt_io *io)
 	ablkcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
 				req_crypt_cipher_complete, &result);
 
-	init_completion(&result.completion);
-	error = qcrypto_cipher_set_device(req, FDE_CRYPTO_DEVICE);
-	if (error != 0) {
-		DMERR("%s qcrypto_cipher_set_device failed with error %d\n",
-				__func__, error);
+	mutex_lock(&engine_list_mutex);
+	engine_list_total = (io->key_id == FDE_KEY_ID ? num_engines_fde :
+						   (io->key_id == PFE_KEY_ID ?
+							num_engines_pfe : 0));
+
+	curr_engine_list = (io->key_id == FDE_KEY_ID ? fde_eng :
+						(io->key_id == PFE_KEY_ID ?
+						pfe_eng : NULL));
+
+	engine_cursor = (io->key_id == FDE_KEY_ID ? &fde_cursor :
+					(io->key_id == PFE_KEY_ID ? &pfe_cursor
+					: NULL));
+	if ((engine_list_total < 1) || (NULL == curr_engine_list)
+	   || (NULL == engine_cursor)) {
+		DMERR("%s Unknown Key ID!\n",
+						   __func__);
 		error = DM_REQ_CRYPT_ERROR;
+		mutex_unlock(&engine_list_mutex);
 		goto ablkcipher_req_alloc_failure;
 	}
-	qcrypto_cipher_set_flag(req,
+
+	engine = curr_engine_list[*engine_cursor];
+	(*engine_cursor)++;
+	(*engine_cursor) %= engine_list_total;
+
+	err = (dm_qcrypto_func.cipher_set)(req, engine.ce_device,
+				   engine.hw_instance);
+	if (err) {
+		DMERR("%s qcrypto_cipher_set_device_hw failed with err %d\n",
+				__func__, err);
+		mutex_unlock(&engine_list_mutex);
+		goto ablkcipher_req_alloc_failure;
+	}
+	mutex_unlock(&engine_list_mutex);
+
+	init_completion(&result.completion);
+
+	(dm_qcrypto_func.cipher_flag)(req,
 		QCRYPTO_CTX_USE_PIPE_KEY | QCRYPTO_CTX_XTS_DU_SIZE_512B);
 	crypto_ablkcipher_clear_flags(tfm, ~0);
 	crypto_ablkcipher_setkey(tfm, NULL, KEY_SIZE_XTS);
@@ -448,6 +656,11 @@ static void req_cryptd_crypt_write_convert(struct req_dm_crypt_io *io)
 		blk_queue_bounce(clone->q, &bio_src);
 	}
 
+	/*
+	 * Recalculate the phy_segments as we allocate new pages
+	 * This is used by storage driver to fill the sg list.
+	 */
+	blk_recalc_rq_segments(clone);
 
 ablkcipher_req_alloc_failure:
 	if (req)
@@ -475,19 +688,127 @@ submit_request:
 	req_crypt_dec_pending_encrypt(io);
 }
 
+/*
+ * This callback is called by the worker queue to perform non-encrypted writes
+ * and submit the request using the elevelator.
+ */
+static void req_cryptd_crypt_write_plain(struct req_dm_crypt_io *io)
+{
+	struct request *clone = NULL;
+
+	if (!io || !io->cloned_request) {
+		DMERR("%s io is invalid\n", __func__);
+		BUG(); /* should not happen */
+	}
+
+	clone = io->cloned_request;
+	io->error = 0;
+	dm_dispatch_request(clone);
+}
+
 /* Queue callback function that will get triggered */
 static void req_cryptd_crypt(struct work_struct *work)
 {
 	struct req_dm_crypt_io *io =
 			container_of(work, struct req_dm_crypt_io, work);
 
-	if (rq_data_dir(io->cloned_request) == WRITE)
-		req_cryptd_crypt_write_convert(io);
-	else if (rq_data_dir(io->cloned_request) == READ)
-		req_cryptd_crypt_read_convert(io);
-	else
-		DMERR("%s received non-read/write request for Clone %u\n",
-				__func__, (unsigned int)io->cloned_request);
+	if (rq_data_dir(io->cloned_request) == WRITE) {
+		if (io->should_encrypt)
+			req_cryptd_crypt_write_convert(io);
+		else
+			req_cryptd_crypt_write_plain(io);
+	} else if (rq_data_dir(io->cloned_request) == READ) {
+		if (io->should_decrypt)
+			req_cryptd_crypt_read_convert(io);
+		else
+			req_cryptd_crypt_read_plain(io);
+	} else {
+		DMERR("%s received non-write request for Clone 0x%p\n",
+				__func__, io->cloned_request);
+	}
+}
+
+static void req_cryptd_split_req_queue_cb(struct work_struct *work)
+{
+	struct req_dm_split_req_io *io =
+			container_of(work, struct req_dm_split_req_io, work);
+	struct ablkcipher_request *req = NULL;
+	struct req_crypt_result result;
+	int err = 0;
+	struct crypto_engine_entry *engine = NULL;
+
+	if ((!io) || (!io->req_split_sg_read) || (!io->engine)) {
+		DMERR("%s Input invalid\n",
+			 __func__);
+		err = DM_REQ_CRYPT_ERROR;
+		/* If io is not populated this should not be called */
+		BUG();
+	}
+	req = ablkcipher_request_alloc(tfm, GFP_KERNEL);
+	if (!req) {
+		DMERR("%s ablkcipher request allocation failed\n", __func__);
+		err = DM_REQ_CRYPT_ERROR;
+		goto ablkcipher_req_alloc_failure;
+	}
+
+	ablkcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
+					req_crypt_cipher_complete, &result);
+
+	engine = io->engine;
+
+	err = (dm_qcrypto_func.cipher_set)(req, engine->ce_device,
+			engine->hw_instance);
+	if (err) {
+		DMERR("%s qcrypto_cipher_set_device_hw failed with err %d\n",
+				__func__, err);
+		goto ablkcipher_req_alloc_failure;
+	}
+	init_completion(&result.completion);
+	(dm_qcrypto_func.cipher_flag)(req,
+		QCRYPTO_CTX_USE_PIPE_KEY | QCRYPTO_CTX_XTS_DU_SIZE_512B);
+
+	crypto_ablkcipher_clear_flags(tfm, ~0);
+	crypto_ablkcipher_setkey(tfm, NULL, KEY_SIZE_XTS);
+
+	ablkcipher_request_set_crypt(req, io->req_split_sg_read,
+			io->req_split_sg_read, io->size, (void *) io->IV);
+
+	err = crypto_ablkcipher_decrypt(req);
+	switch (err) {
+	case 0:
+		break;
+
+	case -EBUSY:
+		/*
+		 * Lets make this synchronous request by waiting on
+		 * in progress as well
+		 */
+	case -EINPROGRESS:
+		wait_for_completion_io(&result.completion);
+		if (result.err) {
+			DMERR("%s error = %d encrypting the request\n",
+				 __func__, result.err);
+			err = DM_REQ_CRYPT_ERROR;
+			goto ablkcipher_req_alloc_failure;
+		}
+		break;
+
+	default:
+		err = DM_REQ_CRYPT_ERROR;
+		goto ablkcipher_req_alloc_failure;
+	}
+	err = 0;
+ablkcipher_req_alloc_failure:
+	if (req)
+		ablkcipher_request_free(req);
+
+	req_crypt_split_io_complete(&io->result, err);
+}
+
+static void req_cryptd_split_req_queue(struct req_dm_split_req_io *io)
+{
+	INIT_WORK(&io->work, req_cryptd_split_req_queue_cb);
+	queue_work(req_crypt_split_io_queue, &io->work);
 }
 
 static void req_cryptd_queue_crypt(struct req_dm_crypt_io *io)
@@ -512,6 +833,14 @@ static void req_crypt_cipher_complete(struct crypto_async_request *req, int err)
 	complete(&res->completion);
 }
 
+static void req_crypt_split_io_complete(struct req_crypt_result *res, int err)
+{
+	if (err == -EINPROGRESS)
+		return;
+
+	res->err = err;
+	complete(&res->completion);
+}
 /*
  * If bio->bi_dev is a partition, remap the location
  */
@@ -552,7 +881,7 @@ static int req_crypt_endio(struct dm_target *ti, struct request *clone,
 	bvec = NULL;
 	if (rq_data_dir(clone) == WRITE) {
 		rq_for_each_segment(bvec, clone, iter1) {
-			if (bvec->bv_offset == 0) {
+			if (req_io->should_encrypt && bvec->bv_offset == 0) {
 				mempool_free(bvec->bv_page, req_page_pool);
 				bvec->bv_page = NULL;
 			} else
@@ -580,7 +909,6 @@ submit_request:
  * For a read request no pre-processing is required the request
  * is returned to dm once mapping is done
  */
-
 static int req_crypt_map(struct dm_target *ti, struct request *clone,
 			 union map_info *map_context)
 {
@@ -608,6 +936,11 @@ static int req_crypt_map(struct dm_target *ti, struct request *clone,
 	req_io->cloned_request = clone;
 	map_context->ptr = req_io;
 	atomic_set(&req_io->pending, 0);
+
+	if (rq_data_dir(clone) == WRITE)
+		req_io->should_encrypt = req_crypt_should_encrypt(req_io);
+	if (rq_data_dir(clone) == READ)
+		req_io->should_decrypt = req_crypt_should_deccrypt(req_io);
 
 	/* Get the queue of the underlying original device */
 	clone->q = bdev_get_queue(dev->bdev);
@@ -640,6 +973,21 @@ static int req_crypt_map(struct dm_target *ti, struct request *clone,
 		blk_queue_bounce(clone->q, &bio_src);
 	}
 
+	if (encryption_mode == DM_REQ_CRYPT_ENCRYPTION_MODE_TRANSPARENT) {
+		/* Set all crypto parameters for inline crypto engine */
+		memcpy(&req_io->ice_settings, ice_settings,
+					sizeof(struct ice_crypto_setting));
+	} else {
+		/* ICE checks for key_index which could be >= 0. If a chip has
+		 * both ICE and GPCE and wanted to use GPCE, there could be
+		 * issue. Storage driver send all requests to ICE driver. If
+		 * it sees key_index as 0, it would assume it is for ICE while
+		 * it is not. Hence set invalid key index by default.
+		 */
+		req_io->ice_settings.key_index = -1;
+
+	}
+
 	if (rq_data_dir(clone) == READ) {
 		error = DM_MAPIO_REMAPPED;
 		goto submit_request;
@@ -656,23 +1004,45 @@ submit_request:
 
 static void req_crypt_dtr(struct dm_target *ti)
 {
-	if (req_crypt_queue) {
-		destroy_workqueue(req_crypt_queue);
-		req_crypt_queue = NULL;
+	DMDEBUG("dm-req-crypt Destructor.\n");
+
+	if (req_page_pool) {
+		mempool_destroy(req_page_pool);
+		req_page_pool = NULL;
 	}
 	if (req_io_pool) {
 		mempool_destroy(req_io_pool);
 		req_io_pool = NULL;
 	}
-	if (req_page_pool) {
-		mempool_destroy(req_page_pool);
-		req_page_pool = NULL;
-	}
+
+	kfree(ice_settings);
+	ice_settings = NULL;
+
+	mutex_lock(&engine_list_mutex);
+	kfree(pfe_eng);
+	pfe_eng = NULL;
+	kfree(fde_eng);
+	fde_eng = NULL;
+	mutex_unlock(&engine_list_mutex);
+
 	if (tfm) {
 		crypto_free_ablkcipher(tfm);
 		tfm = NULL;
 	}
-	dm_put_device(ti, dev);
+	if (req_crypt_split_io_queue) {
+		destroy_workqueue(req_crypt_split_io_queue);
+		req_crypt_split_io_queue = NULL;
+	}
+	if (req_crypt_queue) {
+		destroy_workqueue(req_crypt_queue);
+		req_crypt_queue = NULL;
+	}
+	kmem_cache_destroy(_req_crypt_io_pool);
+
+	if (dev) {
+		dm_put_device(ti, dev);
+		dev = NULL;
+	}
 }
 
 
@@ -684,7 +1054,12 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	unsigned long long tmpll;
 	char dummy;
-	int err = DM_REQ_CRYPT_ERROR;
+	int err = DM_REQ_CRYPT_ERROR, i;
+	struct crypto_engine_entry *eng_list = NULL;
+	struct block_device *bdev = NULL;
+	struct request_queue *q = NULL;
+
+	DMDEBUG("dm-req-crypt Constructor.\n");
 
 	if (argc < 5) {
 		DMERR(" %s Not enough args\n", __func__);
@@ -712,6 +1087,18 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			goto ctr_exit;
 		}
 	} else {
+		DMERR(" %s Arg[4] invalid\n", __func__);
+		err =  DM_REQ_CRYPT_ERROR;
+		goto ctr_exit;
+	}
+
+	if (argv[4]) {
+		if (sscanf(argv[4], "%llu%c", &tmpll, &dummy) != 1) {
+			DMERR("%s Invalid device sector\n", __func__);
+			err =  DM_REQ_CRYPT_ERROR;
+			goto ctr_exit;
+		}
+	} else {
 		DMERR(" %s Arg[4]invalid\n", __func__);
 		err =  DM_REQ_CRYPT_ERROR;
 		goto ctr_exit;
@@ -719,14 +1106,79 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	start_sector_orig = tmpll;
 
+	/* Allow backward compatible */
+	if (argc >= 6) {
+		if (argv[5]) {
+			if (!strcmp(argv[5], "fde_enabled"))
+				is_fde_enabled = true;
+			else
+				is_fde_enabled = false;
+		} else {
+			DMERR(" %s Arg[5] invalid\n", __func__);
+			err =  DM_REQ_CRYPT_ERROR;
+			goto ctr_exit;
+		}
+	} else {
+		DMERR(" %s Arg[5] missing, set FDE enabled.\n", __func__);
+		is_fde_enabled = true; /* backward compatible */
+	}
+
+	bdev = dev->bdev;
+	q = bdev_get_queue(bdev);
+	blk_queue_max_hw_sectors(q, DM_REQ_CRYPT_QUEUE_SIZE);
+
+	_req_crypt_io_pool = KMEM_CACHE(req_dm_crypt_io, 0);
+	if (!_req_crypt_io_pool) {
+		err =  DM_REQ_CRYPT_ERROR;
+		goto ctr_exit;
+	}
+
+	encryption_mode = DM_REQ_CRYPT_ENCRYPTION_MODE_CRYPTO;
+	if (argc >= 7 && argv[6]) {
+		if (!strcmp(argv[6], "ice")) {
+			encryption_mode =
+				DM_REQ_CRYPT_ENCRYPTION_MODE_TRANSPARENT;
+			ice_settings =
+				kzalloc(sizeof(struct ice_crypto_setting),
+								GFP_KERNEL);
+			if (!ice_settings) {
+				err = -ENOMEM;
+				goto ctr_exit;
+			}
+			ice_settings->key_size = ICE_CRYPTO_KEY_SIZE_256;
+			ice_settings->algo_mode = ICE_CRYPTO_ALGO_MODE_AES_XTS;
+			ice_settings->key_mode = ICE_CRYPTO_USE_LUT_SW_KEY;
+			if (sscanf(argv[1], "%hu",
+				&ice_settings->key_index) != 1 ||
+				ice_settings->key_index < 0 ||
+				ice_settings->key_index >
+				MAX_MSM_ICE_KEY_LUT_SIZE) {
+				DMERR("%s Err: key index %d received for ICE\n",
+					__func__, ice_settings->key_index);
+				err = DM_REQ_CRYPT_ERROR;
+				goto ctr_exit;
+			}
+		}
+	}
+
 	req_crypt_queue = alloc_workqueue("req_cryptd",
-					WQ_NON_REENTRANT |
-					WQ_HIGHPRI |
-					WQ_CPU_INTENSIVE|
+					WQ_UNBOUND |
+					WQ_CPU_INTENSIVE |
 					WQ_MEM_RECLAIM,
-					1);
+					0);
 	if (!req_crypt_queue) {
 		DMERR("%s req_crypt_queue not allocated\n", __func__);
+		err =  DM_REQ_CRYPT_ERROR;
+		goto ctr_exit;
+	}
+
+	req_crypt_split_io_queue = alloc_workqueue("req_crypt_split",
+					WQ_UNBOUND |
+					WQ_CPU_INTENSIVE |
+					WQ_MEM_RECLAIM,
+					0);
+	if (!req_crypt_split_io_queue) {
+		DMERR("%s req_crypt_split_io_queue not allocated\n", __func__);
 		err =  DM_REQ_CRYPT_ERROR;
 		goto ctr_exit;
 	}
@@ -740,7 +1192,64 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto ctr_exit;
 	}
 
+	num_engines_fde = num_engines_pfe = 0;
+
+	mutex_lock(&engine_list_mutex);
+	num_engines = (dm_qcrypto_func.get_num_engines)();
+	if (!num_engines) {
+		DMERR(KERN_INFO "%s qcrypto_get_num_engines failed\n",
+				__func__);
+		err = -DM_REQ_CRYPT_ERROR;
+		mutex_unlock(&engine_list_mutex);
+		goto ctr_exit;
+	}
+
+	eng_list = kzalloc(sizeof(*eng_list)*num_engines, 0);
+	if (NULL == eng_list) {
+		DMERR("%s engine list allocation failed\n", __func__);
+		mutex_unlock(&engine_list_mutex);
+		goto ctr_exit;
+	}
+
+	(dm_qcrypto_func.get_engine_list)(num_engines, eng_list);
+
+	for (i = 0; i < num_engines; i++) {
+		if (eng_list[i].ce_device == FDE_KEY_ID)
+			num_engines_fde++;
+		if (eng_list[i].ce_device == PFE_KEY_ID)
+			num_engines_pfe++;
+	}
+
+	fde_eng = kzalloc(sizeof(*fde_eng)*num_engines_fde, GFP_KERNEL);
+	if (NULL == fde_eng) {
+		DMERR("%s fde engine list allocation failed\n", __func__);
+		mutex_unlock(&engine_list_mutex);
+		goto ctr_exit;
+	}
+
+	pfe_eng = kzalloc(sizeof(*pfe_eng)*num_engines_pfe, GFP_KERNEL);
+	if (NULL == pfe_eng) {
+		DMERR("%s pfe engine list allocation failed\n", __func__);
+		mutex_unlock(&engine_list_mutex);
+		goto ctr_exit;
+	}
+
+	fde_cursor = 0;
+	pfe_cursor = 0;
+
+	for (i = 0; i < num_engines; i++) {
+		if (eng_list[i].ce_device == FDE_KEY_ID)
+			fde_eng[fde_cursor++] = eng_list[i];
+		if (eng_list[i].ce_device == PFE_KEY_ID)
+			pfe_eng[pfe_cursor++] = eng_list[i];
+	}
+
+	fde_cursor = 0;
+	pfe_cursor = 0;
+	mutex_unlock(&engine_list_mutex);
+
 	req_io_pool = mempool_create_slab_pool(MIN_IOS, _req_crypt_io_pool);
+	BUG_ON(!req_io_pool);
 	if (!req_io_pool) {
 		DMERR("%s req_io_pool not allocated\n", __func__);
 		err =  DM_REQ_CRYPT_ERROR;
@@ -754,25 +1263,15 @@ static int req_crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto ctr_exit;
 	}
 	err = 0;
+
+	DMINFO("%s: Mapping block_device %s to dm-req-crypt ok!\n",
+	       __func__, argv[3]);
+
 ctr_exit:
-	if (err != 0) {
-		if (req_crypt_queue) {
-			destroy_workqueue(req_crypt_queue);
-			req_crypt_queue = NULL;
-		}
-		if (req_io_pool) {
-			mempool_destroy(req_io_pool);
-			req_io_pool = NULL;
-		}
-		if (req_page_pool) {
-			mempool_destroy(req_page_pool);
-			req_page_pool = NULL;
-		}
-		if (tfm) {
-			crypto_free_ablkcipher(tfm);
-			tfm = NULL;
-		}
-	}
+	if (err)
+		req_crypt_dtr(ti);
+
+	kfree(eng_list);
 	return err;
 }
 
@@ -781,6 +1280,18 @@ static int req_crypt_iterate_devices(struct dm_target *ti,
 {
 	return fn(ti, dev, start_sector_orig, ti->len, data);
 }
+
+void set_qcrypto_func_dm(void *dev,
+			void *flag,
+			void *engines,
+			void *engine_list)
+{
+	dm_qcrypto_func.cipher_set  = dev;
+	dm_qcrypto_func.cipher_flag = flag;
+	dm_qcrypto_func.get_num_engines = engines;
+	dm_qcrypto_func.get_engine_list = engine_list;
+}
+EXPORT_SYMBOL(set_qcrypto_func_dm);
 
 static struct target_type req_crypt_target = {
 	.name   = "req-crypt",
@@ -797,22 +1308,20 @@ static int __init req_dm_crypt_init(void)
 {
 	int r;
 
-	_req_crypt_io_pool = KMEM_CACHE(req_dm_crypt_io, 0);
-	if (!_req_crypt_io_pool)
-		return -ENOMEM;
 
 	r = dm_register_target(&req_crypt_target);
 	if (r < 0) {
 		DMERR("register failed %d", r);
-		kmem_cache_destroy(_req_crypt_io_pool);
+		return r;
 	}
+
+	DMINFO("dm-req-crypt successfully initalized.\n");
 
 	return r;
 }
 
 static void __exit req_dm_crypt_exit(void)
 {
-	kmem_cache_destroy(_req_crypt_io_pool);
 	dm_unregister_target(&req_crypt_target);
 }
 

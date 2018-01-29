@@ -14,15 +14,21 @@
 #ifndef __RTAC_H__
 #define __RTAC_H__
 
+#include <sound/apr_audio-v2.h>
+
 /* Voice Modes */
 #define RTAC_CVP		0
 #define RTAC_CVS		1
 #define RTAC_VOICE_MODES	2
 
+#define RTAC_MAX_ACTIVE_DEVICES		4
+#define RTAC_MAX_ACTIVE_POPP		8
+
 enum {
 	ADM_RTAC_CAL,
 	ASM_RTAC_CAL,
 	VOICE_RTAC_CAL,
+	AFE_RTAC_CAL,
 	MAX_RTAC_BLOCKS
 };
 
@@ -44,7 +50,28 @@ struct rtac_cal_block_data {
 	struct rtac_cal_data		cal_data;
 };
 
-void rtac_add_adm_device(u32 port_id, u32 copp_id, u32 path_id, u32 popp_id);
+struct rtac_popp_data {
+	uint32_t	popp;
+	uint32_t	popp_topology;
+};
+
+struct rtac_adm_data {
+	uint32_t		topology_id;
+	uint32_t		afe_port;
+	uint32_t		copp;
+	uint32_t		num_of_popp;
+	uint32_t		app_type;
+	uint32_t		acdb_dev_id;
+	struct rtac_popp_data	popp[RTAC_MAX_ACTIVE_POPP];
+};
+
+struct rtac_adm {
+		uint32_t			num_of_dev;
+		struct rtac_adm_data		device[RTAC_MAX_ACTIVE_DEVICES];
+};
+
+void rtac_add_adm_device(u32 port_id, u32 copp_id, u32 path_id, u32 popp_id,
+			u32 app_type, u32 acdb_dev_id);
 void rtac_remove_adm_device(u32 port_id, u32 copp_id);
 void rtac_remove_popp_from_adm_devices(u32 popp_id);
 void rtac_add_voice(u32 cvs_handle, u32 cvp_handle, u32 rx_afe_port,
@@ -61,5 +88,7 @@ void rtac_set_voice_handle(u32 mode, void *handle);
 bool rtac_make_voice_callback(u32 mode, uint32_t *payload, u32 payload_size);
 void rtac_copy_voice_payload_to_user(void *payload, u32 payload_size);
 int rtac_clear_mapping(uint32_t cal_type);
-
+bool rtac_make_afe_callback(uint32_t *payload, u32 payload_size);
+void rtac_set_afe_handle(void *handle);
+void get_rtac_adm_data(struct rtac_adm *adm_data);
 #endif

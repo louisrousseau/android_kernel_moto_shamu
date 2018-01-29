@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,9 +23,9 @@
 #include <linux/idr.h>
 #include <asm/sizes.h>
 #include <asm/page.h>
-#include <mach/iommu.h>
+#include <linux/qcom_iommu.h>
 #include <linux/msm_iommu_domains.h>
-#include <mach/msm_iommu_priv.h>
+#include "msm_iommu_priv.h"
 #include <soc/qcom/socinfo.h>
 
 struct msm_iova_data {
@@ -348,6 +348,24 @@ int msm_find_domain_no(const struct iommu_domain *domain)
 }
 EXPORT_SYMBOL(msm_find_domain_no);
 
+struct iommu_domain *msm_iommu_domain_find(const char *name)
+{
+	struct iommu_group *group = iommu_group_find(name);
+	if (!group)
+		return NULL;
+	return iommu_group_get_iommudata(group);
+}
+EXPORT_SYMBOL(msm_iommu_domain_find);
+
+int msm_iommu_domain_no_find(const char *name)
+{
+	struct iommu_domain *domain = msm_iommu_domain_find(name);
+	if (!domain)
+		return -EINVAL;
+	return msm_find_domain_no(domain);
+}
+EXPORT_SYMBOL(msm_iommu_domain_no_find);
+
 static struct msm_iova_data *msm_domain_to_iova_data(struct iommu_domain
 						     const *domain)
 {
@@ -369,6 +387,21 @@ static struct msm_iova_data *msm_domain_to_iova_data(struct iommu_domain
 	return iova_data;
 }
 
+#ifdef CONFIG_MMU500_ACTIVE_PREFETCH_BUG_WITH_SECTION_MAPPING
+static unsigned long get_alignment_order(unsigned long align)
+{
+	if (align >= SZ_1M && align < SZ_2M)
+		return ilog2(SZ_2M);
+	else
+		return ilog2(align);
+}
+#else
+static unsigned long get_alignment_order(unsigned long align)
+{
+	return ilog2(align);
+}
+#endif
+
 int msm_allocate_iova_address(unsigned int iommu_domain,
 					unsigned int partition_no,
 					unsigned long size,
@@ -378,6 +411,7 @@ int msm_allocate_iova_address(unsigned int iommu_domain,
 	struct msm_iova_data *data;
 	struct mem_pool *pool;
 	unsigned long va;
+	unsigned long aligned_order;
 
 	data = find_domain(iommu_domain);
 
@@ -392,8 +426,10 @@ int msm_allocate_iova_address(unsigned int iommu_domain,
 	if (!pool->gpool)
 		return -EINVAL;
 
+	aligned_order = get_alignment_order(align);
+
 	mutex_lock(&pool->pool_mutex);
-	va = gen_pool_alloc_aligned(pool->gpool, size, ilog2(align));
+	va = gen_pool_alloc_aligned(pool->gpool, size, aligned_order);
 	mutex_unlock(&pool->pool_mutex);
 	if (va) {
 		pool->free -= size;
@@ -450,6 +486,7 @@ int msm_register_domain(struct msm_iova_layout *layout)
 	struct msm_iova_data *data;
 	struct mem_pool *pools;
 	struct bus_type *bus;
+	int no_redirect;
 
 	if (!layout)
 		return -EINVAL;
@@ -506,9 +543,13 @@ int msm_register_domain(struct msm_iova_layout *layout)
 	if (data->domain_num < 0)
 		goto free_pools;
 
-	data->domain = iommu_domain_alloc(bus, layout->domain_flags);
+	data->domain = iommu_domain_alloc(bus);
 	if (!data->domain)
 		goto free_domain_num;
+
+	no_redirect = !(layout->domain_flags & MSM_IOMMU_DOMAIN_PT_CACHEABLE);
+	iommu_domain_set_attr(data->domain,
+			DOMAIN_ATTR_COHERENT_HTW_DISABLE, &no_redirect);
 
 	msm_iommu_set_client_name(data->domain, layout->client_name);
 

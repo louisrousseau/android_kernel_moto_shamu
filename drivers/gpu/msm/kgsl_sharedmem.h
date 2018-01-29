@@ -33,12 +33,12 @@ int kgsl_sharedmem_page_alloc_user(struct kgsl_memdesc *memdesc,
 				struct kgsl_pagetable *pagetable,
 				size_t size);
 
-int kgsl_sharedmem_alloc_coherent(struct kgsl_device *device,
-			struct kgsl_memdesc *memdesc, size_t size);
-
 int kgsl_cma_alloc_coherent(struct kgsl_device *device,
 			struct kgsl_memdesc *memdesc,
 			struct kgsl_pagetable *pagetable, size_t size);
+
+int kgsl_cma_alloc_secure(struct kgsl_device *device,
+			struct kgsl_memdesc *memdesc, size_t size);
 
 void kgsl_sharedmem_free(struct kgsl_memdesc *memdesc);
 
@@ -155,6 +155,36 @@ memdesc_sg_phys(struct kgsl_memdesc *memdesc,
 	return 0;
 }
 
+/**
+ * memdesg_sg_dma() - Turn a dma_addr (from CMA) into a sg table
+ * @memdesc: Pointer to the memdesc structure
+ * @addr: Physical address from the dma_alloc function
+ * @size: Size of the chunk
+ *
+ * Create a sg table for the contigious chunk specified by addr and size.
+ */
+static inline int
+memdesc_sg_dma(struct kgsl_memdesc *memdesc,
+		phys_addr_t addr, size_t size)
+{
+	struct page *page = phys_to_page(addr);
+
+	memdesc->sg = kgsl_malloc(sizeof(struct scatterlist));
+	if (memdesc->sg == NULL)
+		return -ENOMEM;
+
+	sg_set_page(memdesc->sg, page, size, 0);
+
+	/*
+	 * Continuing a grand tradition of doing it wrong this should be the
+	 * dma_addr_t and not the phys_addr_t. But everything downstream of us
+	 * assume this is a phys_addr_t so we do this.
+	 */
+
+	sg_dma_address(memdesc->sg) = addr;
+	return 0;
+}
+
 /*
  * kgsl_memdesc_is_global - is this a globally mapped buffer?
  * @memdesc: the memdesc
@@ -167,6 +197,17 @@ static inline int kgsl_memdesc_is_global(const struct kgsl_memdesc *memdesc)
 }
 
 /*
+ * kgsl_memdesc_is_secured - is this a secure buffer?
+ * @memdesc: the memdesc
+ *
+ * Returns true if this is a secure mapping, false otherwise
+ */
+static inline bool kgsl_memdesc_is_secured(const struct kgsl_memdesc *memdesc)
+{
+	return memdesc && (memdesc->priv & KGSL_MEMDESC_SECURE);
+}
+
+/*
  * kgsl_memdesc_has_guard_page - is the last page a guard page?
  * @memdesc - the memdesc
  *
@@ -176,6 +217,18 @@ static inline int
 kgsl_memdesc_has_guard_page(const struct kgsl_memdesc *memdesc)
 {
 	return (memdesc->priv & KGSL_MEMDESC_GUARD_PAGE) != 0;
+}
+
+/*
+ * kgsl_memdesc_guard_page_size - returns guard page size
+ * @memdesc - the memdesc
+ *
+ * Returns guard page size
+ */
+static inline int
+kgsl_memdesc_guard_page_size(const struct kgsl_memdesc *memdesc)
+{
+	return kgsl_memdesc_is_secured(memdesc) ? SZ_1M : PAGE_SIZE;
 }
 
 /*
@@ -222,7 +275,8 @@ kgsl_allocate_user(struct kgsl_device *device,
 	if (kgsl_mmu_get_mmutype() == KGSL_MMU_TYPE_NONE) {
 		size = ALIGN(size, PAGE_SIZE);
 		ret = kgsl_cma_alloc_coherent(device, memdesc, pagetable, size);
-	}
+	} else if (flags & KGSL_MEMFLAGS_SECURE)
+		ret = kgsl_cma_alloc_secure(device, memdesc, size);
 	else
 		ret = kgsl_sharedmem_page_alloc_user(memdesc, pagetable, size);
 
@@ -233,11 +287,14 @@ static inline int
 kgsl_allocate_contiguous(struct kgsl_device *device,
 			struct kgsl_memdesc *memdesc, size_t size)
 {
-	int ret  = kgsl_sharedmem_alloc_coherent(device, memdesc, size);
+	int ret;
+
+	size = ALIGN(size, PAGE_SIZE);
+
+	ret = kgsl_cma_alloc_coherent(device, memdesc, NULL, size);
 	if (!ret && (kgsl_mmu_get_mmutype() == KGSL_MMU_TYPE_NONE))
 		memdesc->gpuaddr = memdesc->physaddr;
 
-	memdesc->flags |= (KGSL_MEMTYPE_KERNEL << KGSL_MEMTYPE_SHIFT);
 	return ret;
 }
 
@@ -248,6 +305,7 @@ kgsl_allocate_contiguous(struct kgsl_device *device,
  * @memdesc: Pointer to a KGSL memory descriptor for the memory allocation
  * @size: size of the allocation
  * @flags: Allocation flags that control how the memory is mapped
+ * @priv: Priv flags that controls memory attributes
  *
  * Allocate contiguous memory for internal use and add the allocation to the
  * list of global pagetable entries that will be mapped at the same address in
@@ -255,11 +313,16 @@ kgsl_allocate_contiguous(struct kgsl_device *device,
  * ringbuffers.
  */
 static inline int kgsl_allocate_global(struct kgsl_device *device,
-	struct kgsl_memdesc *memdesc, size_t size, unsigned int flags)
+	struct kgsl_memdesc *memdesc, size_t size, unsigned int flags,
+	unsigned int priv)
 {
 	int ret;
 
+	if (size == 0)
+		return -EINVAL;
+
 	memdesc->flags = flags;
+	memdesc->priv = priv;
 
 	ret = kgsl_allocate_contiguous(device, memdesc, size);
 
@@ -286,5 +349,9 @@ static inline void kgsl_free_global(struct kgsl_memdesc *memdesc)
 	kgsl_remove_global_pt_entry(memdesc);
 	kgsl_sharedmem_free(memdesc);
 }
+
+int kgsl_heap_init(void);
+struct page *kgsl_heap_alloc(unsigned long size);
+void kgsl_heap_free(struct page *page);
 
 #endif /* __KGSL_SHAREDMEM_H */

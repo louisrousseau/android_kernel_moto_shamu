@@ -158,6 +158,10 @@
 #define clk_gcc_gtcu_ahb_bridge_clk		0x19d2c5fe
 #define clk_gcc_bimc_gpu_clk			0x19922503
 #define clk_gcc_bimc_gfx_clk			0x3edd69ad
+#define clk_gcc_snoc_qosgen_clk			0x37d40ce2
+
+#define clk_pixel_clk_src			0x8b6f83d8
+#define clk_byte_clk_src			0x3a911c53
 
 /* RPM */
 #define clk_pcnoc_clk				0xc1296d0f
@@ -166,20 +170,23 @@
 #define clk_pcnoc_msmbus_a_clk			0x9753a54f
 #define clk_pcnoc_keepalive_a_clk		0x9464f720
 #define clk_pcnoc_sps_clk			0x23d3f584
+#define clk_pcnoc_usb_a_clk			0x11d6a74e
 #define clk_snoc_clk				0x2c341aa0
 #define clk_snoc_a_clk				0x8fcef2af
 #define clk_snoc_msmbus_clk			0xe6900bb6
 #define clk_snoc_msmbus_a_clk			0x5d4683bd
 #define clk_snoc_mmnoc_axi_clk			0xfedd4bd5
 #define clk_snoc_mmnoc_ahb_clk			0xd2149dbb
+#define clk_snoc_usb_a_clk			0x34b7821b
 #define clk_bimc_clk				0x4b80bf00
 #define clk_bimc_a_clk				0x4b25668a
 #define clk_bimc_acpu_a_clk			0x4446311b
 #define clk_bimc_msmbus_clk			0xd212feea
 #define clk_bimc_msmbus_a_clk			0x71d1a499
+#define clk_bimc_usb_a_clk			0xea410834
 #define clk_qdss_clk				0x1492202a
 #define clk_qdss_a_clk				0xdd121669
-#define clk_xo_gcc				0x6ac2a778
+#define clk_xo_clk_src				0x23f5649f
 #define clk_xo_a_clk_src			0x2fdd2c7c
 #define clk_xo_otg_clk				0x79bca5cc
 #define clk_xo_a2				0xeba5a83d
@@ -203,5 +210,14 @@
 #define clk_gcc_debug_mux			0x8121ac15
 #define clk_rpm_debug_mux			0x25cd1f3a
 #define clk_wcnss_m_clk				0x709f430b
+#define clk_apss_debug_pri_mux			0xc691ff55
+#define clk_apss_debug_sec_mux			0xc0b680f9
+#define clk_apss_debug_ter_mux			0x32041c48
+#define clk_apc0_m_clk				0xce1e9473
+#define clk_apc1_m_clk				0x990fbaf7
+#define clk_apc2_m_clk				0x252cd4ae
+#define clk_apc3_m_clk				0x78c64486
+#define clk_l2_m_clk				0x4bedf4d0
+
 
 #endif

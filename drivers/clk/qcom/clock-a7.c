@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,124 +18,29 @@
 #include <linux/io.h>
 #include <linux/err.h>
 #include <linux/clk.h>
+#include <linux/cpu.h>
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/of.h>
 #include <linux/clk/msm-clock-generic.h>
+#include <linux/of_platform.h>
+#include <linux/pm_opp.h>
 #include <soc/qcom/clock-local2.h>
-#include <mach/mmi_soc_info.h>
+#include <dt-bindings/clock/msm-clocks-a7.h>
 
-#define UPDATE_CHECK_MAX_LOOPS 200
-
-struct cortex_reg_data {
-	u32 cmd_offset;
-	u32 update_mask;
-	u32 poll_mask;
-};
-
-#define DIV_REG(x) ((x)->base + (x)->div_offset)
-#define SRC_REG(x) ((x)->base + (x)->src_offset)
-#define CMD_REG(x) ((x)->base + \
-			((struct cortex_reg_data *)(x)->priv)->cmd_offset)
-
-static int update_config(struct mux_div_clk *md)
-{
-	u32 regval, count;
-	struct cortex_reg_data *r = md->priv;
-
-	/* Update the configuration */
-	regval = readl_relaxed(CMD_REG(md));
-	regval |= r->update_mask;
-	writel_relaxed(regval, CMD_REG(md));
-
-	/* Wait for update to take effect */
-	for (count = UPDATE_CHECK_MAX_LOOPS; count > 0; count--) {
-		if (!(readl_relaxed(CMD_REG(md)) &
-				r->poll_mask))
-			return 0;
-		udelay(1);
-	}
-
-	CLK_WARN(&md->c, true, "didn't update its configuration.");
-
-	return -EINVAL;
-}
-
-static void cortex_get_config(struct mux_div_clk *md, u32 *src_sel, u32 *div)
-{
-	u32 regval;
-
-	regval = readl_relaxed(DIV_REG(md));
-	regval &= (md->div_mask << md->div_shift);
-	*div = regval >> md->div_shift;
-	*div = max((u32)1, (*div + 1) / 2);
-
-	regval = readl_relaxed(SRC_REG(md));
-	regval &= (md->src_mask << md->src_shift);
-	*src_sel = regval >> md->src_shift;
-}
-
-static int cortex_set_config(struct mux_div_clk *md, u32 src_sel, u32 div)
-{
-	u32 regval;
-
-	div = div ? ((2 * div) - 1) : 0;
-	regval = readl_relaxed(DIV_REG(md));
-	regval &= ~(md->div_mask  << md->div_shift);
-	regval |= div << md->div_shift;
-	writel_relaxed(regval, DIV_REG(md));
-
-	regval = readl_relaxed(SRC_REG(md));
-	regval &= ~(md->src_mask  << md->src_shift);
-	regval |= src_sel << md->src_shift;
-	writel_relaxed(regval, SRC_REG(md));
-
-	return update_config(md);
-}
-
-static int cortex_enable(struct mux_div_clk *md)
-{
-	u32 src_sel = parent_to_src_sel(md->parents, md->num_parents,
-							md->c.parent);
-	return cortex_set_config(md, src_sel, md->data.div);
-}
-
-static void cortex_disable(struct mux_div_clk *md)
-{
-	u32 src_sel = parent_to_src_sel(md->parents, md->num_parents,
-							md->safe_parent);
-	cortex_set_config(md, src_sel, md->safe_div);
-}
-
-static bool cortex_is_enabled(struct mux_div_clk *md)
-{
-	return true;
-}
-
-struct mux_div_ops cortex_mux_div_ops = {
-	.set_src_div = cortex_set_config,
-	.get_src_div = cortex_get_config,
-	.is_enabled = cortex_is_enabled,
-	.enable = cortex_enable,
-	.disable = cortex_disable,
-};
-
-static struct cortex_reg_data a7ssmux_priv = {
-	.cmd_offset = 0x0,
-	.update_mask = BIT(0),
-	.poll_mask = BIT(0),
-};
+#include "clock.h"
 
 DEFINE_VDD_REGS_INIT(vdd_cpu, 1);
 
 static struct mux_div_clk a7ssmux = {
-	.ops = &cortex_mux_div_ops,
+	.ops = &rcg_mux_div_ops,
 	.safe_freq = 300000000,
 	.data = {
-		.max_div = 8,
-		.min_div = 1,
+		.max_div = 32,
+		.min_div = 2,
+		.is_half_divider = true,
 	},
 	.c = {
 		.dbg_name = "a7ssmux",
@@ -144,19 +49,127 @@ static struct mux_div_clk a7ssmux = {
 		CLK_INIT(a7ssmux.c),
 	},
 	.parents = (struct clk_src[8]) {},
-	.priv = &a7ssmux_priv,
-	.div_offset = 0x4,
 	.div_mask = BM(4, 0),
-	.div_shift = 0,
-	.src_offset = 0x4,
 	.src_mask = BM(10, 8) >> 8,
 	.src_shift = 8,
 };
 
 static struct clk_lookup clock_tbl_a7[] = {
-	CLK_LOOKUP("cpu0_clk",	a7ssmux.c, "0.qcom,msm-cpufreq"),
-	CLK_LOOKUP("cpu0_clk",	a7ssmux.c, "fe805664.qcom,pm"),
+	CLK_LIST(a7ssmux),
+	CLK_LOOKUP_OF("cpu0_clk",	a7ssmux, "fe805664.qcom,pm"),
+	CLK_LOOKUP_OF("cpu1_clk",	a7ssmux, "fe805664.qcom,pm"),
+	CLK_LOOKUP_OF("cpu2_clk",	a7ssmux, "fe805664.qcom,pm"),
+	CLK_LOOKUP_OF("cpu3_clk",	a7ssmux, "fe805664.qcom,pm"),
+	CLK_LOOKUP_OF("cpu0_clk",   a7ssmux, "8600664.qcom,pm"),
+	CLK_LOOKUP_OF("cpu1_clk",   a7ssmux, "8600664.qcom,pm"),
+	CLK_LOOKUP_OF("cpu2_clk",   a7ssmux, "8600664.qcom,pm"),
+	CLK_LOOKUP_OF("cpu3_clk",   a7ssmux, "8600664.qcom,pm"),
 };
+
+static void print_opp_table(int a7_cpu)
+{
+	struct opp *oppfmax, *oppfmin;
+	unsigned long apc0_fmax = a7ssmux.c.fmax[a7ssmux.c.num_fmax - 1];
+	unsigned long apc0_fmin = a7ssmux.c.fmax[1];
+
+	rcu_read_lock();
+	oppfmax = dev_pm_opp_find_freq_exact(get_cpu_device(a7_cpu), apc0_fmax,
+						true);
+	oppfmin = dev_pm_opp_find_freq_exact(get_cpu_device(a7_cpu), apc0_fmin,
+						true);
+
+	/* One time information during boot. */
+	pr_info("clock_cpu: a7: OPP voltage for %lu: %ld\n", apc0_fmin,
+			dev_pm_opp_get_voltage(oppfmin));
+	pr_info("clock_cpu: a7: OPP voltage for %lu: %ld\n", apc0_fmax,
+			dev_pm_opp_get_voltage(oppfmax));
+
+	rcu_read_unlock();
+}
+
+static int add_opp(struct clk *c, struct device *cpudev, struct device *vregdev,
+			unsigned long max_rate)
+{
+	unsigned long rate = 0;
+	int level;
+	long ret, uv, corner;
+
+	while (1) {
+		ret = clk_round_rate(c, rate + 1);
+		if (ret < 0) {
+			pr_warn("clock-cpu: round_rate failed at %lu\n", rate);
+			return ret;
+		}
+
+		rate = ret;
+
+		level = find_vdd_level(c, rate);
+		if (level <= 0) {
+			pr_warn("clock-cpu: no uv for %lu.\n", rate);
+			return -EINVAL;
+		}
+
+		uv = corner = c->vdd_class->vdd_uv[level];
+
+		/*
+		 * Populate both CPU and regulator devices with the
+		 * freq-to-corner OPP table to maintain backward
+		 * compatibility.
+		 */
+		ret = dev_pm_opp_add(cpudev, rate, corner);
+		if (ret) {
+			pr_warn("clock-cpu: couldn't add OPP for %lu\n",
+					rate);
+			return ret;
+		}
+
+		ret = dev_pm_opp_add(vregdev, rate, corner);
+		if (ret) {
+			pr_warn("clock-cpu: couldn't add OPP for %lu\n",
+					rate);
+			return ret;
+		}
+
+		if (rate >= max_rate)
+			break;
+	}
+
+	return 0;
+}
+
+static void populate_opp_table(struct platform_device *pdev)
+{
+	struct platform_device *apc_dev;
+	struct device_node *apc_node;
+	unsigned long apc_fmax;
+	int cpu, a7_cpu = 0;
+
+	apc_node = of_parse_phandle(pdev->dev.of_node, "cpu-vdd-supply", 0);
+	if (!apc_node) {
+		pr_err("can't find the apc0 dt node.\n");
+		return;
+	}
+
+	apc_dev = of_find_device_by_node(apc_node);
+	if (!apc_dev) {
+		pr_err("can't find the apc0 device node.\n");
+		return;
+	}
+
+	apc_fmax = a7ssmux.c.fmax[a7ssmux.c.num_fmax - 1];
+
+	for_each_possible_cpu(cpu) {
+		a7_cpu = cpu;
+		WARN(add_opp(&a7ssmux.c, get_cpu_device(cpu),
+					&apc_dev->dev, apc_fmax),
+				"Failed to add OPP levels for A7\n");
+	}
+
+	/* One time print during bootup */
+	pr_info("clock-a7: OPP tables populated (cpu %d)\n", a7_cpu);
+
+	print_opp_table(a7_cpu);
+}
 
 static int of_get_fmax_vdd_class(struct platform_device *pdev, struct clk *c,
 								char *prop_name)
@@ -257,6 +270,45 @@ static void get_speed_bin(struct platform_device *pdev, int *bin, int *version)
 	return;
 }
 
+static void get_speed_bin_b(struct platform_device *pdev, int *bin,
+								int *version)
+{
+	struct resource *res;
+	void __iomem *base;
+	u32 pte_efuse, shift = 2, mask = 0x7;
+
+	*bin = 0;
+	*version = 0;
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "efuse");
+	if (!res) {
+		res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+								"efuse1");
+		if (!res) {
+			dev_info(&pdev->dev,
+				"No speed/PVS binning available. Defaulting to 0!\n");
+			return;
+		}
+		shift = 23;
+		mask  = 0x3;
+	}
+
+	base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+	if (!base) {
+		dev_warn(&pdev->dev,
+			 "Unable to read efuse data. Defaulting to 0!\n");
+		return;
+	}
+
+	pte_efuse = readl_relaxed(base);
+	devm_iounmap(&pdev->dev, base);
+
+	*bin = (pte_efuse >> shift) & mask;
+
+	dev_info(&pdev->dev, "Speed bin: %d PVS Version: %d\n", *bin,
+								*version);
+}
+
 static int of_get_clk_src(struct platform_device *pdev, struct clk_src *parents)
 {
 	struct device_node *of = pdev->dev.of_node;
@@ -291,14 +343,21 @@ static int of_get_clk_src(struct platform_device *pdev, struct clk_src *parents)
 	return num_parents;
 }
 
+static struct platform_device *cpu_clock_a7_dev;
+
 static int clock_a7_probe(struct platform_device *pdev)
 {
 	struct resource *res;
-	int speed_bin = 0, version = 0, rc;
+	int speed_bin = 0, version = 0, rc, cpu;
 	unsigned long rate, aux_rate;
 	struct clk *aux_clk, *main_pll;
 	char prop_name[] = "qcom,speedX-bin-vX";
 	const void *prop;
+	bool compat_bin = false;
+	bool opp_enable;
+
+	compat_bin = of_device_is_compatible(pdev->dev.of_node,
+						"qcom,clock-a53-8916");
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "rcg-base");
 	if (!res) {
@@ -318,17 +377,21 @@ static int clock_a7_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_cpu.regulator[0]);
 	}
 
-	a7ssmux.num_parents = of_get_clk_src(pdev, a7ssmux.parents);
-	if (IS_ERR_VALUE(a7ssmux.num_parents))
-		return a7ssmux.num_parents;
+	rc = of_get_clk_src(pdev, a7ssmux.parents);
+	if (IS_ERR_VALUE(rc))
+		return rc;
+
+	a7ssmux.num_parents = rc;
 
 	/* Override the existing safe operating frequency */
 	prop = of_get_property(pdev->dev.of_node, "qcom,safe-freq", NULL);
 	if (prop)
 		a7ssmux.safe_freq = of_read_ulong(prop, 1);
 
-	get_speed_bin(pdev, &speed_bin, &version);
-	mmi_acpu_bin_set(&speed_bin, NULL, &version);
+	if (compat_bin)
+		get_speed_bin_b(pdev, &speed_bin, &version);
+	else
+		get_speed_bin(pdev, &speed_bin, &version);
 
 	snprintf(prop_name, ARRAY_SIZE(prop_name),
 			"qcom,speed%d-bin-v%d", speed_bin, version);
@@ -347,7 +410,8 @@ static int clock_a7_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "Safe voltage plan loaded.\n");
 	}
 
-	rc = msm_clock_register(clock_tbl_a7, ARRAY_SIZE(clock_tbl_a7));
+	rc = of_msm_clock_register(pdev->dev.of_node,
+			clock_tbl_a7, ARRAY_SIZE(clock_tbl_a7));
 	if (rc) {
 		dev_err(&pdev->dev, "msm_clock_register failed\n");
 		return rc;
@@ -370,8 +434,17 @@ static int clock_a7_probe(struct platform_device *pdev)
 	 * that the clocks have already been prepared and enabled by the time
 	 * they take over.
 	 */
-	WARN(clk_prepare_enable(&a7ssmux.c),
-		"Unable to turn on CPU clock");
+	get_online_cpus();
+	for_each_online_cpu(cpu)
+		WARN(clk_prepare_enable(&a7ssmux.c),
+			"Unable to turn on CPU clock");
+	put_online_cpus();
+
+	opp_enable = of_property_read_bool(pdev->dev.of_node,
+						"qcom,enable-opp");
+	if (opp_enable)
+		cpu_clock_a7_dev = pdev;
+
 	return 0;
 }
 
@@ -379,11 +452,13 @@ static struct of_device_id clock_a7_match_table[] = {
 	{.compatible = "qcom,clock-a7-8226"},
 	{.compatible = "qcom,clock-a7-krypton"},
 	{.compatible = "qcom,clock-a7-9630"},
+	{.compatible = "qcom,clock-a7-9640"},
 	{.compatible = "qcom,clock-a53-8916"},
 	{}
 };
 
 static struct platform_driver clock_a7_driver = {
+	.probe = clock_a7_probe,
 	.driver = {
 		.name = "clock-a7",
 		.of_match_table = clock_a7_match_table,
@@ -393,6 +468,15 @@ static struct platform_driver clock_a7_driver = {
 
 static int __init clock_a7_init(void)
 {
-	return platform_driver_probe(&clock_a7_driver, clock_a7_probe);
+	return platform_driver_register(&clock_a7_driver);
 }
 arch_initcall(clock_a7_init);
+
+/* CPU devices are not currently available in arch_initcall */
+static int __init cpu_clock_a7_init_opp(void)
+{
+	if (cpu_clock_a7_dev)
+		populate_opp_table(cpu_clock_a7_dev);
+	return 0;
+}
+module_init(cpu_clock_a7_init_opp);

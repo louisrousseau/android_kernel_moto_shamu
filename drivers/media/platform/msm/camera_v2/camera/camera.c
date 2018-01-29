@@ -69,7 +69,16 @@ static int camera_check_event_status(struct v4l2_event *event)
 				__func__);
 		pr_err("%s : Line %d event_data->status 0X%x\n",
 				__func__, __LINE__, event_data->status);
-		return -EFAULT;
+
+		switch (event_data->status) {
+		case MSM_CAMERA_ERR_CMD_FAIL:
+		case MSM_CAMERA_ERR_MAPPING:
+			return -EFAULT;
+		case MSM_CAMERA_ERR_DEVICE_BUSY:
+			return -EBUSY;
+		default:
+			return -EFAULT;
+		}
 	}
 
 	return 0;
@@ -474,7 +483,7 @@ static int camera_v4l2_fh_open(struct file *filep)
 	/* stream_id = open id */
 	stream_id = atomic_read(&pvdev->opened);
 	sp->stream_id = find_first_zero_bit(
-		&stream_id, MSM_CAMERA_STREAM_CNT_BITS);
+		(const unsigned long *)&stream_id, MSM_CAMERA_STREAM_CNT_BITS);
 	pr_debug("%s: Found stream_id=%d\n", __func__, sp->stream_id);
 
 	v4l2_fh_init(&sp->fh, pvdev->vdev);
@@ -568,7 +577,7 @@ static int camera_v4l2_open(struct file *filep)
 		}
 
 		rc = msm_create_command_ack_q(pvdev->vdev->num,
-			find_first_zero_bit(&opn_idx,
+			find_first_zero_bit((const unsigned long *)&opn_idx,
 				MSM_CAMERA_STREAM_CNT_BITS));
 		if (rc < 0) {
 			pr_err("%s : creation of command_ack queue failed\n",
@@ -594,7 +603,7 @@ static int camera_v4l2_open(struct file *filep)
 		}
 	} else {
 		rc = msm_create_command_ack_q(pvdev->vdev->num,
-			find_first_zero_bit(&opn_idx,
+			find_first_zero_bit((const unsigned long *)&opn_idx,
 				MSM_CAMERA_STREAM_CNT_BITS));
 		if (rc < 0) {
 			pr_err("%s : creation of command_ack queue failed Line %d rc %d\n",
@@ -602,9 +611,8 @@ static int camera_v4l2_open(struct file *filep)
 			goto session_fail;
 		}
 	}
-	pr_debug("%s: Open stream_id=%d\n", __func__,
-		   find_first_zero_bit(&opn_idx, MSM_CAMERA_STREAM_CNT_BITS));
-	idx |= (1 << find_first_zero_bit(&opn_idx, MSM_CAMERA_STREAM_CNT_BITS));
+	idx |= (1 << find_first_zero_bit((const unsigned long *)&opn_idx,
+				MSM_CAMERA_STREAM_CNT_BITS));
 	atomic_cmpxchg(&pvdev->opened, opn_idx, idx);
 	return rc;
 
@@ -683,12 +691,23 @@ static int camera_v4l2_close(struct file *filep)
 	return rc;
 }
 
+#ifdef CONFIG_COMPAT
+long camera_v4l2_compat_ioctl(struct file *file, unsigned int cmd,
+	unsigned long arg)
+{
+	pr_err_ratelimited("%s: Not supported", __func__);
+	return -ENOIOCTLCMD;
+}
+#endif
 static struct v4l2_file_operations camera_v4l2_fops = {
 	.owner   = THIS_MODULE,
 	.open	= camera_v4l2_open,
 	.poll	= camera_v4l2_poll,
 	.release = camera_v4l2_close,
 	.ioctl   = video_ioctl2,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl32 = camera_v4l2_compat_ioctl,
+#endif
 };
 
 int camera_init_v4l2(struct device *dev, unsigned int *session)

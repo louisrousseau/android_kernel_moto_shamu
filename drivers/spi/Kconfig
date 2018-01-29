@@ -55,7 +55,6 @@ comment "SPI Master Controller Drivers"
 
 config SPI_ALTERA
 	tristate "Altera SPI Controller"
-	depends on GENERIC_HARDIRQS
 	select SPI_BITBANG
 	help
 	  This is the driver for the Altera SPI Controller.
@@ -148,6 +147,12 @@ config SPI_COLDFIRE_QSPI
 	help
 	  This enables support for the Coldfire QSPI controller in master
 	  mode.
+
+config SPI_CONTEXTHUB
+	tristate "User mode SPI context hub device driver support"
+        depends on (OF)
+	help
+	  This supports user mode SPI context hub protocol drivers.
 
 config SPI_DAVINCI
 	tristate "Texas Instruments DaVinci/DA8x/OMAP-L/AM1x SoC SPI controller"
@@ -329,7 +334,7 @@ config SPI_PXA2XX_DMA
 
 config SPI_PXA2XX
 	tristate "PXA2xx SSP SPI master"
-	depends on (ARCH_PXA || PCI || ACPI) && GENERIC_HARDIRQS
+	depends on (ARCH_PXA || PCI || ACPI)
 	select PXA_SSP if ARCH_PXA
 	help
 	  This enables using a PXA2xx or Sodaville SSP port as a SPI master
