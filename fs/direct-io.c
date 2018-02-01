@@ -612,9 +612,6 @@ static int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
 
 		/* Store for completion */
 		dio->private = map_bh->b_private;
-
-		if (ret == 0 && buffer_defer_completion(map_bh))
-			ret = dio_set_defer_completion(dio);
 	}
 	return ret;
 }
