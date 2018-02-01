@@ -1228,7 +1228,7 @@ char *pointer(const char *fmt, char *buf, char *end, void *ptr,
 	}
 	spec.base = 16;
 
-	return number(buf, end, (unsigned long long) ptr, spec);
+	return number(buf, end, (unsigned long) ptr, spec);
 }
 
 /*
