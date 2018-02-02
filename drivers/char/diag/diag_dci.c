@@ -25,7 +25,7 @@
 #include <linux/ratelimit.h>
 #include <linux/reboot.h>
 #include <asm/current.h>
-#include <soc/qcom/restart.h>
+#include <mach/restart.h>
 #ifdef CONFIG_DIAG_OVER_USB
 #include <linux/usb/usbdiag.h>
 #endif
