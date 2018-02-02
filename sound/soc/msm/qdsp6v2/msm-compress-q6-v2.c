@@ -327,7 +327,7 @@ static int msm_compr_send_buffer(struct msm_compr_audio *prtd)
 		buffer_length = prtd->cstream->runtime->fragment_size;
 	else
 		buffer_length =
-			(bytes_available / prtd->dsp_fragment_size) * prtd->dsp_fragment_size;
+			do_div(bytes_available,prtd->dsp_fragment_size) * prtd->dsp_fragment_size;
 
 	if (prtd->byte_offset + buffer_length > prtd->buffer_size) {
 		buffer_length = (prtd->buffer_size - prtd->byte_offset);
