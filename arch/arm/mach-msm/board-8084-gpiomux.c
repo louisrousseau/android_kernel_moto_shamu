@@ -786,6 +786,47 @@ static struct msm_gpiomux_config apq8084_pri_ter_auxpcm_configs[] __initdata = {
 	},
 };
 
+static struct gpiomux_setting wlan_en_cfg = {
+	.func = GPIOMUX_FUNC_GPIO,
+	.drv = GPIOMUX_DRV_16MA,
+	.pull = GPIOMUX_PULL_UP,
+	.dir = GPIOMUX_OUT_HIGH,
+};
+
+static struct msm_gpiomux_config msm_wlan_configs[] __initdata = {
+	{
+		.gpio = 82,			/* WLAN ENABLE */
+		.settings = {
+			[GPIOMUX_ACTIVE]    = &wlan_en_cfg,
+			[GPIOMUX_SUSPENDED] = &wlan_en_cfg,
+		},
+	},
+};
+
+static struct gpiomux_setting sd_card_det_active_config = {
+	.func = GPIOMUX_FUNC_GPIO,
+	.drv = GPIOMUX_DRV_2MA,
+	.pull = GPIOMUX_PULL_NONE,
+	.dir = GPIOMUX_IN,
+};
+
+static struct gpiomux_setting sd_card_det_sleep_config = {
+	.func = GPIOMUX_FUNC_GPIO,
+	.drv = GPIOMUX_DRV_2MA,
+	.pull = GPIOMUX_PULL_UP,
+	.dir = GPIOMUX_IN,
+};
+
+static struct msm_gpiomux_config sd_card_det[] __initdata = {
+	{
+		.gpio = 122,
+		.settings = {
+			[GPIOMUX_ACTIVE]    = &sd_card_det_active_config,
+			[GPIOMUX_SUSPENDED] = &sd_card_det_sleep_config,
+		},
+	},
+};
+
 static struct gpiomux_setting eth_pwr_sleep_config = {
 	.func = GPIOMUX_FUNC_GPIO,
 	.drv = GPIOMUX_DRV_2MA,
@@ -1116,6 +1157,14 @@ static struct gpiomux_setting gpio_pcie_clkreq_config[] = {
 		.drv = GPIOMUX_DRV_2MA,
 		.pull = GPIOMUX_PULL_UP,
 	},
+};
+static struct gpiomux_setting gpio_pcie_pwaken_config[] = {
+    {
+        .func = GPIOMUX_FUNC_GPIO,
+        .drv = GPIOMUX_DRV_2MA,
+        .pull = GPIOMUX_PULL_NONE,
+        .dir = GPIOMUX_IN,
+    },
 };
 static struct msm_gpiomux_config msm_pcie_configs[] __initdata = {
 	{
