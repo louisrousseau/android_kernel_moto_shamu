@@ -12,7 +12,6 @@
 
 #include <linux/slab.h>
 #include <linux/diagchar.h>
-#include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/kmemleak.h>
 #include <linux/delay.h>
@@ -28,11 +27,6 @@
 
 /* tracks which peripheral is undergoing SSR */
 static uint16_t reg_dirty;
-
-/* send control message to modem */
-static void diag_send_ctrl_msg(struct diag_smd_info *smd_info,
-		const void *msg,
-		int len);
 
 void diag_clean_reg_fn(struct work_struct *work)
 {
@@ -957,61 +951,6 @@ fail:
 	return err;
 }
 
-void diag_send_diag_flush(struct diag_smd_info *smd_info)
-{
-	struct diag_ctrl_msg_diag_flush diag_flush;
-
-	if (!smd_info || smd_info->type != SMD_CNTL_TYPE) {
-		pr_err("diag: In %s, invalid channel info, smd_info: %p type: %d\n",
-					__func__, smd_info,
-					((smd_info) ? smd_info->type : -1));
-		return;
-	}
-
-	if (smd_info->peripheral < MODEM_DATA ||
-					smd_info->peripheral > WCNSS_DATA) {
-		pr_err("diag: In %s, invalid peripheral %d\n", __func__,
-							smd_info->peripheral);
-		return;
-	}
-
-	pr_debug("diag: In %s,  sending diag_flush msg\n", __func__);
-
-	mutex_lock(&driver->diag_cntl_mutex);
-	diag_flush.ctrl_pkt_id = DIAG_CTRL_MSG_DIAG_FLUSH;
-	diag_flush.ctrl_pkt_data_len = 0;
-
-	diag_send_ctrl_msg(smd_info, &diag_flush, sizeof(diag_flush));
-
-	mutex_unlock(&driver->diag_cntl_mutex);
-	pr_debug("diag: Exiting %s\n", __func__);
-}
-
-static void diag_send_ctrl_msg(struct diag_smd_info *smd_info,
-		const void *msg,
-		int len)
-{
-	int wr_size = -ENOMEM, retry_count = 0, timer;
-
-	if (smd_info->ch) {
-		while (retry_count < 3) {
-			wr_size = smd_write(smd_info->ch, msg, len);
-			if (wr_size == -ENOMEM) {
-				retry_count++;
-				for (timer = 0; timer < 5; timer++)
-					usleep_range(2000, 3000);
-			} else
-				break;
-		}
-		if (wr_size != len)
-			pr_err("diag: proc %d failed sending msg %d, tried %d",
-				smd_info->peripheral,
-				wr_size, len);
-	} else {
-		pr_err("diag: ch invalid on proc %d\n", smd_info->peripheral);
-	}
-}
-
 int diag_send_stm_state(struct diag_smd_info *smd_info,
 			  uint8_t stm_control_data)
 {
@@ -1295,13 +1234,4 @@ void diagfwd_cntl_exit(void)
 
 	platform_driver_unregister(&msm_smd_ch1_cntl_driver);
 	platform_driver_unregister(&diag_smd_lite_cntl_driver);
-}
-
-void diag_send_diag_mode_update(int real_time)
-{
-	int i;
-	for (i = 0; i < NUM_SMD_CONTROL_CHANNELS; i++) {
-		diag_send_diag_mode_update_by_smd(&driver->smd_cntl[i],
-							real_time);
-	}
 }

@@ -132,25 +132,6 @@ struct diag_ctrl_msg_mask {
 	/* Copy msg mask here */
 } __packed;
 
-
-struct diag_ctrl_msg_diagmode_mdlog {
-	uint32_t ctrl_pkt_id;
-	uint32_t ctrl_pkt_data_len;
-	uint32_t version;
-	uint32_t optimized;
-	uint32_t commit_threshold;
-	uint32_t drain_timer_val;
-	uint32_t event_stale_timer_val;
-	uint32_t drain_low_threshold;
-	uint32_t drain_high_threshold;
-	uint32_t drain_interval_in_secs;
-} __packed;
-
-struct diag_ctrl_msg_diag_flush {
-	uint32_t ctrl_pkt_id;
-	uint32_t ctrl_pkt_data_len;
-} __packed;
-
 struct diag_ctrl_feature_mask {
 	uint32_t ctrl_pkt_id;
 	uint32_t ctrl_pkt_data_len;
@@ -274,5 +255,4 @@ int diag_send_buffering_wm_values(struct diag_smd_info *smd_info,
 				  struct diag_buffering_mode_t *params);
 void diag_cntl_stm_notify(struct diag_smd_info *smd_info, int action);
 
-void diag_send_diag_flush(struct diag_smd_info *smd_info);
 #endif

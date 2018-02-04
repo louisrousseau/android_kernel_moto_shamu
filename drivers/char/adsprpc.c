@@ -877,12 +877,6 @@ static int get_args(uint32_t kernel, struct smq_invoke_ctx *ctx,
 			VERIFY(err, 0 != (vma = find_vma(current->mm, start)));
 			if (err)
 				goto bail;
-			VERIFY(err, (num << PAGE_SHIFT) <= len);
-			if (err)
-				goto bail;
-			VERIFY(err, 0 != (vma = find_vma(current->mm, start)));
-			if (err)
-				goto bail;
 			rpra[i].buf.pv = pra[i].buf.pv;
 			pages[idx].addr = iova + (start - vma->vm_start);
 			pages[idx].size = num << PAGE_SHIFT;

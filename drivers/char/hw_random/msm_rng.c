@@ -8,7 +8,7 @@
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU  General Public License for more details.
+ * GNU General Public License for more details.
  *
  */
 #include <linux/kernel.h>
@@ -28,13 +28,6 @@
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/delay.h>
-
-#include <linux/platform_data/qcom_crypto_device.h>
-
-#include "msm_rng.h"
-#include "ctr_drbg.h"
-#include "fips_drbg.h"
-#include "msm_fips_selftest.h"
 
 #include <linux/platform_data/qcom_crypto_device.h>
 
@@ -265,8 +258,6 @@ err:
 	}
 
 	mutex_unlock(&msm_rng_dev->rng_lock);
-
-	up(&msm_rng_dev->drbg_sem);
 
 	return currsize;
 }

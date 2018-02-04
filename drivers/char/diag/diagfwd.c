@@ -374,7 +374,7 @@ int diag_process_smd_read_data(struct diag_smd_info *smd_info, void *buf,
 		!driver->separate_cmdrsp[smd_info->peripheral]) {
 		pr_debug("diag, In %s, received data on non-designated command channel: %d\n",
 			__func__, smd_info->peripheral);
-		goto fail_return;
+		return 0;
 	}
 
 	if (!smd_info->encode_hdlc) {
@@ -431,14 +431,6 @@ int diag_process_smd_read_data(struct diag_smd_info *smd_info, void *buf,
 		if (err) {
 			pr_err_ratelimited("diag: In %s, diag_device_write error: %d\n",
 					   __func__, err);
-		}
-	}
-
-	if (err) {
-fail_return:
-		if (smd_info->type == SMD_DATA_TYPE &&
-		    driver->logging_mode == MEMORY_DEVICE_MODE) {
-			diag_ws_on_copy_fail(DIAG_WS_MD);
 		}
 	}
 
@@ -676,10 +668,6 @@ void diag_smd_send_req(struct diag_smd_info *smd_info)
 		}
 
 		if (total_recd > 0) {
-			if (smd_info->type == SMD_DATA_TYPE &&
-			    driver->logging_mode == MEMORY_DEVICE_MODE)
-				diag_ws_on_read(DIAG_WS_MD, total_recd);
-
 			if (!buf) {
 				pr_err("diag: In %s, SMD peripheral: %d, Out of diagmem for Modem\n",
 					__func__, smd_info->peripheral);
@@ -1364,12 +1352,6 @@ void diag_process_hdlc(void *data, unsigned len)
 					   DUMP_PREFIX_ADDRESS, data, len, 1);
 		driver->debug_flag = 0;
 	}
-
-#ifdef CONFIG_DIAG_OVER_TTY
-	if (!ret && driver->logging_mode_tty == TTY_MODE)
-		tty_diag_channel_abandon_request(driver->legacy_ch);
-#endif
-
 	/* send error responses from APPS for Central Routing */
 	if (type == 1 && chk_apps_only()) {
 		diag_send_error_rsp(hdlc.dest_idx);
@@ -1421,10 +1403,14 @@ void diag_process_hdlc(void *data, unsigned len)
 void diag_reset_smd_data(int queue)
 {
 	int i;
+	unsigned long flags;
 
 	for (i = 0; i < NUM_SMD_DATA_CHANNELS; i++) {
+		spin_lock_irqsave(&driver->smd_data[i].in_busy_lock, flags);
 		driver->smd_data[i].in_busy_1 = 0;
 		driver->smd_data[i].in_busy_2 = 0;
+		spin_unlock_irqrestore(&driver->smd_data[i].in_busy_lock,
+				       flags);
 		if (queue)
 			/* Poll SMD data channels to check for data */
 			queue_work(driver->smd_data[i].wq,
@@ -1433,8 +1419,12 @@ void diag_reset_smd_data(int queue)
 
 	if (driver->supports_separate_cmdrsp) {
 		for (i = 0; i < NUM_SMD_CMD_CHANNELS; i++) {
+			spin_lock_irqsave(&driver->smd_cmd[i].in_busy_lock,
+					  flags);
 			driver->smd_cmd[i].in_busy_1 = 0;
 			driver->smd_cmd[i].in_busy_2 = 0;
+			spin_unlock_irqrestore(&driver->smd_cmd[i].in_busy_lock,
+					       flags);
 			if (queue)
 				/* Poll SMD data channels to check for data */
 				queue_work(driver->diag_wq,
@@ -1514,6 +1504,8 @@ static int diagfwd_mux_open(int id, int mode)
 static int diagfwd_mux_close(int id, int mode)
 {
 	int i;
+	unsigned long flags;
+	struct diag_smd_info *smd_info = NULL;
 
 	switch (mode) {
 	case DIAG_USB_MODE:
@@ -1527,8 +1519,11 @@ static int diagfwd_mux_close(int id, int mode)
 
 	if (driver->logging_mode == USB_MODE) {
 		for (i = 0; i < NUM_SMD_DATA_CHANNELS; i++) {
-			driver->smd_data[i].in_busy_1 = 1;
-			driver->smd_data[i].in_busy_2 = 1;
+			smd_info = &driver->smd_data[i];
+			spin_lock_irqsave(&smd_info->in_busy_lock, flags);
+			smd_info->in_busy_1 = 1;
+			smd_info->in_busy_2 = 1;
+			spin_unlock_irqrestore(&smd_info->in_busy_lock, flags);
 		}
 
 		if (driver->supports_separate_cmdrsp) {
@@ -1618,30 +1613,6 @@ static struct diag_mux_ops diagfwd_mux_ops = {
 	.read_done = diagfwd_mux_read_done,
 	.write_done = diagfwd_mux_write_done
 };
-
-#ifdef CONFIG_DIAG_EXTENSION
-int diag_addon_register(struct diag_addon *addon)
-{
-	if (addon == NULL)
-		return -EPERM;
-
-	addon->diag_process_apps_pkt = diag_process_apps_pkt;
-	addon->channel_diag_write = usb_diag_write;
-	list_add_tail(&addon->list, &driver->addon_list);
-	return 0;
-}
-EXPORT_SYMBOL(diag_addon_register);
-
-int diag_addon_unregister(struct diag_addon *addon)
-{
-	if (addon == NULL)
-		return -EPERM;
-
-	list_del(&addon->list);
-	return 0;
-}
-EXPORT_SYMBOL(diag_addon_unregister);
-#endif
 
 void diag_smd_notify(void *ctxt, unsigned event)
 {
@@ -2117,9 +2088,6 @@ int diagfwd_init(void)
 	wrap_count = 0;
 	diag_debug_buf_idx = 0;
 	driver->use_device_tree = has_device_tree();
-#ifdef CONFIG_DIAG_EXTENSION
-	INIT_LIST_HEAD(&driver->addon_list);
-#endif
 	for (i = 0; i < DIAG_NUM_PROC; i++)
 		driver->real_time_mode[i] = 1;
 	driver->supports_separate_cmdrsp = device_supports_separate_cmdrsp();

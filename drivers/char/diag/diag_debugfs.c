@@ -1050,8 +1050,6 @@ int diag_debugfs_init(void)
 	if (!entry)
 		goto err;
 
-	debugfs_create_file("power", 0444, diag_dbgfs_dent, 0,
-				    &diag_dbgfs_power_ops);
 #ifdef CONFIG_DIAGFWD_BRIDGE_CODE
 	entry = debugfs_create_file("bridge", 0444, diag_dbgfs_dent, 0,
 				    &diag_dbgfs_bridge_ops);

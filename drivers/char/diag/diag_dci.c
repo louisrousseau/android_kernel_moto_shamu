@@ -821,7 +821,6 @@ static void dci_process_ctrl_status(unsigned char *buf, int len, int token)
 		return;
 	}
 
-	diag_ws_on_read(DIAG_WS_DCI, len);
 	header = (struct diag_ctrl_dci_status *)temp;
 	temp += sizeof(struct diag_ctrl_dci_status);
 	read_len += sizeof(struct diag_ctrl_dci_status);
@@ -849,7 +848,7 @@ static void dci_process_ctrl_status(unsigned char *buf, int len, int token)
 		default:
 			pr_err("diag: In %s, unknown peripheral, peripheral: %d\n",
 				__func__, *(uint8_t *)temp);
-			goto err;
+			return;
 		}
 		temp += sizeof(uint8_t);
 		read_len += sizeof(uint8_t);
@@ -860,13 +859,6 @@ static void dci_process_ctrl_status(unsigned char *buf, int len, int token)
 		read_len += sizeof(uint8_t);
 		diag_dci_notify_client(peripheral_mask, status, token);
 	}
-err:
-	/*
-	 * DCI control packets are not consumed by the clients. Mimic client
-	 * consumption by setting and clearing the wakeup source copy_count
-	 * explicitly.
-	 */
-	diag_ws_on_copy_fail(DIAG_WS_DCI);
 }
 
 static void dci_process_ctrl_handshake_pkt(unsigned char *buf, int len,

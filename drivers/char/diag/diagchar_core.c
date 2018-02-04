@@ -26,9 +26,6 @@
 #ifdef CONFIG_DIAG_OVER_USB
 #include <linux/usb/usbdiag.h>
 #endif
-#ifdef CONFIG_DIAG_OVER_TTY
-#include <mach/tty_diag.h>
-#endif
 #include <asm/current.h>
 #include "diagchar_hdlc.h"
 #include "diagmem.h"
@@ -56,13 +53,6 @@ MODULE_VERSION("1.0");
 #define MIN_SIZ_ALLOW 4
 #define INIT	1
 #define EXIT	-1
-
-#define NO_LOGGING_MODE_NAME		"none"
-#define MEMORY_DEVICE_MODE_NAME		"memory"
-#define USB_MODE_NAME			"usb"
-#define UART_MODE_NAME			"uart"
-#define TTY_MODE_NAME			"internal" /* "tty" */
-
 struct diagchar_dev *driver;
 struct diagchar_priv {
 	int pid;
@@ -158,9 +148,6 @@ module_param(max_clients, uint, 0);
 /* This is the maximum number of pkt registrations supported at initialization*/
 int diag_max_reg = 600;
 int diag_threshold_reg = 750;
-
-/* user selection, indicating whether to use optimized logging */
-unsigned int optimized_logging;
 
 /* Timer variables */
 static struct timer_list drain_timer;
@@ -601,13 +588,6 @@ drop:
 		/* Copy the total data length */
 		COPY_USER_SPACE_OR_EXIT(buf+8, total_data_len, 4);
 		ret -= 4;
-		/*
-		 * Flush any read that is currently pending on DCI data and
-		 * command channnels. This will ensure that the next read is not
-		 * missed.
-		 */
-		flush_workqueue(driver->diag_dci_wq);
-		diag_ws_on_copy_complete(DIAG_WS_DCI);
 	} else {
 		pr_debug("diag: In %s, Trying to copy ZERO bytes, total_data_len: %d\n",
 			__func__, total_data_len);
@@ -897,13 +877,8 @@ static int diag_switch_logging(int requested_mode)
 	int new_mode = DIAG_USB_MODE; /* set the mode from diag_mux.h */
 	int old_logging_id;
 
-
-#ifdef CONFIG_DIAG_OVER_TTY
-	int temp_tty = 0;
-#endif
 	switch (requested_mode) {
 	case USB_MODE:
-	case TTY_MODE:
 	case MEMORY_DEVICE_MODE:
 	case NO_LOGGING_MODE:
 	case UART_MODE:
@@ -915,12 +890,8 @@ static int diag_switch_logging(int requested_mode)
 			__func__, requested_mode);
 		return -EINVAL;
 	}
-#ifdef CONFIG_DIAG_OVER_TTY
-	if ((requested_mode == driver->logging_mode) &&
-			(requested_mode == driver->logging_mode_tty)) {
-#else
+
 	if (requested_mode == driver->logging_mode) {
-#endif
 		if (requested_mode != MEMORY_DEVICE_MODE ||
 					driver->real_time_mode)
 			pr_info_ratelimited("diag: Already in logging mode change requested, mode: %d\n",
@@ -1130,7 +1101,6 @@ static int diag_ioctl_get_real_time(unsigned long ioarg)
 	int retry_count = 0;
 	int timer = 0;
 	struct real_time_query_t rt_query;
-	struct diag_smd_info *smd_info;
 
 	if (copy_from_user(&rt_query, (void __user *)ioarg,
 					sizeof(struct real_time_query_t)))
@@ -1484,21 +1454,6 @@ long diagchar_ioctl(struct file *filp,
 	case DIAG_IOCTL_PERIPHERAL_BUF_DRAIN:
 		result = diag_ioctl_peripheral_drain_immediate(ioarg);
 		break;
-	case DIAG_IOCTL_OPTIMIZED_LOGGING:
-		mutex_lock(&driver->diagchar_mutex);
-		optimized_logging = (unsigned int)ioarg;
-		mutex_unlock(&driver->diagchar_mutex);
-		pr_debug("diag: optimized_logging = %d\n", optimized_logging);
-		result = 1;
-		break;
-	case DIAG_IOCTL_OPTIMIZED_LOGGING_FLUSH:
-		smd_info = &driver->smd_cntl[MODEM_DATA];
-		pr_debug("diag: optimized logging flush BP buffer\n");
-		diag_send_diag_flush(smd_info);
-		result = 1;
-		break;
-	default:
-		DIAGADDON_ioctl(&result, filp, iocmd, ioarg);
 	}
 	return result;
 }
@@ -1740,8 +1695,8 @@ static ssize_t diagchar_write(struct file *file, const char __user *buf,
 	if (driver->logging_mode == NO_LOGGING_MODE ||
 	    (!((pkt_type == DCI_DATA_TYPE) ||
 	       ((pkt_type & (DATA_TYPE_DCI_LOG | DATA_TYPE_DCI_EVENT)) == 0))
-		&& (driver->logging_mode == USB_MODE)
-		&& (!driver->usb_connected))) {
+		&& (driver->logging_mode == USB_MODE) &&
+		(!driver->usb_connected))) {
 		/*Drop the diag payload */
 		return -EIO;
 	}
@@ -2026,7 +1981,6 @@ static ssize_t diagchar_write(struct file *file, const char __user *buf,
 						HDLC_OUT_BUF_SIZE) ?
 			((uintptr_t)enc.dest - (uintptr_t)buf_hdlc) :
 						HDLC_OUT_BUF_SIZE;
-	DIAGADDON_force_returntype(&pkt_type, pkt_type);
 	if (pkt_type == DATA_TYPE_RESPONSE) {
 		err = diag_mux_write(DIAG_LOCAL_PROC, buf_hdlc, driver->used,
 				     buf_hdlc_ctxt);
@@ -2326,68 +2280,6 @@ static const struct file_operations diagcharfops = {
 	.release = diagchar_close
 };
 
-static ssize_t diag_logging_mode_show(struct device *dev,
-		struct device_attribute *attr, char *buff)
-{
-	ssize_t out_size;
-
-	out_size = 128;
-
-	switch (driver->logging_mode) {
-	case USB_MODE:
-#ifdef CONFIG_DIAG_OVER_TTY
-		return snprintf(buff, out_size, "%s tty:%d",
-			 USB_MODE_NAME, driver->logging_mode_tty);
-#else
-		return snprintf(buff, out_size, "%s", USB_MODE_NAME);
-#endif
-	case MEMORY_DEVICE_MODE:
-		return snprintf(buff, out_size, "%s", MEMORY_DEVICE_MODE_NAME);
-	case NO_LOGGING_MODE:
-		return snprintf(buff, out_size, "%s", NO_LOGGING_MODE_NAME);
-	case UART_MODE:
-		return snprintf(buff, out_size, "%s", UART_MODE_NAME);
-	case TTY_MODE:
-		return snprintf(buff, out_size, "%s\n", TTY_MODE_NAME);
-	default:
-		return snprintf(buff, out_size, "%s", "invalid");
-	}
-}
-
-static ssize_t diag_logging_mode_store(struct device *dev,
-		struct device_attribute *attr, const char *buff, size_t size)
-{
-	char buf[256], *b;
-	int req_mode = 0;
-
-	strlcpy(buf, buff, sizeof(buf));
-	b = strim(buf);
-
-	if (strlen(b)) {
-		if (!strcmp(b, MEMORY_DEVICE_MODE_NAME))
-			req_mode = MEMORY_DEVICE_MODE;
-		else if (!strcmp(b, NO_LOGGING_MODE_NAME))
-			req_mode = NO_LOGGING_MODE;
-		else if (!strcmp(b, UART_MODE_NAME))
-			req_mode = UART_MODE;
-#ifdef CONFIG_DIAG_OVER_USB
-		else if (!strcmp(b, USB_MODE_NAME))
-			req_mode = USB_MODE;
-#endif
-#ifdef CONFIG_DIAG_OVER_TTY
-		else if (!strcmp(b, TTY_MODE_NAME))
-			req_mode = TTY_MODE;
-#endif
-	}
-
-	if (req_mode)
-		diag_switch_logging(req_mode);
-
-	return size;
-}
-static DEVICE_ATTR(logging_mode, S_IRUGO | S_IWUSR, diag_logging_mode_show,
-						 diag_logging_mode_store);
-
 static int diagchar_setup_cdev(dev_t devno)
 {
 
@@ -2415,14 +2307,8 @@ static int diagchar_setup_cdev(dev_t devno)
 	driver->diag_dev = device_create(driver->diagchar_class, NULL, devno,
 					 (void *)driver, "diag");
 
-	if (driver->diag_dev)
-		err = device_create_file(driver->diag_dev,
-				&dev_attr_logging_mode);
-
-	if (!driver->diag_dev || err) {
-		printk(KERN_ERR "Error creating diag sysfs\n");
+	if (!driver->diag_dev)
 		return -EIO;
-	}
 
 	driver->diag_dev->power.wakeup = wakeup_source_register("DIAG_WS");
 	return 0;

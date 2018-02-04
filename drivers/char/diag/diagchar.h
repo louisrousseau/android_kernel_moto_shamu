@@ -319,6 +319,7 @@ struct diag_smd_info {
 
 	int in_busy_1;
 	int in_busy_2;
+	spinlock_t in_busy_lock;
 
 	unsigned char *buf_in_1;
 	unsigned char *buf_in_2;
@@ -354,10 +355,6 @@ struct diag_smd_info {
 
 struct diagchar_dev {
 
-#ifdef CONFIG_DIAG_OVER_TTY
-	int logging_mode_tty;
-	int close_olddev;
-#endif
 	/* State for the char driver */
 	unsigned int major;
 	unsigned int minor_start;
@@ -486,9 +483,6 @@ struct diagchar_dev {
 	unsigned char *cb_buf;
 	int cb_buf_len;
 #endif
-#ifdef CONFIG_DIAG_EXTENSION
-	struct list_head addon_list;
-#endif
 };
 
 extern struct diagchar_dev *driver;
@@ -509,68 +503,5 @@ void diag_ws_on_copy_fail(int type);
 void diag_ws_on_copy_complete(int type);
 void diag_ws_reset(int type);
 void diag_ws_release(void);
-
-void diag_ws_init(void);
-void diag_ws_on_notify(void);
-void diag_ws_on_read(int type, int pkt_len);
-void diag_ws_on_copy(int type);
-void diag_ws_on_copy_fail(int type);
-void diag_ws_on_copy_complete(int type);
-void diag_ws_reset(int type);
-void diag_ws_release(void);
-
-#ifdef CONFIG_DIAG_EXTENSION
-/* This structure is for addon. It is used by slate feature */
-struct diag_addon {
-	struct list_head list;
-
-	/* function list of addon
-	return-value of the functions decide
-	whether the callback-function of next-addon is called or not.
-	refer to DIAGADDON_BASE below.
-	*/
-	int (*ioctl)(struct file *filp, unsigned int iocmd,
-					unsigned long ioarg, int *retval);
-	int (*force_returntype)(int pkt_type, int *retval);
-	int (*addon_channel_diag_write)(struct diag_request *write_ptr,
-								int *retval);
-	int (*channel_diag_write)(struct usb_diag_ch *ch,
-						struct diag_request *d_req);
-	void *private;
-
-	/* function list of diag-driver to use addon */
-	int (*diag_process_apps_pkt)(unsigned char *buf, int len);
-};
-
-#define DIAGADDON_BASE(func, retval, ...)		\
-	do {						\
-		struct diag_addon *addon;		 \
-		int next_addon_call;			\
-		list_for_each_entry(addon, &driver->addon_list, list) {	\
-			if (addon->func) {		\
-				next_addon_call =	\
-					addon->func(__VA_ARGS__, retval);\
-				if (next_addon_call == false)	\
-					break;			\
-			}				\
-		}					\
-	} while (0)
-
-#define DIAGADDON_EXIST() (!list_empty(&driver->addon_list))
-#define DIAGADDON_ioctl(retval, ...)\
-		DIAGADDON_BASE(ioctl, retval, ##__VA_ARGS__)
-#define DIAGADDON_force_returntype(retval, ...)\
-		DIAGADDON_BASE(force_returntype, retval, ##__VA_ARGS__)
-#define DIAGADDON_channel_diag_write(retval, ...)\
-		DIAGADDON_BASE(addon_channel_diag_write, retval, ##__VA_ARGS__)
-
-int diag_addon_register(struct diag_addon *addon);
-int diag_addon_unregister(struct diag_addon *addon);
-#else
-#define DIAGADDON_EXIST() 0
-#define DIAGADDON_ioctl(retval, ...) do {} while (0)
-#define DIAGADDON_force_returntype(retval, ...) do {} while (0)
-#define DIAGADDON_channel_diag_write(retval, i...) do {} while (0)
-#endif /* endif of '#ifdef CONFIG_DIAG_EXTENSION' */
 
 #endif
