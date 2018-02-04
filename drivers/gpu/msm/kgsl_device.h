@@ -351,7 +351,6 @@ struct kgsl_device {
 	int open_count;
 
 	struct mutex mutex;
-	atomic64_t mutex_owner;
 	uint32_t state;
 	uint32_t requested_state;
 

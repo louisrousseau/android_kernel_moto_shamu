@@ -133,19 +133,12 @@ static void print_mem_entry(struct seq_file *s, struct kgsl_mem_entry *entry)
 			usage, m->sglen, m->mapsize);
 }
 
-struct process_mem_entry {
-	struct kgsl_process_private *pprivate;
-	int unbound;
-};
-
-static struct kgsl_mem_entry *process_mem_seq_find(
-			struct seq_file *s, void *v, loff_t l)
+static int process_mem_print(struct seq_file *s, void *unused)
 {
-	struct process_mem_entry *e = s->private;
-	struct kgsl_process_private *private = e->pprivate;
-	struct kgsl_mem_entry *entry = v;
-	struct rb_node *node = NULL;
-	int id = 0;
+	struct kgsl_mem_entry *entry;
+	struct rb_node *node;
+	struct kgsl_process_private *private = s->private;
+	int next = 0;
 
 	seq_printf(s, "%16s %16s %16s %5s %8s %10s %16s %5s %16s\n",
 		   "gpuaddr", "useraddr", "size", "id", "flags", "type",
@@ -153,81 +146,26 @@ static struct kgsl_mem_entry *process_mem_seq_find(
 
 	/* print all entries with a GPU address */
 	spin_lock(&private->mem_lock);
-	if (entry == SEQ_START_TOKEN) {
-		node = rb_first(&private->mem_rb);
-		e->unbound = 0;
-	} else if (!e->unbound) {
-		node = rb_next(&entry->node);
-	} else {
-		id = entry->id + 1;
+
+	for (node = rb_first(&private->mem_rb); node; node = rb_next(node)) {
+		entry = rb_entry(node, struct kgsl_mem_entry, node);
+		print_mem_entry(s, entry);
 	}
-	for (; node; node = rb_next(node)) {
-		if (l-- == 0) {
-			entry = rb_entry(node, struct kgsl_mem_entry, node);
-			if (kgsl_mem_entry_get(entry)) {
-				e->unbound = 0;
-				goto found;
-			}
-			l++;
-		}
+
+
+	/* now print all the unbound entries */
+	while (1) {
+		entry = idr_get_next(&private->mem_idr, &next);
+		if (entry == NULL)
+			break;
+		if (entry->memdesc.gpuaddr == 0)
+			print_mem_entry(s, entry);
+		next++;
 	}
-	for (entry = idr_get_next(&private->mem_idr, &id); entry;
-			id++, entry = idr_get_next(&private->mem_idr, &id)) {
-		if (!entry->memdesc.gpuaddr && (l-- == 0)) {
-			if (kgsl_mem_entry_get(entry)) {
-				e->unbound = 1;
-				goto found;
-			}
-			l++;
-		}
-	}
-	entry = NULL;
-found:
 	spin_unlock(&private->mem_lock);
-	if (v != SEQ_START_TOKEN)
-		kgsl_mem_entry_put(v);
-	return entry;
-}
 
-static void *process_mem_seq_start(struct seq_file *s, loff_t *pos)
-{
-	loff_t l = *pos;
-
-	if (l == 0)
-		return SEQ_START_TOKEN;
-	else
-		return process_mem_seq_find(s, SEQ_START_TOKEN, l);
-}
-
-static void *process_mem_seq_next(struct seq_file *s, void *v, loff_t *pos)
-{
-	++*pos;
-	return process_mem_seq_find(s, v, 1);
-}
-
-static void process_mem_seq_stop(struct seq_file *s, void *v)
-{
-	if (v && v != SEQ_START_TOKEN)
-		kgsl_mem_entry_put(v);
-}
-
-static int process_mem_seq_show(struct seq_file *s, void *v)
-{
-	if (v == SEQ_START_TOKEN)
-		seq_printf(s, "%8s %8s %8s %5s %6s %10s %16s %5s\n",
-			"gpuaddr", "useraddr", "size", "id", "flags", "type",
-			"usage", "sglen");
-	else
-		print_mem_entry(s, v);
 	return 0;
 }
-
-static const struct seq_operations process_mem_seq_ops = {
-	.start = process_mem_seq_start,
-	.next = process_mem_seq_next,
-	.stop = process_mem_seq_stop,
-	.show = process_mem_seq_show,
-};
 
 static int process_mem_open(struct inode *inode, struct file *file)
 {
@@ -291,9 +229,6 @@ kgsl_process_init_debugfs(struct kgsl_process_private *private)
 	if (!private->debug_root)
 		return -EINVAL;
 
-	private->debug_root->d_inode->i_uid = proc_d_debugfs->d_inode->i_uid;
-	private->debug_root->d_inode->i_gid = proc_d_debugfs->d_inode->i_gid;
-
 	/*
 	 * debugfs_create_dir() and debugfs_create_file() both
 	 * return -ENODEV if debugfs is disabled in the kernel.
@@ -312,9 +247,6 @@ kgsl_process_init_debugfs(struct kgsl_process_private *private)
 
 		if (ret == -ENODEV)
 			ret = 0;
-	} else if (dentry) {
-		dentry->d_inode->i_uid = proc_d_debugfs->d_inode->i_uid;
-		dentry->d_inode->i_gid = proc_d_debugfs->d_inode->i_gid;
 	}
 
 	return ret;

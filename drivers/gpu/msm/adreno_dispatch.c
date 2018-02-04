@@ -544,7 +544,7 @@ static int sendcmd(struct adreno_device *adreno_dev,
 		}
 	}
 
-	kgsl_mutex_unlock(&device->mutex, &device->mutex_owner);
+	mutex_unlock(&device->mutex);
 
 	if (ret) {
 		dispatcher->inflight--;
@@ -1376,35 +1376,6 @@ void process_cmdbatch_fault(struct kgsl_device *device,
 	}
 
 	/*
-	 * If GFT recovered more than X times in Y ms invalidate the context
-	 * and do not attempt recovery.
-	 * Example: X==3 and Y==3000 ms, GPU hung at 500ms, 1700ms, 25000ms and
-	 * 3000ms for the same context, we will not try FT and invalidate the
-	 * context @3000ms because context triggered GFT more than 3 times in
-	 * last 3 seconds. If a context caused recoverable GPU hangs
-	 * where 1st and 4th gpu hang are more than 3 seconds apart we
-	 * won't disable GFT and invalidate the context.
-	 */
-	if (test_bit(KGSL_FT_THROTTLE, &cmdbatch->fault_policy)) {
-		if (time_after(jiffies, (cmdbatch->context->fault_time
-				+ msecs_to_jiffies(_fault_throttle_time)))) {
-			cmdbatch->context->fault_time = jiffies;
-			cmdbatch->context->fault_count = 1;
-		} else {
-			cmdbatch->context->fault_count++;
-			if (cmdbatch->context->fault_count >
-					_fault_throttle_burst) {
-				set_bit(KGSL_FT_DISABLE,
-						&cmdbatch->fault_policy);
-				pr_fault(device, cmdbatch,
-					 "gpu fault threshold exceeded %d faults in %d msecs\n",
-					 _fault_throttle_burst,
-					 _fault_throttle_time);
-			}
-		}
-	}
-
-	/*
 	 * If FT is disabled for this cmdbatch invalidate immediately
 	 */
 
@@ -1503,16 +1474,6 @@ void process_cmdbatch_fault(struct kgsl_device *device,
 		cmdbatch_skip_cmd(cmdbatch, replay, count);
 
 		return;
-	}
-
-	/* Skip the faulted command batch submission */
-	if (test_and_clear_bit(KGSL_FT_SKIPCMD, &cmdbatch->fault_policy)) {
-		trace_adreno_cmdbatch_recovery(cmdbatch, BIT(KGSL_FT_SKIPCMD));
-
-		/* Skip faulting command batch */
-		cmdbatch_skip_cmd(cmdbatch, replay, count);
-
-		goto replay;
 	}
 
 	if (test_and_clear_bit(KGSL_FT_SKIPFRAME, &cmdbatch->fault_policy)) {
@@ -1991,7 +1952,7 @@ done:
 			mod_timer(&dispatcher->timer, cmdbatch->expires);
 
 		/* There are still things in flight - update the idle counts */
-		kgsl_mutex_lock(&device->mutex, &device->mutex_owner);
+		mutex_lock(&device->mutex);
 		kgsl_pwrscale_update(device);
 		mod_timer(&device->idle_timer, jiffies +
 				device->pwrctrl.interval_timeout);
@@ -2016,7 +1977,7 @@ done:
 			clear_bit(ADRENO_DISPATCHER_POWER, &dispatcher->priv);
 		}
 
-		kgsl_mutex_unlock(&device->mutex, &device->mutex_owner);
+		mutex_unlock(&device->mutex);
 	}
 
 	mutex_unlock(&dispatcher->mutex);
@@ -2319,9 +2280,6 @@ int adreno_dispatcher_init(struct adreno_device *adreno_dev)
 		(unsigned long) adreno_dev);
 
 	init_kthread_work(&dispatcher->work, adreno_dispatcher_work);
-
-	init_completion(&dispatcher->idle_gate);
-	complete_all(&dispatcher->idle_gate);
 
 	init_completion(&dispatcher->idle_gate);
 	complete_all(&dispatcher->idle_gate);

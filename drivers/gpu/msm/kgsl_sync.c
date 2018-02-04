@@ -160,14 +160,10 @@ int kgsl_add_fence_event(struct kgsl_device *device,
 
 	priv.fence_fd = -1;
 
-	priv.fence_fd = -1;
-
 	if (len != sizeof(priv))
 		return -EINVAL;
 
 	mutex_lock(&device->mutex);
-
-	kgsl_mutex_lock(&device->mutex, &device->mutex_owner);
 
 	context = kgsl_context_get_owner(owner, context_id);
 

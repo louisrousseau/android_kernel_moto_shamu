@@ -1480,8 +1480,6 @@ int diag_copy_to_user_log_mask(char __user *buf, size_t count)
 
 void diag_mask_update_fn(struct work_struct *work)
 {
-	static int smd_channel_count = 0;
-
 	struct diag_smd_info *smd_info = container_of(work,
 						struct diag_smd_info,
 						diag_notify_update_smd_work);
@@ -1501,14 +1499,6 @@ void diag_mask_update_fn(struct work_struct *work)
 				driver->real_time_mode[DIAG_LOCAL_PROC]);
 		diag_send_peripheral_buffering_mode(
 				&driver->buffering_mode[smd_info->peripheral]);
-	}
-
-		/* optimized */
-		smd_channel_count++;
-		if (smd_channel_count == 3)
-			smd_opened = 1;
-		if (optimized_logging && optimized_cmd_cached && smd_opened)
-			diag_send_diag_mode_update(MODE_NONREALTIME);
 	}
 
 	smd_info->notify_context = 0;

@@ -40,9 +40,9 @@ static int _check_context_timestamp(struct kgsl_device *device,
 			kgsl_context_invalid(&drawctxt->base))
 		return 1;
 
-	kgsl_mutex_lock(&device->mutex, &device->mutex_owner);
+	mutex_lock(&device->mutex);
 	ret = kgsl_check_timestamp(device, &drawctxt->base, timestamp);
-	kgsl_mutex_unlock(&device->mutex, &device->mutex_owner);
+	mutex_unlock(&device->mutex);
 
 	return ret;
 }
@@ -184,7 +184,7 @@ int adreno_drawctxt_wait(struct adreno_device *adreno_dev,
 			_check_context_timestamp(device, drawctxt, timestamp));
 	}
 
-	kgsl_mutex_lock(&device->mutex, &device->mutex_owner);
+	mutex_lock(&device->mutex);
 
 	/* -EDEADLK if the context was invalidated while we were waiting */
 	if (kgsl_context_invalid(context))
@@ -456,13 +456,6 @@ void adreno_drawctxt_detach(struct kgsl_context *context)
 			ADRENO_CONTEXT_CMDQUEUE_SIZE;
 
 		spin_unlock(&drawctxt->lock);
-
-		/*
-		 * If the context is deteached while we are waiting for
-		 * the next command in GFT SKIP CMD, print the context
-		 * detached status here.
-		 */
-		adreno_fault_skipcmd_detached(device, drawctxt, cmdbatch);
 
 		/*
 		 * If the context is deteached while we are waiting for

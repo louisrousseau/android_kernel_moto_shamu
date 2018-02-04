@@ -138,7 +138,6 @@ static int mdm_subsys_shutdown(const struct subsys_desc *crashed_subsys,
 static int mdm_subsys_powerup(const struct subsys_desc *crashed_subsys)
 {
 	int ret;
-	int t;
 	struct esoc_clink *esoc_clink =
 				container_of(crashed_subsys, struct esoc_clink,
 								subsys);

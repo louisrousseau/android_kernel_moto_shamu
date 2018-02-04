@@ -64,8 +64,6 @@ struct cpufreq_interactive_cpuinfo {
 	int first_cpu;
 };
 
-#define MIN_TIMER_JIFFIES 1UL
-
 static DEFINE_PER_CPU(struct cpufreq_interactive_cpuinfo, cpuinfo);
 
 /* realtime thread handles frequency scaling */
@@ -221,11 +219,6 @@ static void cpufreq_interactive_timer_start(
 	struct cpufreq_interactive_cpuinfo *pcpu = &per_cpu(cpuinfo, cpu);
 	u64 expires = round_to_nw_start(pcpu->last_evaluated_jiffy, tunables);
 	unsigned long flags;
-	unsigned long expires;
-	if (time_override)
-		expires = jiffies + time_override;
-	else
-		expires = jiffies + usecs_to_jiffies(timer_rate);
 
 	spin_lock_irqsave(&pcpu->load_lock, flags);
 	pcpu->cpu_timer.expires = expires;
@@ -422,7 +415,6 @@ static void cpufreq_interactive_timer(unsigned long data)
 	if (!pcpu->governor_enabled)
 		goto exit;
 
-	pcpu->nr_timer_resched = 0;
 	spin_lock_irqsave(&pcpu->load_lock, flags);
 	pcpu->last_evaluated_jiffy = get_jiffies_64();
 	now = update_load(data);

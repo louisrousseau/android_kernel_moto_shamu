@@ -35,11 +35,6 @@
 #define KGSL_IOMMU_SECURE_MEM_BASE     0xe8000000
 #define KGSL_IOMMU_SECURE_MEM_SIZE     SZ_256M
 
-/* Virtual memory range to map non-kgsl allocations */
-#define KGSL_MMU_MAPPED_MEM_BASE	TASK_SIZE
-#define KGSL_MMU_MAPPED_MEM_SIZE	(KGSL_MMU_GLOBAL_MEM_BASE -	\
-					KGSL_MMU_MAPPED_MEM_BASE -	\
-					SZ_1M)
 /* defconfig option for disabling per process pagetables */
 #ifdef CONFIG_KGSL_PER_PROCESS_PAGE_TABLE
 #define KGSL_MMU_USE_PER_PROCESS_PT true

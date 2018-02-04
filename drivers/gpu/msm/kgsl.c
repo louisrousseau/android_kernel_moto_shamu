@@ -774,7 +774,7 @@ static int kgsl_resume_device(struct kgsl_device *device)
 		return -EINVAL;
 
 	KGSL_PWR_WARN(device, "resume start\n");
-	kgsl_mutex_lock(&device->mutex, &device->mutex_owner);
+	mutex_lock(&device->mutex);
 	if (device->state == KGSL_STATE_SUSPEND) {
 		kgsl_pwrctrl_change_state(device, KGSL_STATE_SLUMBER);
 	} else if (device->state != KGSL_STATE_INIT) {
@@ -791,7 +791,7 @@ static int kgsl_resume_device(struct kgsl_device *device)
 			"resume invoked without a suspend\n");
 	}
 
-	kgsl_mutex_unlock(&device->mutex, &device->mutex_owner);
+	mutex_unlock(&device->mutex);
 	KGSL_PWR_WARN(device, "resume end\n");
 	return 0;
 }
@@ -1689,7 +1689,6 @@ static void kgsl_cmdbatch_sync_expire(struct kgsl_device *device,
 	unsigned long flags;
 	int sched = 0;
 	int removed = 0;
-	unsigned long flags;
 
 	/*
 	 * cmdbatch timer or event callback might run at
@@ -2577,7 +2576,6 @@ long kgsl_ioctl_cmdstream_freememontimestamp_ctxtid(
 
 out:
 	kgsl_context_put(context);
-	kgsl_mutex_unlock(&device->mutex, &device->mutex_owner);
 	return result;
 }
 
@@ -2612,10 +2610,8 @@ long kgsl_ioctl_drawctxt_destroy(struct kgsl_device_private *dev_priv,
 					unsigned int cmd, void *data)
 {
 	struct kgsl_drawctxt_destroy *param = data;
-	struct kgsl_device *device = dev_priv->device;
 	struct kgsl_context *context;
 
-	kgsl_mutex_lock(&device->mutex, &device->mutex_owner);
 	context = kgsl_context_get_owner(dev_priv, param->drawctxt_id);
 	if (context == NULL)
 		return -EINVAL;

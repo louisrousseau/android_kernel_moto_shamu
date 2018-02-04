@@ -1668,13 +1668,8 @@ static int taiko_hph_impedance_get(struct snd_kcontrol *kcontrol,
 	mc = (struct soc_multi_mixer_control *)(kcontrol->private_value);
 
 	hphr = mc->shift;
-	pr_debug("%s: taiko_priv: %p\n", __func__, priv);
-#if !defined CONFIG_SND_SOC_TPA6165A2 && !defined CONFIG_SND_SOC_FSA8500
 	wcd9xxx_mbhc_get_impedance(&priv->mbhc, &zl, &zr);
 	pr_debug("%s: zl %u, zr %u\n", __func__, zl, zr);
-#else
-	zr = zl = 0;
-#endif
 	ucontrol->value.integer.value[0] = hphr ? zr : zl;
 
 	return 0;
@@ -3490,10 +3485,6 @@ static int taiko_hphl_dac_event(struct snd_soc_dapm_widget *w,
 		else
 			dev_err(codec->dev, "Failed to get mbhc impedance %d\n",
 						ret);
-#else
-		impedl = impedr = 0;
-		ret = 0;
-#endif
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		snd_soc_update_bits(codec, TAIKO_A_CDC_CLK_RDAC_CLK_EN_CTL,
@@ -7404,7 +7395,6 @@ static int taiko_codec_probe(struct snd_soc_codec *codec)
 	else
 		rco_clk_rate = TAIKO_MCLK_CLK_9P6MHZ;
 
-#if !defined CONFIG_SND_SOC_TPA6165A2 && !defined CONFIG_SND_SOC_FSA8500
 	/* init and start mbhc */
 	ret = wcd9xxx_mbhc_init(&taiko->mbhc, &taiko->resmgr, codec,
 				taiko_enable_mbhc_micbias,
@@ -7414,7 +7404,6 @@ static int taiko_codec_probe(struct snd_soc_codec *codec)
 		pr_err("%s: mbhc init failed %d\n", __func__, ret);
 		goto err_init;
 	}
-#endif
 
 	taiko->codec = codec;
 	for (i = 0; i < COMPANDER_MAX; i++) {
@@ -7554,10 +7543,8 @@ static int taiko_codec_remove(struct snd_soc_codec *codec)
 
 	taiko_cleanup_irqs(taiko);
 
-#if !defined CONFIG_SND_SOC_TPA6165A2 && !defined CONFIG_SND_SOC_FSA8500
 	/* cleanup MBHC */
 	wcd9xxx_mbhc_deinit(&taiko->mbhc);
-#endif
 	/* cleanup resmgr */
 	wcd9xxx_resmgr_deinit(&taiko->resmgr);
 

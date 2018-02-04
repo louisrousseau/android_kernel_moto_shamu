@@ -117,8 +117,6 @@ static int msm_cpufreq_verify(struct cpufreq_policy *policy)
 
 static unsigned int msm_cpufreq_get_freq(unsigned int cpu)
 {
-	if (is_sync)
-		cpu = 0;
 	return clk_get_rate(cpu_clk[cpu]) / 1000;
 }
 
@@ -197,11 +195,6 @@ static int msm_cpufreq_cpu_callback(struct notifier_block *nfb,
 	case CPU_UP_CANCELED:
 		clk_unprepare(cpu_clk[cpu]);
 		clk_unprepare(l2_clk);
-		break;
-	case CPU_UP_CANCELED:
-		clk_unprepare(cpu_clk[cpu]);
-		clk_unprepare(l2_clk);
-		update_l2_bw(NULL);
 		break;
 	case CPU_UP_PREPARE:
 		rc = clk_prepare(l2_clk);

@@ -207,7 +207,7 @@ static void adreno_input_work(struct work_struct *work)
 			struct adreno_device, input_work);
 	struct kgsl_device *device = &adreno_dev->dev;
 
-	kgsl_mutex_lock(&device->mutex, &device->mutex_owner);
+	mutex_lock(&device->mutex);
 
 	device->flags |= KGSL_FLAG_WAKE_ON_TOUCH;
 
@@ -225,7 +225,7 @@ static void adreno_input_work(struct work_struct *work)
 	 */
 	mod_timer(&device->idle_timer,
 		jiffies + msecs_to_jiffies(_wake_timeout));
-	kgsl_mutex_unlock(&device->mutex, &device->mutex_owner);
+	mutex_unlock(&device->mutex);
 }
 
 /*
@@ -1113,8 +1113,6 @@ static int _adreno_start(struct adreno_device *adreno_dev)
 	pm_qos_update_request(&device->pwrctrl.pm_qos_req_dma,
 			pmqos_wakeup_vote);
 
-	pm_qos_update_request(&device->pwrctrl.pm_qos_req_dma,
-			device->pwrctrl.pm_qos_wakeup_latency);
 	kgsl_cffdump_open(device);
 
 	regulator_left_on = (regulator_is_enabled(device->pwrctrl.gpu_reg) ||
@@ -1222,9 +1220,6 @@ error_pwr_off:
 	if (pmqos_active_vote != pmqos_wakeup_vote)
 		pm_qos_update_request(&device->pwrctrl.pm_qos_req_dma,
 				pmqos_active_vote);
-
-	pm_qos_update_request(&device->pwrctrl.pm_qos_req_dma,
-			device->pwrctrl.pm_qos_active_latency);
 
 	return status;
 }

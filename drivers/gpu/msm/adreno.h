@@ -422,8 +422,6 @@ enum adreno_regs {
 	ADRENO_REG_RBBM_INT_CLEAR_CMD,
 	ADRENO_REG_RBBM_SW_RESET_CMD,
 	ADRENO_REG_RBBM_CLOCK_CTL,
-	ADRENO_REG_RBBM_AHB_ME_SPLIT_STATUS,
-	ADRENO_REG_RBBM_AHB_PFP_SPLIT_STATUS,
 	ADRENO_REG_VPC_DEBUG_RAM_SEL,
 	ADRENO_REG_VPC_DEBUG_RAM_READ,
 	ADRENO_REG_PA_SC_AA_CONFIG,
@@ -789,8 +787,6 @@ void adreno_fault_detect_stop(struct adreno_device *adreno_dev);
 void adreno_hang_int_callback(struct adreno_device *adreno_dev, int bit);
 void adreno_cp_callback(struct adreno_device *adreno_dev, int bit);
 
-bool adreno_hw_isidle(struct kgsl_device *device);
-
 static inline int adreno_is_a3xx(struct adreno_device *adreno_dev)
 {
 	return ((ADRENO_GPUREV(adreno_dev) >= 300) &&
@@ -901,8 +897,7 @@ static inline int adreno_context_timestamp(struct kgsl_context *k_ctxt)
 static inline int __adreno_add_idle_indirect_cmds(unsigned int *cmds,
 						unsigned int nop_gpuaddr)
 {
-	/*
-	 * Adding an indirect buffer ensures that the prefetch stalls until
+	/* Adding an indirect buffer ensures that the prefetch stalls until
 	 * the commands in indirect buffer have completed. We need to stall
 	 * prefetch with a nop indirect buffer when updating pagetables
 	 * because it provides stabler synchronization */
@@ -913,7 +908,7 @@ static inline int __adreno_add_idle_indirect_cmds(unsigned int *cmds,
 	*cmds++ = 2;
 	*cmds++ = cp_type3_packet(CP_WAIT_FOR_IDLE, 1);
 	*cmds++ = 0x00000000;
-	return 7;
+	return 5;
 }
 
 static inline int adreno_add_bank_change_cmds(unsigned int *cmds,

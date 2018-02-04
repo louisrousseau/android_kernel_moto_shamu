@@ -494,27 +494,6 @@ static int kgsl_iommu_clk_prepare_enable(struct clk *clk)
 }
 
 /*
- * kgsl_iommu_enable_clk_prepare_enable - Enable iommu clock
- * @clk - clock to enable
- *
- * Prepare enables clock. Retries 3 times on enable failure, on 4th failure
- * returns an error.
- * Return: 0 on success else 1 on error
- */
-
-static int kgsl_iommu_clk_prepare_enable(struct clk *clk)
-{
-	int num_retries = 4;
-
-	while (num_retries--) {
-		if (!clk_prepare_enable(clk))
-			return 0;
-	}
-
-	return 1;
-}
-
-/*
  * kgsl_iommu_enable_clk - Enable iommu clocks
  * @mmu - Pointer to mmu structure
  * @unit - The iommu unit whose clocks are to be turned on
@@ -621,8 +600,6 @@ static void kgsl_iommu_destroy_pagetable(struct kgsl_pagetable *pt)
 		trace_kgsl_pagetable_destroy(domain_ptbase, pt->name);
 		msm_unregister_domain(iommu_pt->domain);
 	}
-
-	trace_kgsl_pagetable_destroy(domain_ptbase, pt->name);
 
 	kfree(iommu_pt);
 	iommu_pt = NULL;
