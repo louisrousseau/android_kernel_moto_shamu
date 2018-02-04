@@ -1274,6 +1274,8 @@ void __init apq8084_init_gpiomux(void)
 			ARRAY_SIZE(hap_lvl_shft_config));
 	}
 
+	msm_gpiomux_install(msm_wlan_configs, ARRAY_SIZE(msm_wlan_configs));
+	msm_gpiomux_install(sd_card_det, ARRAY_SIZE(sd_card_det));
 	if (of_board_is_cdp() || of_board_is_sbc())
 		msm_gpiomux_install(eth_pwr, ARRAY_SIZE(eth_pwr));
 	if (of_board_is_sbc())
