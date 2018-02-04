@@ -782,13 +782,6 @@ static int msm_lsm_ioctl_shared(struct snd_pcm_substream *substream,
 			rc = -EFAULT;
 			break;
 		}
-		rc = q6lsm_set_kw_sensitivity_level(prtd->lsm_client,
-						snd_model.min_keyw_confidence,
-						snd_model.min_user_confidence);
-		if (rc) {
-			pr_err("%s: Error in KW sensitivity %x", __func__, rc);
-			break;
-		}
 
 		dev_dbg(rtd->dev, "SND Model Magic no byte[0] %x,\n"
 			 "byte[1] %x, byte[2] %x byte[3] %x\n",
@@ -1630,124 +1623,11 @@ done:
 	return err;
 }
 
-static int msm_lsm_ioctl(struct snd_pcm_substream *substream,
-			 unsigned int cmd, void *arg)
-{
-	int err = 0;
-	u32 size = 0;
-	struct snd_lsm_session_data session_data;
-
-	if (!substream) {
-		pr_err("%s: Invalid params\n", __func__);
-		return -EINVAL;
-	}
-	switch (cmd) {
-	case SNDRV_LSM_SET_SESSION_DATA:
-		pr_debug("%s: SNDRV_LSM_SET_SESSION_DATA\n", __func__);
-		if (copy_from_user(&session_data, (void *)arg,
-				   sizeof(struct snd_lsm_session_data))) {
-			err = -EFAULT;
-			pr_err("%s: copy from user failed, size %d\n",
-			       __func__, sizeof(struct snd_lsm_session_data));
-			break;
-		}
-		if (!err)
-			err = msm_lsm_ioctl_shared(substream,
-						   cmd, &session_data);
-		if (err)
-			pr_err("%s REG_SND_MODEL failed err %d\n",
-			__func__, err);
-		break;
-	case SNDRV_LSM_REG_SND_MODEL_V2: {
-		struct snd_lsm_sound_model_v2 snd_model_v2;
-		if (!arg) {
-			pr_err("%s: Invalid params snd_model\n", __func__);
-			return -EINVAL;
-		}
-		if (copy_from_user(&snd_model_v2, arg, sizeof(snd_model_v2))) {
-			err = -EFAULT;
-			pr_err("%s: copy from user failed, size %zd\n",
-			__func__, sizeof(struct snd_lsm_sound_model_v2));
-		}
-		if (!err)
-			err = msm_lsm_ioctl_shared(substream, cmd,
-						   &snd_model_v2);
-		if (err)
-			pr_err("%s REG_SND_MODEL failed err %d\n",
-			__func__, err);
-		return err;
-		}
-		break;
-	case SNDRV_LSM_REG_SND_MODEL: {
-		struct snd_lsm_sound_model snd_model;
-		pr_debug("%s: SNDRV_LSM_REG_SND_MODEL\n", __func__);
-		if (!arg) {
-			pr_err("%s: Invalid params snd_model\n", __func__);
-			return -EINVAL;
-		}
-		if (copy_from_user(&snd_model, arg, sizeof(snd_model))) {
-			err = -EFAULT;
-			pr_err("%s: copy from user failed, size %zd\n",
-			__func__, sizeof(struct snd_lsm_sound_model));
-		}
-		if (!err)
-			err = msm_lsm_ioctl_shared(substream, cmd, &snd_model);
-		if (err)
-			pr_err("%s REG_SND_MODEL failed err %d\n",
-			__func__, err);
-		return err;
-	}
-	case SNDRV_LSM_EVENT_STATUS: {
-		struct snd_lsm_event_status *user = NULL, userarg;
-		pr_debug("%s: SNDRV_LSM_EVENT_STATUS\n", __func__);
-		if (!arg) {
-			pr_err("%s: Invalid params event status\n", __func__);
-			return -EINVAL;
-		}
-		if (copy_from_user(&userarg, arg, sizeof(userarg))) {
-			pr_err("%s: err copyuser event_status\n",
-			__func__);
-			return -EFAULT;
-		}
-		size = sizeof(struct snd_lsm_event_status) +
-		userarg.payload_size;
-		user = kmalloc(size, GFP_KERNEL);
-		if (!user) {
-			pr_err("%s: Allocation failed event status size %d\n",
-			__func__, size);
-			err = -EFAULT;
-		} else {
-			user->payload_size = userarg.payload_size;
-			err = msm_lsm_ioctl_shared(substream, cmd, user);
-		}
-		/* Update size with actual payload size */
-		size = sizeof(*user) + user->payload_size;
-		if (!err && !access_ok(VERIFY_WRITE, arg, size)) {
-			pr_err("%s: write verify failed size %d\n",
-			__func__, size);
-			err = -EFAULT;
-		}
-		if (!err && (copy_to_user(arg, user, size))) {
-			pr_err("%s: failed to copy payload %d",
-			__func__, size);
-			err = -EFAULT;
-		}
-		kfree(user);
-		if (err)
-			pr_err("%s: lsmevent failed %d", __func__, err);
-		return err;
-	}
-	default:
-		err = msm_lsm_ioctl_shared(substream, cmd, arg);
-	break;
-	}
-	return err;
-}
-
 static int msm_lsm_open(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct lsm_priv *prtd;
+	int ret = 0;
 
 	pr_debug("%s\n", __func__);
 	prtd = kzalloc(sizeof(struct lsm_priv), GFP_KERNEL);

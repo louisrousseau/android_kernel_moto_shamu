@@ -39,16 +39,8 @@ static int msm_dai_stub_set_channel_map(struct snd_soc_dai *dai,
 	return 0;
 }
 
-static int msm_dai_stub_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
-{
-	pr_debug("%s:\n", __func__);
-
-	return 0;
-}
-
 static struct snd_soc_dai_ops msm_dai_stub_ops = {
 	.set_channel_map = msm_dai_stub_set_channel_map,
-	.set_fmt = msm_dai_stub_set_dai_fmt,
 };
 
 static int msm_dai_stub_add_route(struct snd_soc_dai *dai)
@@ -109,41 +101,6 @@ static struct snd_soc_dai_driver msm_dai_stub_dai_rx = {
 	.ops = &msm_dai_stub_ops,
 	.probe = &msm_dai_stub_dai_probe,
 	.remove = &msm_dai_stub_dai_remove,
-};
-
-static struct snd_soc_dai_driver msm_dai_tfa9890_stub_dai_rx[] = {
-	{
-		.playback = {
-			.stream_name = "TFA9890_LEFT Playback",
-			.aif_name = "TFA9890_STUB_L",
-			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
-				SNDRV_PCM_RATE_16000,
-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
-			.channels_min = 1,
-			.channels_max = 2,
-			.rate_min = 8000,
-			.rate_max = 48000,
-		},
-		.ops = &msm_dai_stub_ops,
-		.probe = &msm_dai_stub_dai_probe,
-		.remove = &msm_dai_stub_dai_remove,
-	},
-	{
-		.playback = {
-			.stream_name = "TFA9890_RIGHT Playback",
-			.aif_name = "TFA9890_STUB_R",
-			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
-				SNDRV_PCM_RATE_16000,
-			.formats = SNDRV_PCM_FMTBIT_S16_LE,
-			.channels_min = 1,
-			.channels_max = 2,
-			.rate_min = 8000,
-			.rate_max = 48000,
-		},
-		.ops = &msm_dai_stub_ops,
-		.probe = &msm_dai_stub_dai_probe,
-		.remove = &msm_dai_stub_dai_remove,
-	},
 };
 
 static struct snd_soc_dai_driver msm_dai_stub_dai_tx[] = {
@@ -301,13 +258,6 @@ static int msm_dai_stub_dev_probe(struct platform_device *pdev)
 	case STUB_1_TX:
 		rc = snd_soc_register_component(&pdev->dev,
 			&msm_dai_stub_component, &msm_dai_stub_dai_tx[1], 1);
-	case TFA9890_LEFT_STUB:
-		rc = snd_soc_register_component(&pdev->dev,
-			&msm_dai_stub_component, &msm_dai_tfa9890_stub_dai_rx[0], 1);
-		break;
-	case TFA9890_RIGHT_STUB:
-		rc = snd_soc_register_component(&pdev->dev,
-			&msm_dai_stub_component, &msm_dai_tfa9890_stub_dai_rx[1], 1);
 		break;
 	case STUB_DTMF_TX:
 		rc = snd_soc_register_component(&pdev->dev,

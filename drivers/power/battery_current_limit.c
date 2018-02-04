@@ -185,14 +185,6 @@ enum bcl_threshold_state {
 	BCL_THRESHOLD_DISABLED,
 };
 
-enum bcl_threshold_state {
-	BCL_LOW_THRESHOLD = 0,
-	BCL_HIGH_THRESHOLD,
-	BCL_THRESHOLD_DISABLED,
-};
-static int bcl_get_battery_voltage(int *vbatt);
-static int bcl_config_vph_adc(struct bcl_context *bcl,
-			enum bcl_iavail_threshold_type thresh_type);
 static struct bcl_context *gbcl;
 static enum bcl_threshold_state bcl_vph_state = BCL_THRESHOLD_DISABLED,
 		bcl_ibat_state = BCL_THRESHOLD_DISABLED,
@@ -376,146 +368,7 @@ static void power_supply_callback(struct power_supply *psy)
 	}
 }
 
-static uint32_t bcl_hotplug_request, bcl_hotplug_mask;
-static DEFINE_MUTEX(bcl_hotplug_mutex);
-static bool bcl_hotplug_enabled;
-static struct power_supply bcl_psy;
-static const char bcl_psy_name[] = "bcl";
-static bool bcl_hit_shutdown_voltage;
-static int bcl_battery_get_property(struct power_supply *psy,
-				enum power_supply_property prop,
-				union power_supply_propval *val)
-{
-	return 0;
-}
-static int bcl_battery_set_property(struct power_supply *psy,
-				enum power_supply_property prop,
-				const union power_supply_propval *val)
-{
-	return 0;
-}
-static void power_supply_callback(struct power_supply *psy)
-{
-	int vbatt = 0;
-	if (bcl_hit_shutdown_voltage)
-		return;
-	if (0 != bcl_get_battery_voltage(&vbatt))
-		return;
-	if (vbatt <= gbcl->btm_vph_low_thresh) {
-		/*relay the notification to smb135x driver*/
-		bcl_config_vph_adc(gbcl, BCL_LOW_THRESHOLD_TYPE_MIN);
-	} else if ((vbatt  > gbcl->btm_vph_low_thresh) &&
-		(vbatt <= gbcl->btm_vph_high_thresh))
-		bcl_config_vph_adc(gbcl, BCL_LOW_THRESHOLD_TYPE);
-	else
-		bcl_config_vph_adc(gbcl, BCL_HIGH_THRESHOLD_TYPE);
-}
-
-static void __ref bcl_handle_hotplug(void)
-{
-	int ret = 0, _cpu = 0;
-	uint32_t prev_hotplug_request = 0;
-
-	mutex_lock(&bcl_hotplug_mutex);
-	prev_hotplug_request = bcl_hotplug_request;
-
-	if (bcl_vph_state == BCL_LOW_THRESHOLD)
-		bcl_hotplug_request = bcl_hotplug_mask;
-	else
-		bcl_hotplug_request = 0;
-
-	if (bcl_hotplug_request == prev_hotplug_request)
-		goto handle_hotplug_exit;
-
-	for_each_possible_cpu(_cpu) {
-		if (!(bcl_hotplug_mask & BIT(_cpu)))
-			continue;
-
-		if (bcl_hotplug_request & BIT(_cpu)) {
-			if (!cpu_online(_cpu))
-				continue;
-			ret = cpu_down(_cpu);
-			if (ret)
-				pr_err("Error %d offlining core %d\n",
-					ret, _cpu);
-			else
-				pr_info("Set Offline CPU:%d\n", _cpu);
-		} else {
-			if (cpu_online(_cpu))
-				continue;
-			ret = cpu_up(_cpu);
-			if (ret)
-				pr_err("Error %d onlining core %d\n",
-					ret, _cpu);
-			else
-				pr_info("Allow Online CPU:%d\n", _cpu);
-		}
-	}
-
-handle_hotplug_exit:
-	mutex_unlock(&bcl_hotplug_mutex);
-	return;
-}
-static int __ref bcl_cpu_ctrl_callback(struct notifier_block *nfb,
-	unsigned long action, void *hcpu)
-{
-	uint32_t cpu = (uintptr_t)hcpu;
-
-	if (action == CPU_UP_PREPARE || action == CPU_UP_PREPARE_FROZEN) {
-		if ((bcl_hotplug_mask & BIT(cpu))
-			&& (bcl_hotplug_request & BIT(cpu))) {
-			pr_debug("preventing CPU%d from coming online\n", cpu);
-			return NOTIFY_BAD;
-		} else {
-			pr_debug("voting for CPU%d to be online\n", cpu);
-		}
-	}
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block __refdata bcl_cpu_notifier = {
-	.notifier_call = bcl_cpu_ctrl_callback,
-};
-
-static int bcl_cpufreq_callback(struct notifier_block *nfb,
-		unsigned long event, void *data)
-{
-	struct cpufreq_policy *policy = data;
-
-	switch (event) {
-	case CPUFREQ_INCOMPATIBLE:
-		if (bcl_vph_state == BCL_LOW_THRESHOLD) {
-			cpufreq_verify_within_limits(policy, 0,
-				gbcl->btm_freq_max);
-		} else if (bcl_vph_state == BCL_HIGH_THRESHOLD) {
-			cpufreq_verify_within_limits(policy, 0,
-				UINT_MAX);
-		}
-		break;
-	}
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block bcl_cpufreq_notifier = {
-	.notifier_call = bcl_cpufreq_callback,
-};
-
-static void update_cpu_freq(void)
-{
-	int cpu, ret = 0;
-
-	get_online_cpus();
-	for_each_online_cpu(cpu) {
-		ret = cpufreq_update_policy(cpu);
-		if (ret)
-			pr_err("Error updating policy for CPU%d. ret:%d\n",
-				cpu, ret);
-	}
-	put_online_cpus();
-}
-static int bcl_get_battery_voltage(int *vbatt)
+static int bcl_get_battery_voltage(int *vbatt_mv)
 {
 	static struct power_supply *psy;
 	union power_supply_propval ret = {0,};
@@ -534,7 +387,7 @@ static int bcl_get_battery_voltage(int *vbatt)
 	if (ret.intval <= 0)
 		return -EINVAL;
 
-	*vbatt = ret.intval;
+	*vbatt_mv = ret.intval / 1000;
 	return 0;
 }
 
@@ -615,32 +468,14 @@ static void bcl_calculate_iavail_trigger(void)
  */
 static void bcl_iavail_work(struct work_struct *work)
 {
-	int vbatt;
 	struct bcl_context *bcl = container_of(work,
-			struct bcl_context, battery_monitor_work);
+			struct bcl_context, bcl_iavail_work.work);
 
 	if (gbcl->bcl_mode == BCL_DEVICE_ENABLED) {
-		bcl->btm_mode = BCL_VPH_MONITOR_MODE;
-		update_cpu_freq();
-		bcl_handle_hotplug();
-		bcl_get_battery_voltage(&vbatt);
-		pr_debug("vbat is %d\n", vbatt);
-		if (bcl_vph_state == BCL_LOW_THRESHOLD) {
-			if (vbatt <= gbcl->btm_vph_low_thresh) {
-				/*relay the notification to smb135x driver*/
-				if (bcl->btm_smb135x_low_thresh ==
-					gbcl->btm_vph_adc_param.low_thr) {
-					pr_info("Hit shutdown voltage\n");
-					bcl_hit_shutdown_voltage = true;
-				} else
-				bcl_config_vph_adc(gbcl,
-					BCL_LOW_THRESHOLD_TYPE_MIN);
-			} else
-				bcl_config_vph_adc(gbcl,
-					BCL_HIGH_THRESHOLD_TYPE);
-		} else {
-			bcl_config_vph_adc(gbcl, BCL_LOW_THRESHOLD_TYPE);
-		}
+		bcl_calculate_iavail_trigger();
+		/* restart the delay work for caculating imax */
+		schedule_delayed_work(&bcl->bcl_iavail_work,
+			msecs_to_jiffies(bcl->bcl_poll_interval_msec));
 	}
 }
 
@@ -1002,8 +837,6 @@ set_thresh:
  */
 static void bcl_mode_set(enum bcl_device_mode mode)
 {
-
-	int ret = 0;
 	if (!gbcl)
 		return;
 	if (gbcl->bcl_mode == mode)
@@ -1027,6 +860,7 @@ static void bcl_mode_set(enum bcl_device_mode mode)
 		pr_err("Invalid monitor type:%d\n", gbcl->bcl_monitor_type);
 		break;
 	}
+
 	return;
 }
 
@@ -1082,8 +916,7 @@ static ssize_t
 mode_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count)
 {
-	if (!gbcl) {
-		pr_err("No gbcl pointer\n");
+	if (!gbcl)
 		return -EPERM;
 
 	if (!strcmp(buf, "enable")) {
