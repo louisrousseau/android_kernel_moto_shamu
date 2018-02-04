@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,7 +18,7 @@
 #include <linux/msm_ion.h>
 #include <linux/iommu.h>
 #include <linux/msm_iommu_domains.h>
-#include <linux/qcom_iommu.h>
+#include <mach/iommu.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-fh.h>
@@ -57,7 +57,7 @@ static void vpe_mem_dump(const char * const name, const void * const addr,
 	p_str = line_str;
 	for (i = 0; i < size/4; i++) {
 		if (i % 4 == 0) {
-			snprintf(p_str, 12, "%pK: ", p);
+			snprintf(p_str, 12, "%08x: ", (u32) p);
 			p_str += 10;
 		}
 		data = *p++;
@@ -411,7 +411,7 @@ static int vpe_init_mem(struct vpe_device *vpe_dev)
 {
 	kref_init(&vpe_dev->refcount);
 	kref_get(&vpe_dev->refcount);
-	vpe_dev->client = msm_ion_client_create("vpe");
+	vpe_dev->client = msm_ion_client_create(-1, "vpe");
 
 	if (!vpe_dev->client) {
 		pr_err("couldn't create ion client\n");
@@ -1161,7 +1161,6 @@ static int msm_vpe_cfg(struct vpe_device *vpe_dev,
 	memset(&buff_mgr_info, 0, sizeof(struct msm_buf_mngr_info));
 	buff_mgr_info.session_id = ((new_frame->identity >> 16) & 0xFFFF);
 	buff_mgr_info.stream_id = (new_frame->identity & 0xFFFF);
-	buff_mgr_info.type = MSM_CAMERA_BUF_MNGR_BUF_PLANAR;
 	rc = msm_vpe_buffer_ops(vpe_dev, VIDIOC_MSM_BUF_MNGR_GET_BUF,
 				&buff_mgr_info);
 	if (rc < 0) {
@@ -1225,7 +1224,7 @@ static long msm_vpe_subdev_ioctl(struct v4l2_subdev *sd,
 		struct msm_vpe_transaction_setup_cfg *cfg;
 		VPE_DBG("VIDIOC_MSM_VPE_TRANSACTION_SETUP\n");
 		if (sizeof(*cfg) != ioctl_ptr->len) {
-			pr_err("%s: size mismatch cmd=%d, len=%zu, expected=%zu",
+			pr_err("%s: size mismatch cmd=%d, len=%d, expected=%d",
 				__func__, cmd, ioctl_ptr->len,
 				sizeof(*cfg));
 			rc = -EINVAL;
@@ -1383,8 +1382,6 @@ static long msm_vpe_subdev_ioctl(struct v4l2_subdev *sd,
 				process_frame,
 				sizeof(struct msm_vpe_frame_info_t))) {
 					mutex_unlock(&vpe_dev->mutex);
-					kfree(process_frame);
-					kfree(event_qcmd);
 					return -EINVAL;
 		}
 
