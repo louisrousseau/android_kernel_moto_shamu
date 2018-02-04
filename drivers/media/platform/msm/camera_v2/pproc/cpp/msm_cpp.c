@@ -1776,7 +1776,7 @@ static struct msm_cpp_frame_info_t *msm_cpp_get_frame(
 	}
 
 	if ((new_frame->msg_len == 0) ||
-		(new_frame->msg_len > MSM_CPP_MAX_MSG_LENGTH)) {
+		(new_frame->msg_len > MSM_CPP_MAX_FRAME_LENGTH)) {
 		pr_err("%s:%d: Invalid frame len:%d\n", __func__,
 			__LINE__, new_frame->msg_len);
 		goto frame_err;
@@ -1932,18 +1932,6 @@ static int msm_cpp_cfg_frame(struct cpp_device *cpp_dev,
 	if (cpp_dev->iommu_state != CPP_IOMMU_STATE_ATTACHED) {
 		pr_info("IOMMU is not attached\n");
 		return -EAGAIN;
-	}
-
-	if (cpp_frame_msg == NULL ||
-		(new_frame->msg_len < MSM_CPP_MIN_FRAME_LENGTH)) {
-		pr_err("%s %d Length is not correct or frame message is missing\n",
-			__func__, __LINE__);
-		return -EINVAL;
-	}
-
-	if (cpp_frame_msg[new_frame->msg_len - 1] != MSM_CPP_MSG_ID_TRAILER) {
-		pr_err("%s %d Invalid frame message\n", __func__, __LINE__);
-		return -EINVAL;
 	}
 
 	in_phyaddr = msm_cpp_fetch_buffer_info(cpp_dev,
@@ -2599,7 +2587,6 @@ STREAM_BUFF_END:
 			mutex_unlock(&cpp_dev->mutex);
 			return -EINVAL;
 		}
-
 
 		msm_cpp_dequeue_buff_info_list(cpp_dev, buff_queue_info);
 		rc = msm_cpp_free_buff_queue_entry(cpp_dev,

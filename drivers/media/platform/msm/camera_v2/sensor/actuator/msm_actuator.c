@@ -1331,14 +1331,6 @@ static int32_t msm_actuator_config(struct msm_actuator_ctrl_t *a_ctrl,
 		if (rc < 0)
 			pr_err("move focus failed %d\n", rc);
 		break;
-
-	case CFG_DIRECT_I2C_WRITE:
-		rc = msm_actuator_direct_i2c_write(a_ctrl,
-				&cdata->cfg.i2c_table);
-		if (rc < 0)
-			pr_err("%s CFG_DIRECT_I2C_WRITE failed %d\n",
-					__func__, rc);
-		break;
 	case CFG_ACTUATOR_POWERDOWN:
 		rc = msm_actuator_power_down(a_ctrl);
 		if (rc < 0)
@@ -1698,7 +1690,6 @@ static int32_t msm_actuator_i2c_probe(struct i2c_client *client,
 	act_ctrl_t->i2c_client.client = client;
 	act_ctrl_t->curr_step_pos = 0,
 	act_ctrl_t->curr_region_index = 0,
-	act_ctrl_t->actuator_state = ACTUATOR_POWER_DOWN;
 	/* Set device type as I2C */
 	act_ctrl_t->act_device_type = MSM_CAMERA_I2C_DEVICE;
 	act_ctrl_t->i2c_client.i2c_func_tbl = &msm_sensor_qup_func_tbl;

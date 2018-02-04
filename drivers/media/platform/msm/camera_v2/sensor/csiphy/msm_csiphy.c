@@ -41,10 +41,6 @@ static struct camera_vreg_t csiphy_vreg_info[] = {
 	{"qcom,mipi-csi-vdd", 0, 0, 12000},
 };
 
-static struct camera_vreg_t csiphy_vreg_info[] = {
-	{"qcom,mipi-csi-vdd", 0, 0, 12000},
-};
-
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
@@ -977,19 +973,6 @@ static int csiphy_probe(struct platform_device *pdev)
 		pr_err("%s: msm_csiphy_get_clk_info() failed", __func__);
 		return -EFAULT;
 	}
-
-	rc = of_property_read_u32((&pdev->dev)->of_node,
-		"qcom,csi-vdd-voltage", &csi_vdd_voltage);
-	if (rc < 0) {
-		pr_err("%s:%d failed to read qcom,csi-vdd-voltage\n",
-			__func__, __LINE__);
-		return rc;
-	}
-	CDBG("%s:%d reading mipi_csi_vdd is %d\n", __func__, __LINE__,
-		csi_vdd_voltage);
-
-	csiphy_vreg_info[0].min_voltage = csi_vdd_voltage;
-	csiphy_vreg_info[0].max_voltage = csi_vdd_voltage;
 
 	rc = of_property_read_u32((&pdev->dev)->of_node,
 		"qcom,csi-vdd-voltage", &csi_vdd_voltage);

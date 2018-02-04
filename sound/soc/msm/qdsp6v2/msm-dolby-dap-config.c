@@ -17,7 +17,6 @@
 #include <sound/q6core.h>
 
 #include "msm-dolby-dap-config.h"
-#include "q6core.h"
 
 /* dolby endp based parameters */
 struct dolby_dap_endp_params_s {

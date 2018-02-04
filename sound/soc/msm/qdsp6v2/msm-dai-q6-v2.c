@@ -2657,16 +2657,16 @@ static struct snd_soc_dai_driver msm_dai_q6_mi2s_dai[] = {
 			.formats = SNDRV_PCM_FMTBIT_S16_LE |
 				SNDRV_PCM_FMTBIT_S24_LE,
 			.rate_min =     8000,
-			.rate_max =     96000,
+			.rate_max =     48000,
 		},
 		.capture = {
 			.stream_name = "Primary MI2S Capture",
 			.aif_name = "PRI_MI2S_TX",
 			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
-			SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_96000,
+			SNDRV_PCM_RATE_16000,
 			.formats = SNDRV_PCM_FMTBIT_S16_LE,
 			.rate_min =     8000,
-			.rate_max =     96000,
+			.rate_max =     48000,
 		},
 		.ops = &msm_dai_q6_mi2s_ops,
 		.id = MSM_PRIM_MI2S,

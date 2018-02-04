@@ -567,7 +567,7 @@ int msm_camera_get_dt_power_setting_data(struct device_node *of_node,
 			break;
 		}
 		if (rc < 0) {
-			pr_err("%s: unrecognized seq-val\n", __func__);
+			CDBG("%s: unrecognized seq-val\n", __func__);
 			goto ERROR1;
 		}
 	}
@@ -652,7 +652,6 @@ ERROR1:
 	power_setting_size = 0;
 	return rc;
 }
-
 
 int msm_camera_get_dt_gpio_req_tbl(struct device_node *of_node,
 	struct msm_camera_gpio_conf *gconf, uint16_t *gpio_array,
@@ -1086,24 +1085,6 @@ int msm_camera_init_gpio_pin_tbl(struct device_node *of_node,
 		rc = 0;
 	}
 
-	if (of_property_read_bool(of_node, "qcom,gpio-torch-en") == true) {
-		rc = of_property_read_u32(of_node, "qcom,gpio-torch-en", &val);
-		if (rc < 0) {
-			pr_err("%s:%d read qcom,gpio-torch-en failed rc %d\n",
-				__func__, __LINE__, rc);
-			goto ERROR;
-		} else if (val >= gpio_array_size) {
-			pr_err("%s:%d qcom,gpio-torch-en invalid %d\n",
-				__func__, __LINE__, val);
-			goto ERROR;
-		}
-		gconf->gpio_num_info->gpio_num[SENSOR_GPIO_TOR_EN] =
-			gpio_array[val];
-		gconf->gpio_num_info->valid[SENSOR_GPIO_TOR_EN] = 1;
-		CDBG("%s qcom,gpio-torch-en %d\n", __func__,
-			gconf->gpio_num_info->gpio_num[SENSOR_GPIO_TOR_EN]);
-	}
-
 	return rc;
 
 ERROR:
@@ -1484,7 +1465,6 @@ power_up_failed:
 	msm_camera_request_gpio_table(
 		ctrl->gpio_conf->cam_gpio_req_tbl,
 		ctrl->gpio_conf->cam_gpio_req_tbl_size, 0);
-
 	return rc;
 }
 

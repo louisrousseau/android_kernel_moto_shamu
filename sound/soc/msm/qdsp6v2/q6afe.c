@@ -1975,7 +1975,6 @@ int afe_port_start(u16 port_id, union afe_port_config *afe_config,
 	afe_send_custom_topology(); /* One time call: only for first time */
 	afe_send_port_topology_id(port_id);
 
-	mutex_lock(&this_afe.afe_cmd_lock);
 	afe_send_cal(port_id);
 	afe_send_hw_delay(port_id, rate);
 
@@ -2916,8 +2915,8 @@ int afe_cmd_memory_map(phys_addr_t dma_addr_p, u32 dma_buf_sz)
 	this_afe.mmap_handle = 0;
 	ret = apr_send_pkt(this_afe.apr, (uint32_t *) mmap_region_cmd);
 	if (ret < 0) {
-		pr_err("%s: AFE memory map cmd failed %d for size %d\n",
-		       __func__, ret, cmd_size);
+		pr_err("%s: AFE memory map cmd failed %d\n",
+		       __func__, ret);
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
@@ -2931,8 +2930,7 @@ int afe_cmd_memory_map(phys_addr_t dma_addr_p, u32 dma_buf_sz)
 		goto fail_cmd;
 	}
 	if (atomic_read(&this_afe.status) != 0) {
-		pr_err("%s: Memory map cmd failed for size %d\n",
-			__func__, cmd_size);
+		pr_err("%s: Memory map cmd failed\n", __func__);
 		ret = -EINVAL;
 		goto fail_cmd;
 	}

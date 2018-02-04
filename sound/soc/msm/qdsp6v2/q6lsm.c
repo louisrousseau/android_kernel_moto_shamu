@@ -751,23 +751,6 @@ static int q6lsm_send_params(struct lsm_client *client,
 		       __func__, msg_hdr->opcode, rc);
 
 	pr_debug("%s: leave %d\n", __func__, rc);
-exit:
-	return rc;
-}
-
-int q6lsm_set_kw_sensitivity_level(struct lsm_client *client,
-				   u16 minkeyword, u16 minuser)
-{
-	int rc = 0;
-	if (client->snd_model_ver_inuse != SND_MODEL_IN_USE_V1) {
-		pr_err("%s: Invalid snd model version\n",
-			   __func__);
-		rc = -EINVAL;
-		goto exit;
-	}
-	client->kw_sensitivity = minkeyword;
-	client->user_sensitivity = minuser;
-exit:
 	return rc;
 }
 
@@ -1213,8 +1196,7 @@ int q6lsm_snd_model_buf_alloc(struct lsm_client *client, size_t len,
 
 	if (!client || len <= LSM_ALIGN_BOUNDARY)
 		return rc;
-	}
-	memset(&lsm_cal, 0, sizeof(lsm_cal));
+
 	mutex_lock(&client->cmd_lock);
 
 	mutex_lock(&lsm_common.cal_data[LSM_CAL_IDX]->lock);

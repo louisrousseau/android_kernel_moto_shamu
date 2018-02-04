@@ -103,15 +103,18 @@ static void msm_cci_set_clk_param(struct cci_device *cci_dev,
 static void msm_cci_flush_queue(struct cci_device *cci_dev,
 	enum cci_i2c_master_t master)
 {
-	unsigned long rc = 0;
+	int32_t rc = 0;
 
 	msm_camera_io_w_mb(1 << master, cci_dev->base + CCI_HALT_REQ_ADDR);
 	rc = wait_for_completion_timeout(
 		&cci_dev->cci_master_info[master].reset_complete, CCI_TIMEOUT);
-	CDBG("%s:%d return %ld", __func__, __LINE__, rc);
+	if (rc < 0) {
+		pr_err("%s:%d wait failed\n", __func__, __LINE__);
+	} else if (rc == 0) {
+		pr_err("%s:%d wait timeout\n", __func__, __LINE__);
 
-	/* Set reset pending flag to TRUE */
-	cci_dev->cci_master_info[master].reset_pending = TRUE;
+		/* Set reset pending flag to TRUE */
+		cci_dev->cci_master_info[master].reset_pending = TRUE;
 
 		/* Set proper mask to RESET CMD address based on MASTER */
 		if (master == MASTER_0)
@@ -169,8 +172,10 @@ static int32_t msm_cci_validate_queue(struct cci_device *cci_dev,
 		if (rc <= 0) {
 			pr_err("%s: wait_for_completion_timeout %d\n",
 				 __func__, __LINE__);
+			if (rc == 0)
+				rc = -ETIMEDOUT;
 			msm_cci_flush_queue(cci_dev, master);
-			return -ETIMEDOUT;
+			return rc;
 		}
 		rc = cci_dev->cci_master_info[master].status;
 		if (rc < 0)
@@ -461,8 +466,8 @@ static int32_t msm_cci_i2c_read(struct v4l2_subdev *sd,
 	if (rc <= 0) {
 		pr_err("%s: wait_for_completion_timeout %d\n",
 			 __func__, __LINE__);
-
-		rc = -ETIMEDOUT;
+		if (rc == 0)
+			rc = -ETIMEDOUT;
 		msm_cci_flush_queue(cci_dev, master);
 		goto ERROR;
 	} else {
@@ -676,8 +681,8 @@ static int32_t msm_cci_i2c_write(struct v4l2_subdev *sd,
 	if (rc <= 0) {
 		pr_err("%s: wait_for_completion_timeout %d\n",
 			 __func__, __LINE__);
-
-		rc = -ETIMEDOUT;
+		if (rc == 0)
+			rc = -ETIMEDOUT;
 		msm_cci_flush_queue(cci_dev, master);
 		goto ERROR;
 	} else {
@@ -794,69 +799,6 @@ static struct msm_cam_clk_info *msm_cci_get_clk(struct cci_device *cci_dev,
 	return NULL;
 }
 
-static void msm_cci_ioreg_enable(struct v4l2_subdev *sd)
-{
-	int rc;
-	uint32_t vddio_voltage;
-	struct cci_device *cci_dev = v4l2_get_subdevdata(sd);
-	struct device *dev;
-
-	if (!cci_dev)
-		return;
-
-	dev = &cci_dev->pdev->dev;
-
-	if (!dev->of_node)
-		return;
-
-	if (!cci_dev->ioreg) {
-		cci_dev->ioreg = regulator_get(dev, "vddio");
-		if (IS_ERR(cci_dev->ioreg)) {
-			pr_warn("%s failed to get regulator\n", __func__);
-			goto fail1;
-		}
-
-		/* set voltage if present in dt */
-		rc = of_property_read_u32(dev->of_node, "vddio-voltage",
-				&vddio_voltage);
-		if (rc >= 0) {
-			rc = regulator_set_voltage(cci_dev->ioreg,
-					vddio_voltage, vddio_voltage);
-			if (rc < 0) {
-				pr_debug("%s failed to set voltage (%d)\n",
-						__func__, rc);
-				goto fail2;
-			}
-		}
-
-		rc = regulator_enable(cci_dev->ioreg);
-		if (rc < 0) {
-			pr_warn("%s failed to enable (%d)\n", __func__, rc);
-			goto fail2;
-		}
-	}
-	return;
-
-fail2:
-	regulator_put(cci_dev->ioreg);
-fail1:
-	cci_dev->ioreg = NULL;
-}
-
-static void msm_cci_ioreg_disable(struct v4l2_subdev *sd)
-{
-	struct cci_device *cci_dev = v4l2_get_subdevdata(sd);
-
-	if (!cci_dev)
-		return;
-
-	if (cci_dev->ioreg) {
-		regulator_disable(cci_dev->ioreg);
-		regulator_put(cci_dev->ioreg);
-		cci_dev->ioreg = NULL;
-	}
-}
-
 static int32_t msm_cci_init(struct v4l2_subdev *sd,
 	struct msm_camera_cci_ctrl *c_ctrl)
 {
@@ -873,7 +815,6 @@ static int32_t msm_cci_init(struct v4l2_subdev *sd,
 		rc = -ENOMEM;
 		return rc;
 	}
-
 	if (cci_dev->ref_count++) {
 		CDBG("%s ref_count %d\n", __func__, cci_dev->ref_count);
 		master = c_ctrl->cci_info->cci_i2c_master;
@@ -1009,7 +950,6 @@ clk_enable_failed:
 		cci_dev->reg_ptr = NULL;
 	}
 request_gpio_failed:
-	msm_cci_ioreg_disable(sd);
 	cci_dev->ref_count--;
 	return rc;
 }
