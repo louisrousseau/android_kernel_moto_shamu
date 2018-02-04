@@ -1271,7 +1271,6 @@ static int __set_ocmem(struct venus_hfi_device *device, bool locked)
 		ocmem->buf->addr, ocmem->buf->len);
 ocmem_set_failed:
 	return rc;
-
 }
 
 static int __unset_ocmem(struct venus_hfi_device *device)
@@ -4423,7 +4422,6 @@ static void venus_init_hfi_callbacks(struct hfi_device *hdev)
 	hdev->iommu_get_domain_partition = venus_hfi_iommu_get_domain_partition;
 	hdev->load_fw = venus_hfi_load_fw;
 	hdev->unload_fw = venus_hfi_unload_fw;
-	hdev->resurrect_fw = venus_hfi_resurrect_fw;
 	hdev->get_fw_info = venus_hfi_get_fw_info;
 	hdev->get_stride_scanline = venus_hfi_get_stride_scanline;
 	hdev->get_core_capabilities = venus_hfi_get_core_capabilities;

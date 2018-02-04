@@ -81,13 +81,6 @@ struct adm_ctl {
 
 	int set_custom_topology;
 	int ec_ref_rx;
-
-	wait_queue_head_t adm_delay_wait[AFE_MAX_PORTS];
-	atomic_t adm_delay_stat[AFE_MAX_PORTS];
-	uint32_t adm_delay[AFE_MAX_PORTS];
-	int32_t topology[AFE_MAX_PORTS];
-
-	int port_none_topo;
 };
 
 static struct adm_ctl			this_adm;
@@ -1219,13 +1212,6 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 					pr_err("%s: ADM get topo list error = %d,\n",
 						__func__, payload[1]);
 				break;
-			case ADM_CMD_GET_PP_TOPO_MODULE_LIST:
-				pr_debug("%s:ADM_CMD_GET_PP_TOPO_MODULE_LIST\n",
-					 __func__);
-				if (payload[1] != 0)
-					pr_err("%s: ADM get topo list error = %d,\n",
-						__func__, payload[1]);
-				break;
 			default:
 				pr_err("%s: Unknown Cmd: 0x%x\n", __func__,
 								payload[0]);
@@ -2056,12 +2042,6 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 			   1);
 		this_adm.copp.adm_delay[port_idx][copp_idx] = 0;
 		wake_up(&this_adm.copp.adm_delay_wait[port_idx][copp_idx]);
-	}
-
-	if (this_adm.adm_delay[index] && perf_mode == LEGACY_PCM_MODE) {
-		atomic_set(&this_adm.adm_delay_stat[index], 1);
-		this_adm.adm_delay[index] = 0;
-		wake_up(&this_adm.adm_delay_wait[index]);
 	}
 
 	/* Create a COPP if port id are not enabled */

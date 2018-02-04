@@ -1143,15 +1143,12 @@ static void msm_vfe44_update_camif_state(struct vfe_device *vfe_dev,
 		msm_camera_io_w_mb(0x1, vfe_dev->vfe_base + 0x2F4);
 
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 1;
-		val = msm_camera_io_r(vfe_dev->vfe_base + 0x28);
-		pr_err("%s:%d irq_mask %x\n", __func__, __LINE__, val);
 	} else if (update_state == DISABLE_CAMIF) {
 		msm_camera_io_w_mb(0x0, vfe_dev->vfe_base + 0x2F4);
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 0;
 	} else if (update_state == DISABLE_CAMIF_IMMEDIATELY) {
 		msm_camera_io_w_mb(0x6, vfe_dev->vfe_base + 0x2F4);
 		vfe_dev->axi_data.src_info[VFE_PIX_0].active = 0;
-		vfe_dev->ignore_error = 0;
 	}
 }
 
@@ -2020,8 +2017,7 @@ struct msm_vfe_hardware_info vfe44_hw_info = {
 			.update_camif_state = msm_vfe44_update_camif_state,
 			.start_fetch_eng = msm_vfe44_fetch_engine_start,
 			.cfg_rdi_reg = msm_vfe44_cfg_rdi_reg,
-			.reset_hw = msm_vfe44_hard_reset_hardware,
-			.soft_reset_hw = msm_vfe44_soft_reset_hardware,
+			.reset_hw = msm_vfe44_reset_hardware,
 			.init_hw = msm_vfe44_init_hardware,
 			.init_hw_reg = msm_vfe44_init_hardware_reg,
 			.clear_status_reg = msm_vfe44_clear_status_reg,

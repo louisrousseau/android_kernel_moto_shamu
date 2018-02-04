@@ -32,9 +32,6 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/trace_msm_bus.h>
 
-#define CREATE_TRACE_POINTS
-#include <mach/trace_msm_bus.h>
-
 #define MAX_BUFF_SIZE 4096
 #define FILL_LIMIT 128
 
@@ -288,7 +285,6 @@ DEFINE_SIMPLE_ATTRIBUTE(shell_client_en_fops, msm_bus_dbg_en_get,
 static ssize_t client_data_read(struct file *file, char __user *buf,
 	size_t count, loff_t *ppos)
 {
-	ssize_t ret;
 	int bsize = 0;
 	uint32_t cl = (uint32_t)(uintptr_t)file->private_data;
 	struct msm_bus_cldata *cldata = NULL;
@@ -442,11 +438,9 @@ static int msm_bus_dbg_record_client(const struct msm_bus_scale_pdata *pdata,
 {
 	struct msm_bus_cldata *cldata;
 
-	mutex_lock(&cl_list_lock);
 	cldata = kmalloc(sizeof(struct msm_bus_cldata), GFP_KERNEL);
 	if (!cldata) {
 		MSM_BUS_DBG("Failed to allocate memory for client data\n");
-		mutex_unlock(&cl_list_lock);
 		return -ENOMEM;
 	}
 	cldata->pdata = pdata;
@@ -502,7 +496,6 @@ static int msm_bus_dbg_fill_cl_buffer(const struct msm_bus_scale_pdata *pdata,
 		if (pdata->name == NULL) {
 			rt_mutex_unlock(&msm_bus_dbg_cllist_lock);
 			MSM_BUS_DBG("Client doesn't have a name\n");
-			mutex_unlock(&cl_list_lock);
 			return -EINVAL;
 		}
 		cldata->file = msm_bus_dbg_create(pdata->name, S_IRUGO,
