@@ -886,6 +886,9 @@ static void msm_pcie_iatu_config_all_ep(struct msm_pcie_dev_t *dev)
 
 static void msm_pcie_config_controller(struct msm_pcie_dev_t *dev)
 {
+	struct resource *axi_conf = dev->res[MSM_PCIE_RES_CONF].resource;
+	u32 dev_conf, upper, lower, limit;
+
 	PCIE_DBG(dev, "RC%d\n", dev->rc_idx);
 
 	if (dev->shadow_en) {
