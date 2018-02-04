@@ -170,16 +170,6 @@ static int msm_isp_prepare_isp_buf(struct msm_isp_buf_mgr *buf_mgr,
 				__func__, mapped_info->handle);
 			goto ion_map_error;
 		}
-		if (buf_mgr->secure_enable == SECURE_MODE) {
-			pr_debug("%s: Securing the ION buffers\n", __func__);
-			rc = msm_ion_secure_buffer(buf_mgr->client,
-				mapped_info->handle, CAMERA_SECURE_CP_USAGE, 0);
-			if (rc < 0) {
-				pr_err("%s: Failed to secure ion buffers rc=%d\n",
-					__func__, rc);
-				goto ion_map_error;
-			}
-		}
 		if (ion_map_iommu(buf_mgr->client, mapped_info->handle,
 				domain_num, 0, SZ_4K,
 				0, &(mapped_info->paddr),
@@ -1038,7 +1028,7 @@ static int msm_isp_request_bufq(struct msm_isp_buf_mgr *buf_mgr,
 	buf_request->handle = msm_isp_get_buf_handle(buf_mgr,
 		buf_request->session_id, buf_request->stream_id);
 	if (!buf_request->handle) {
-		pr_err("%s: Invalid buffer handle\n", __func__);
+		pr_err("Invalid buffer handle\n");
 		return rc;
 	}
 
@@ -1178,7 +1168,6 @@ static int msm_isp_attach_ctx(struct msm_isp_buf_mgr *buf_mgr,
 			buf_mgr->attach_ref_cnt[SECURE_MODE][i]++;
 		}
 	}
-	buf_mgr->attach_state = MSM_ISP_BUF_MGR_ATTACH;
 	return 0;
 }
 

@@ -811,45 +811,6 @@ static const struct intr_data intr_tbl_v3[] = {
 	{WCD9330_IRQ_VBAT_MONITOR_RELEASE, false},
 };
 
-/*
- * Interrupt table for v3 corresponds to newer version
- * codecs (wcd9330)
- */
-static const struct intr_data intr_tbl_v3[] = {
-	{WCD9XXX_IRQ_SLIMBUS, false},
-	{WCD9XXX_IRQ_MBHC_INSERTION, true},
-	{WCD9XXX_IRQ_MBHC_POTENTIAL, true},
-	{WCD9XXX_IRQ_MBHC_RELEASE, true},
-	{WCD9XXX_IRQ_MBHC_PRESS, true},
-	{WCD9XXX_IRQ_MBHC_SHORT_TERM, true},
-	{WCD9XXX_IRQ_MBHC_REMOVAL, true},
-	{WCD9330_IRQ_MBHC_JACK_SWITCH, true},
-	{WCD9XXX_IRQ_BG_PRECHARGE, false},
-	{WCD9XXX_IRQ_PA1_STARTUP, false},
-	{WCD9XXX_IRQ_PA2_STARTUP, false},
-	{WCD9XXX_IRQ_PA3_STARTUP, false},
-	{WCD9XXX_IRQ_PA4_STARTUP, false},
-	{WCD9XXX_IRQ_PA5_STARTUP, false},
-	{WCD9XXX_IRQ_MICBIAS1_PRECHARGE, false},
-	{WCD9XXX_IRQ_MICBIAS2_PRECHARGE, false},
-	{WCD9XXX_IRQ_MICBIAS3_PRECHARGE, false},
-	{WCD9XXX_IRQ_HPH_PA_OCPL_FAULT, false},
-	{WCD9XXX_IRQ_HPH_PA_OCPR_FAULT, false},
-	{WCD9XXX_IRQ_EAR_PA_OCPL_FAULT, false},
-	{WCD9XXX_IRQ_HPH_L_PA_STARTUP, false},
-	{WCD9XXX_IRQ_HPH_R_PA_STARTUP, false},
-	{WCD9320_IRQ_EAR_PA_STARTUP, false},
-	{WCD9330_IRQ_SVASS_ERR_EXCEPTION, false},
-	{WCD9330_IRQ_SVASS_ENGINE, true},
-	{WCD9330_IRQ_MAD_AUDIO, false},
-	{WCD9330_IRQ_MAD_BEACON, false},
-	{WCD9330_IRQ_MAD_ULTRASOUND, false},
-	{WCD9330_IRQ_SPEAKER1_CLIPPING, false},
-	{WCD9330_IRQ_SPEAKER2_CLIPPING, false},
-	{WCD9330_IRQ_VBAT_MONITOR_ATTACK, false},
-	{WCD9330_IRQ_VBAT_MONITOR_RELEASE, false},
-};
-
 static int wcd9xxx_device_init(struct wcd9xxx *wcd9xxx)
 {
 	int ret = 0;

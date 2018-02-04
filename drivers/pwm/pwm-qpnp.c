@@ -1342,7 +1342,6 @@ static int qpnp_pwm_config(struct pwm_chip *pwm_chip,
 		qpnp_lpg_save_period(chip);
 		pwm->period = period_ns;
 		chip->pwm_config.pwm_period = period_ns / NSEC_PER_USEC;
-		chip->shadow_ready = true;
 	}
 
 	rc = _pwm_config(chip, LVL_NSEC, duty_ns, period_ns);
@@ -2045,7 +2044,6 @@ static int qpnp_pwm_probe(struct spmi_device *spmi)
 	pwm_chip->chip.ops = &qpnp_pwm_ops;
 	pwm_chip->chip.base = -1;
 	pwm_chip->chip.npwm = 1;
-	pwm_chip->shadow_ready = false;
 
 	rc = pwmchip_add(&pwm_chip->chip);
 	if (rc < 0) {

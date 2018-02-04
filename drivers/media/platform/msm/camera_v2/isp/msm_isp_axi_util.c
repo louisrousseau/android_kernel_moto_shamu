@@ -703,18 +703,6 @@ void msm_isp_notify(struct vfe_device *vfe_dev, uint32_t event_type,
 	msm_isp_send_event(vfe_dev, event_type | frame_src, &event_data);
 }
 
-void msm_isp_epoch_notify(struct vfe_device *vfe_dev,
-	enum msm_isp_epoch_idx epoch_idx)
-{
-	struct msm_isp_event_data epoch_event;
-	memset(&epoch_event, 0, sizeof(epoch_event));
-
-	epoch_event.frame_id =
-		vfe_dev->axi_data.src_info[VFE_PIX_0].frame_id;
-	epoch_event.u.epoch.epoch_idx = epoch_idx;
-	msm_isp_send_event(vfe_dev, ISP_EVENT_EPOCH0_IRQ, &epoch_event);
-}
-
 void msm_isp_calculate_framedrop(
 	struct msm_vfe_axi_shared_data *axi_data,
 	struct msm_vfe_axi_stream_request_cmd *stream_cfg_cmd)
@@ -836,42 +824,12 @@ static inline void msm_isp_get_avtimer_ts(
 }
 #endif
 
-static enum msm_vfe_input_src msm_isp_axi_util_get_frame_src(
-	enum msm_vfe_axi_stream_src stream_src)
-{
-	if (stream_src >= VFE_AXI_SRC_MAX) {
-		pr_err("%s:%d failed: invalid stream src %d\n", __func__,
-			__LINE__, stream_src);
-		return VFE_SRC_MAX;
-	}
-
-	switch (stream_src) {
-	case PIX_ENCODER:
-	case PIX_VIEWFINDER:
-	case PIX_VIDEO:
-	case CAMIF_RAW:
-	case IDEAL_RAW:
-		return VFE_PIX_0;
-	case RDI_INTF_0:
-		return VFE_RAW_0;
-	case RDI_INTF_1:
-		return VFE_RAW_1;
-	case RDI_INTF_2:
-		return VFE_RAW_2;
-	default:
-		return VFE_SRC_MAX;
-	}
-
-	return VFE_SRC_MAX;
-}
-
 int msm_isp_request_axi_stream(struct vfe_device *vfe_dev, void *arg)
 {
 	int rc = 0, i;
 	uint32_t io_format = 0;
 	struct msm_vfe_axi_stream_request_cmd *stream_cfg_cmd = arg;
 	struct msm_vfe_axi_stream *stream_info;
-	enum msm_vfe_input_src frame_src = VFE_AXI_SRC_MAX;
 
 	rc = msm_isp_axi_create_stream(
 		&vfe_dev->axi_data, stream_cfg_cmd);
@@ -925,16 +883,6 @@ int msm_isp_request_axi_stream(struct vfe_device *vfe_dev, void *arg)
 				HANDLE_TO_IDX(
 				stream_cfg_cmd->axi_stream_handle));
 			return rc;
-		}
-	} else if (stream_info->stream_src < VFE_AXI_SRC_MAX) {
-		frame_src = msm_isp_axi_util_get_frame_src(
-			stream_info->stream_src);
-		if (frame_src >= VFE_SRC_MAX) {
-			pr_err("%s:%d failed: invalid src %d stream src %d\n",
-				__func__, __LINE__, frame_src,
-				stream_info->stream_src);
-		} else {
-			vfe_dev->axi_data.src_info[frame_src].frame_id = 0;
 		}
 	}
 	stream_info->framedrop_altern_cnt = 0;
@@ -1376,6 +1324,7 @@ static int msm_isp_cfg_ping_pong_address(struct vfe_device *vfe_dev,
 		}
 	}
 
+	pingpong_bit = (~(pingpong_status >> stream_info->wm[0]) & 0x1);
 	stream_info->buf[pingpong_bit] = buf;
 
 	return 0;

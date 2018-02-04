@@ -466,37 +466,6 @@ done:
 	return topology;
 }
 
-/* The caller of this should aqcuire routing lock */
-void msm_pcm_routing_get_bedai_info(int be_idx,
-				    struct msm_pcm_routing_bdai_data *be_dai)
-{
-	memcpy(be_dai, &msm_bedais[be_idx],
-		sizeof(struct msm_pcm_routing_bdai_data));
-}
-
-/* The caller of this should aqcuire routing lock */
-void msm_pcm_routing_get_fedai_info(int fe_idx, int sess_type,
-				    struct msm_pcm_routing_fdai_data *fe_dai,
-				    int *fe_perf_mode)
-{
-	if ((sess_type == SESSION_TYPE_TX) ||
-	    (sess_type == SESSION_TYPE_RX)) {
-		memcpy(fe_dai, &fe_dai_map[fe_idx][sess_type],
-			sizeof(struct msm_pcm_routing_fdai_data));
-		*fe_perf_mode = fe_dai_perf_mode[fe_idx][sess_type];
-	}
-}
-
-void msm_pcm_routing_acquire_lock(void)
-{
-	mutex_lock(&routing_lock);
-}
-
-void msm_pcm_routing_release_lock(void)
-{
-	mutex_unlock(&routing_lock);
-}
-
 static uint8_t is_be_dai_extproc(int be_dai)
 {
 	if (be_dai == MSM_BACKEND_DAI_EXTPROC_RX ||
@@ -1457,89 +1426,6 @@ static int msm_routing_lsm_func_put(struct snd_kcontrol *kcontrol,
 		 mad_type);
 	return afe_port_set_mad_type(port_id, mad_type);
 }
-
-static int msm_get_port_none_topology(struct snd_kcontrol *kcontrol,
-				struct snd_ctl_elem_value *ucontrol)
-{
-	switch (msm_portid_none_topo) {
-	case AFE_PORT_ID_INVALID:
-		ucontrol->value.integer.value[0] = 0;
-		break;
-	case AFE_PORT_ID_PRIMARY_MI2S_TX:
-		ucontrol->value.integer.value[0] = 1;
-		break;
-	case AFE_PORT_ID_SECONDARY_MI2S_TX:
-		ucontrol->value.integer.value[0] = 2;
-		break;
-	case AFE_PORT_ID_TERTIARY_MI2S_TX:
-		ucontrol->value.integer.value[0] = 3;
-		break;
-	case AFE_PORT_ID_QUATERNARY_MI2S_TX:
-		ucontrol->value.integer.value[0] = 4;
-		break;
-	default:
-		ucontrol->value.integer.value[0] = 0;
-	}
-
-	pr_debug("%s: msm_portid_none_topo  = 0X%x\n", __func__,
-		 msm_portid_none_topo);
-	ucontrol->value.integer.value[0] = msm_portid_none_topo;
-	return 0;
-}
-
-static int msm_set_port_none_topology(struct snd_kcontrol *kcontrol,
-				struct snd_ctl_elem_value *ucontrol)
-{
-	mutex_lock(&routing_lock);
-	switch (ucontrol->value.integer.value[0]) {
-	case 0:
-		msm_portid_none_topo =
-			AFE_PORT_ID_INVALID;
-		break;
-	case 1:
-		msm_portid_none_topo =
-			AFE_PORT_ID_PRIMARY_MI2S_TX;
-		break;
-	case 2:
-		msm_portid_none_topo =
-			AFE_PORT_ID_SECONDARY_MI2S_TX;
-		break;
-	case 3:
-		msm_portid_none_topo =
-			AFE_PORT_ID_TERTIARY_MI2S_TX;
-		break;
-	case 4:
-		msm_portid_none_topo =
-			AFE_PORT_ID_QUATERNARY_MI2S_TX;
-		break;
-	default:
-		msm_portid_none_topo =
-			AFE_PORT_ID_INVALID;
-	}
-
-	adm_set_none_topo_portid(msm_portid_none_topo);
-
-	pr_debug("%s: msm_portid_none_topo = 0X%x\n", __func__,
-		msm_portid_none_topo);
-	mutex_unlock(&routing_lock);
-	return 1;
-}
-
-static const char * const port_none_topo_text[] = {
-	"None", "PRI_MI2S_TX", "SEC_MI2S_TX", "TERT_MI2S_TX",
-	"QUAT_MI2S_TX",
-};
-
-static const struct soc_enum port_none_topo_enum =
-	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(port_none_topo_text),
-			port_none_topo_text);
-
-static const struct snd_kcontrol_new port_none_topology[] = {
-	SOC_ENUM_EXT("Port None Topology", port_none_topo_enum,
-		msm_get_port_none_topology,
-		msm_set_port_none_topology),
-};
-
 
 static int msm_routing_slim_0_rx_aanc_mux_get(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
@@ -2760,9 +2646,6 @@ static const struct snd_kcontrol_new mmul2_mixer_controls[] = {
 	SOC_SINGLE_EXT("SLIM_0_TX", MSM_BACKEND_DAI_SLIMBUS_0_TX,
 	MSM_FRONTEND_DAI_MULTIMEDIA2, 1, 0, msm_routing_get_audio_mixer,
 	msm_routing_put_audio_mixer),
-	SOC_SINGLE_EXT("PRI_MI2S_TX", MSM_BACKEND_DAI_PRI_MI2S_TX,
-	MSM_FRONTEND_DAI_MULTIMEDIA2, 1, 0, msm_routing_get_audio_mixer,
-	msm_routing_put_audio_mixer),
 };
 
 static const struct snd_kcontrol_new mmul4_mixer_controls[] = {
@@ -3656,9 +3539,6 @@ static const struct snd_kcontrol_new sbus_3_rx_port_mixer_controls[] = {
 	SOC_SINGLE_EXT("SLIM_0_RX", MSM_BACKEND_DAI_SLIMBUS_3_RX,
 	MSM_BACKEND_DAI_SLIMBUS_0_RX, 1, 0, msm_routing_get_port_mixer,
 	msm_routing_put_port_mixer),
-	SOC_SINGLE_EXT("QUAT_MI2S_TX", MSM_BACKEND_DAI_SLIMBUS_3_RX,
-	MSM_BACKEND_DAI_QUATERNARY_MI2S_TX, 1, 0, msm_routing_get_port_mixer,
-	msm_routing_put_port_mixer),
 };
 static const struct snd_kcontrol_new bt_sco_rx_port_mixer_controls[] = {
 	SOC_SINGLE_EXT("SLIM_1_TX", MSM_BACKEND_DAI_INT_BT_SCO_RX,
@@ -4298,9 +4178,6 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
 		0, 0, 0, 0),
 	SND_SOC_DAPM_AIF_OUT("MI2S_DL_HL", "MI2S_RX_HOSTLESS Playback",
 		0, 0, 0, 0),
-
-	SND_SOC_DAPM_AIF_OUT("QUAT_MI2S_TX_UL_HL", "EC16k_Hostless Capture",
-		0, 0, 0, 0),
 	SND_SOC_DAPM_AIF_IN("DTMF_DL_HL", "DTMF_RX_HOSTLESS Playback",
 		0, 0, 0, 0),
 	SND_SOC_DAPM_AIF_OUT("QUAT_MI2S_UL_HL",
@@ -4629,13 +4506,6 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
 	SND_SOC_DAPM_MIXER("QCHAT_Tx Mixer",
 	SND_SOC_NOPM, 0, 0, tx_qchat_mixer_controls,
 	ARRAY_SIZE(tx_qchat_mixer_controls)),
-	SND_SOC_DAPM_AIF_OUT("TFA9890_STUB_L", "TFA9890_LEFT Playback",
-			0, 0, 0, 0),
-	SND_SOC_DAPM_AIF_OUT("TFA9890_STUB_R", "TFA9890_RIGHT Playback",
-			0, 0, 0, 0),
-	SND_SOC_DAPM_MIXER("EC_REF_16k Port Config", SND_SOC_NOPM, 0, 0,
-	ec_ref_16k_port_mixer_controls,
-	ARRAY_SIZE(ec_ref_16k_port_mixer_controls)),
 	/* Virtual Pins to force backends ON atm */
 	SND_SOC_DAPM_OUTPUT("BE_OUT"),
 	SND_SOC_DAPM_INPUT("BE_IN"),
@@ -4808,8 +4678,7 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{"MultiMedia2 Mixer", "PRI_MI2S_TX", "PRI_MI2S_TX"},
 	{"MultiMedia4 Mixer", "PRI_MI2S_TX", "PRI_MI2S_TX"},
 	{"MultiMedia8 Mixer", "PRI_MI2S_TX", "PRI_MI2S_TX"},
-	{"MultiMedia2 Mixer", "PRI_MI2S_TX", "PRI_MI2S_TX"},
-
+	{"MultiMedia5 Mixer", "SLIM_0_TX", "SLIMBUS_0_TX"},
 	{"MI2S_RX Audio Mixer", "MultiMedia1", "MM_DL1"},
 	{"MI2S_RX Audio Mixer", "MultiMedia2", "MM_DL2"},
 	{"MI2S_RX Audio Mixer", "MultiMedia3", "MM_DL3"},
@@ -5293,9 +5162,6 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{"SLIM3_UL_HL", NULL, "SLIMBUS_3_TX"},
 	{"SLIM4_UL_HL", NULL, "SLIMBUS_4_TX"},
 
-	{"PRI_MI2S_RX", NULL, "PRI_MI2S_DL_HL"},
-	{"QUAT_MI2S_TX_UL_HL", NULL, "QUAT_MI2S_TX"},
-
 	{"LSM1 MUX", "SLIMBUS_0_TX", "SLIMBUS_0_TX"},
 	{"LSM1 MUX", "SLIMBUS_1_TX", "SLIMBUS_1_TX"},
 	{"LSM1 MUX", "SLIMBUS_3_TX", "SLIMBUS_3_TX"},
@@ -5490,7 +5356,6 @@ static const struct snd_soc_dapm_route intercon[] = {
 	{"SLIMBUS_3_RX Port Mixer", "AFE_PCM_RX", "PCM_RX"},
 	{"SLIMBUS_3_RX Port Mixer", "AUX_PCM_RX", "AUX_PCM_RX"},
 	{"SLIMBUS_3_RX Port Mixer", "SLIM_0_RX", "SLIMBUS_0_RX"},
-	{"SLIMBUS_3_RX Port Mixer", "QUAT_MI2S_TX", "QUAT_MI2S_TX"},
 	{"SLIMBUS_3_RX", NULL, "SLIMBUS_3_RX Port Mixer"},
 
 
@@ -5962,9 +5827,6 @@ static int msm_routing_probe(struct snd_soc_platform *platform)
 
 	snd_soc_add_platform_controls(platform, lsm_function,
 				      ARRAY_SIZE(lsm_function));
-
-	snd_soc_add_platform_controls(platform, port_none_topology,
-				      ARRAY_SIZE(port_none_topology));
 
 	snd_soc_add_platform_controls(platform,
 				aanc_slim_0_rx_mux,

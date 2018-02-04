@@ -201,14 +201,6 @@ struct msm_compr_audio_effects {
 	struct query_audio_effect query;
 };
 
-struct mmi_eq_vals {
-	struct mmi_eq_params eq_params;
-	uint32_t num_cmds;
-	uint32_t cmds;
-};
-
-struct mmi_eq_vals mmifx[MSM_FRONTEND_DAI_MAX];
-
 struct msm_compr_dec_params {
 	struct snd_dec_ddp ddp_params;
 };
@@ -988,8 +980,7 @@ static int msm_compr_open(struct snd_compr_stream *cstream)
 	prtd->cstream = cstream;
 	pdata->cstream[rtd->dai_link->be_id] = cstream;
 	pdata->audio_effects[rtd->dai_link->be_id] =
-		kzalloc(sizeof(struct msm_compr_audio_effects), GFP_KERNEL);
-
+		 kzalloc(sizeof(struct msm_compr_audio_effects), GFP_KERNEL);
 	if (!pdata->audio_effects[rtd->dai_link->be_id]) {
 		pr_err("%s: Could not allocate memory for effects\n", __func__);
 		pdata->cstream[rtd->dai_link->be_id] = NULL;
@@ -2163,70 +2154,6 @@ static int msm_compr_volume_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
-static int msm_audio_effects_mmifx_params(struct mmi_eq_vals *mmifx_eq,
-					long *values)
-{
-	int devices = *values++;
-	int num_commands = *values++;
-	uint32_t params_length = (MAX_INBAND_PARAM_SZ);
-	int rc = 0;
-	int i;
-	struct mmi_eq_params *mmifx = &(mmifx_eq->eq_params);
-
-	pr_debug("%s: device: %d num commands %d\n", __func__, devices, num_commands);
-	mmifx_eq->num_cmds = num_commands;
-	params_length = 0;
-	for (i = 0; i < num_commands; i++) {
-		uint32_t command_id = *values++;
-		/*command_config_state */
-		uint32_t command_config_state = *values++;
-		uint32_t index_offset = *values++;
-		uint32_t length = *values++;
-		switch (command_id) {
-		case MMIFX_EQ_ENABLE:
-			pr_debug("%s: MMIFX_EQ_ENABLE\n", __func__);
-			if (length != 1 || index_offset != 0) {
-				pr_err("no valid params\n");
-				rc = -EINVAL;
-				goto invalid_config;
-			}
-			mmifx->enable_flag = *values++;
-			mmifx_eq->cmds |= command_id;
-			break;
-		case MMIFX_EQ_DEVICE:
-			pr_debug("%s: MMIFX_DEVICE\n", __func__);
-			if (length != 1 || index_offset != 0) {
-				pr_err("no valid params\n");
-				rc = -EINVAL;
-				goto invalid_config;
-			}
-			if (command_config_state == CONFIG_SET) {
-				mmifx->device = devices;
-				mmifx_eq->cmds |= command_id;
-			}
-			break;
-		case MMIFX_EQ_PRESET:
-			pr_debug("%s: MMIFX_EQ_PRESET\n", __func__);
-			if (length != 1 || index_offset != 0) {
-				pr_err("no valid params\n");
-				rc = -EINVAL;
-				goto invalid_config;
-			}
-			if (command_config_state == CONFIG_SET) {
-				mmifx->preset= *values++;
-				mmifx_eq->cmds |= command_id;
-			}
-			break;
-		default:
-			pr_err("%s: Invalid command to set config\n", __func__);
-			break;
-		}
-	}
-
-invalid_config:
-	return rc;
-}
-
 static int msm_compr_audio_effects_config_put(struct snd_kcontrol *kcontrol,
 					   struct snd_ctl_elem_value *ucontrol)
 {
@@ -2241,7 +2168,6 @@ static int msm_compr_audio_effects_config_put(struct snd_kcontrol *kcontrol,
 	int effects_module;
 
 	pr_debug("%s\n", __func__);
-	effects_module = *values++;
 	if (fe_id >= MSM_FRONTEND_DAI_MAX) {
 		pr_err("%s Received out of bounds fe_id %lu\n",
 			__func__, fe_id);
@@ -2249,23 +2175,13 @@ static int msm_compr_audio_effects_config_put(struct snd_kcontrol *kcontrol,
 	}
 	cstream = pdata->cstream[fe_id];
 	audio_effects = pdata->audio_effects[fe_id];
-	if (!cstream || !audio_effects || !cstream->runtime) {
-		pr_err("%s: stream or effects inactive %ld\n", __func__, fe_id);
-		if (effects_module == MMIFX_EQ_MODULE)
-			/* update mmfx params, will be set when compr
-			 * session is started
-			 */
-			msm_audio_effects_mmifx_params(&(mmifx[fe_id]),
-						     values);
+	if (!cstream || !audio_effects) {
+		pr_err("%s: stream or effects inactive\n", __func__);
 		return -EINVAL;
 	}
-
 	prtd = cstream->runtime->private_data;
 	if (!prtd) {
 		pr_err("%s: cannot set audio effects\n", __func__);
-		if (effects_module == MMIFX_EQ_MODULE)
-			msm_audio_effects_mmifx_params(&(mmifx[fe_id]),
-						     values);
 		return -EINVAL;
 	}
 	if (prtd->compr_passthr != LEGACY_PCM) {
@@ -2477,10 +2393,6 @@ static int msm_compr_query_audio_effect_get(struct snd_kcontrol *kcontrol,
 	values[4] = (long)audio_effects->query.device;
 	return 0;
 }
-static int msm_compr_send_dec_params(struct snd_compr_stream *cstream,
-				     struct msm_compr_dec_params *dec_params,
-				     int stream_id)
-{
 
 static int msm_compr_send_dec_params(struct snd_compr_stream *cstream,
 				     struct msm_compr_dec_params *dec_params,

@@ -1342,19 +1342,6 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 		vfe_dev->vfe_ub_policy = *cfg_data;
 		break;
 	}
-	case GET_ISP_ID: {
-		uint32_t *isp_id = NULL;
-
-		if (cmd_len < sizeof(uint32_t)) {
-			pr_err("%s:%d failed: invalid cmd len %u exp %u\n",
-				__func__, __LINE__, cmd_len,
-				sizeof(uint32_t));
-			return -EINVAL;
-		}
-
-		isp_id = (uint32_t *)cfg_data;
-		*isp_id = vfe_dev->pdev->id;
-	}
 	}
 	return 0;
 }
@@ -1441,7 +1428,6 @@ int msm_isp_cal_word_per_line(uint32_t output_format,
 {
 	int val = -1;
 	switch (output_format) {
-
 	case V4L2_PIX_FMT_SBGGR8:
 	case V4L2_PIX_FMT_SGBRG8:
 	case V4L2_PIX_FMT_SGRBG8:

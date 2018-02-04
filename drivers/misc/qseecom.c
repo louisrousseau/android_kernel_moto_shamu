@@ -1180,17 +1180,6 @@ static void __qseecom_add_bw_scale_down_timer(uint32_t duration)
 	mutex_unlock(&qsee_bw_mutex);
 }
 
-static void __qseecom_add_bw_scale_down_timer(uint32_t duration)
-{
-	mutex_lock(&qsee_bw_mutex);
-	qseecom.bw_scale_down_timer.expires = jiffies +
-		msecs_to_jiffies(duration);
-	mod_timer(&(qseecom.bw_scale_down_timer),
-		qseecom.bw_scale_down_timer.expires);
-	qseecom.timer_running = true;
-	mutex_unlock(&qsee_bw_mutex);
-}
-
 static void __qseecom_disable_clk_scale_down(struct qseecom_dev_handle *data)
 {
 	if (!qseecom.support_bus_scaling)
@@ -3292,61 +3281,6 @@ static int qseecom_send_resp(void)
 	return 0;
 }
 
-static int __validate_send_modfd_resp_inputs(struct qseecom_dev_handle *data,
-			struct qseecom_send_modfd_listener_resp *resp,
-			struct qseecom_registered_listener_list *this_lstnr)
-{
-	int i;
-
-	if (!data || !resp || !this_lstnr) {
-		pr_err("listener handle or resp msg is null\n");
-		return -EINVAL;
-	}
-
-	if (resp->resp_buf_ptr == NULL) {
-		pr_err("resp buffer is null\n");
-		return -EINVAL;
-	}
-	/* validate resp buf length */
-	if ((resp->resp_len == 0) ||
-			(resp->resp_len > this_lstnr->sb_length)) {
-		pr_err("resp buf length %d not valid\n", resp->resp_len);
-		return -EINVAL;
-	}
-
-	if ((uintptr_t)resp->resp_buf_ptr > (ULONG_MAX - resp->resp_len)) {
-		pr_err("Integer overflow in resp_len & resp_buf\n");
-		return -EINVAL;
-	}
-	if ((uintptr_t)this_lstnr->user_virt_sb_base >
-					(ULONG_MAX - this_lstnr->sb_length)) {
-		pr_err("Integer overflow in user_virt_sb_base & sb_length\n");
-		return -EINVAL;
-	}
-	/* validate resp buf */
-	if (((uintptr_t)resp->resp_buf_ptr <
-		(uintptr_t)this_lstnr->user_virt_sb_base) ||
-		((uintptr_t)resp->resp_buf_ptr >=
-		((uintptr_t)this_lstnr->user_virt_sb_base +
-				this_lstnr->sb_length)) ||
-		(((uintptr_t)resp->resp_buf_ptr + resp->resp_len) >
-		((uintptr_t)this_lstnr->user_virt_sb_base +
-						this_lstnr->sb_length))) {
-		pr_err("resp buf is out of shared buffer region\n");
-		return -EINVAL;
-	}
-
-	/* validate offsets */
-	for (i = 0; i < MAX_ION_FD; i++) {
-		if (resp->ifd_data[i].cmd_buf_offset >= resp->resp_len) {
-			pr_err("Invalid offset %d = 0x%x\n",
-				i, resp->ifd_data[i].cmd_buf_offset);
-			return -EINVAL;
-		}
-	}
-
-	return 0;
-}
 
 static int __validate_send_modfd_resp_inputs(struct qseecom_dev_handle *data,
 			struct qseecom_send_modfd_listener_resp *resp,
@@ -5381,7 +5315,6 @@ long qseecom_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	}
 	case QSEECOM_IOCTL_APP_LOADED_QUERY_REQ: {
 		data->type = QSEECOM_CLIENT_APP;
-		pr_debug("APP_LOAD_QUERY: qseecom_addr = 0x%x\n", (u32)data);
 		mutex_lock(&app_access_lock);
 		atomic_inc(&data->ioctl_count);
 		pr_debug("APP_LOAD_QUERY: qseecom_addr = 0x%pK\n", data);
@@ -5862,17 +5795,6 @@ static int qseecom_check_whitelist_feature(void)
 	return version >= MAKE_WHITELIST_VERSION(1, 0, 0);
 }
 
-/*
- * Check whitelist feature, and if TZ feature version is < 1.0.0,
- * then whitelist feature is not supported.
- */
-static int qseecom_check_whitelist_feature(void)
-{
-	int version = scm_get_feat_version(FEATURE_ID_WHITELIST);
-
-	return version >= MAKE_WHITELIST_VERSION(1, 0, 0);
-}
-
 static int qseecom_probe(struct platform_device *pdev)
 {
 	int rc;
@@ -5901,7 +5823,6 @@ static int qseecom_probe(struct platform_device *pdev)
 	qseecom.ce_drv.ce_clk = NULL;
 	qseecom.ce_drv.ce_core_src_clk = NULL;
 	qseecom.ce_drv.ce_bus_clk = NULL;
-	qseecom.whitelist_support = true;
 
 	qseecom.ce_ice.instance = CLK_INVALID;
 	qseecom.ce_ice.ce_core_clk = NULL;

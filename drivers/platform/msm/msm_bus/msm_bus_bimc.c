@@ -1853,33 +1853,6 @@ static void init_health_regs(struct msm_bus_bimc_info *binfo,
 	}
 }
 
-static void init_health_regs(struct msm_bus_bimc_info *binfo,
-					struct msm_bus_inode_info *info,
-					struct msm_bus_bimc_qos_mode *qmode,
-					int mode)
-{
-	int i;
-
-	if (mode == BIMC_QOS_MODE_LIMITER) {
-		qmode->rl.qhealth[0].limit_commands = 1;
-		qmode->rl.qhealth[1].limit_commands = 0;
-		qmode->rl.qhealth[2].limit_commands = 0;
-		qmode->rl.qhealth[3].limit_commands = 0;
-
-		if (!info->node_info->qport) {
-			MSM_BUS_DBG("No QoS Ports to init\n");
-			return;
-		}
-
-		for (i = 0; i < info->node_info->num_mports; i++) {
-			/* If not in bypass mode, update priority */
-			if (mode != BIMC_QOS_MODE_BYPASS)
-				msm_bus_bimc_set_qos_prio(binfo,
-				info->node_info->qport[i], mode, qmode);
-		}
-	}
-}
-
 
 static int msm_bus_bimc_mas_init(struct msm_bus_bimc_info *binfo,
 	struct msm_bus_inode_info *info)

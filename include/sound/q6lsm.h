@@ -57,7 +57,6 @@ struct lsm_lab_hw_params {
 };
 
 struct lsm_client {
-	enum lsm_snd_model_in_use snd_model_ver_inuse;
 	int		session;
 	lsm_app_cb	cb;
 	atomic_t	cmd_state;
@@ -196,30 +195,6 @@ struct lsm_cmd_set_gain {
 	struct lsm_set_params_hdr param_hdr;
 	struct lsm_param_gain lsm_gain;
 } __packed;
-
-struct lsm_params_payload_v2 {
-	struct lsm_param_connect_to_port	connect_to_port;
-	struct lsm_param_op_mode		op_mode;
-} __packed;
-
-struct lsm_cmd_set_params_conf_v2 {
-	struct apr_hdr  hdr;
-	uint32_t	data_payload_size;
-	uint32_t	data_payload_addr_lsw;
-	uint32_t	data_payload_addr_msw;
-	uint32_t	mem_map_handle;
-	struct lsm_param_min_confidence_levels	conf_payload;
-} __packed;
-
-struct lsm_cmd_set_params_v2 {
-	struct apr_hdr  hdr;
-	uint32_t	data_payload_size;
-	uint32_t	data_payload_addr_lsw;
-	uint32_t	data_payload_addr_msw;
-	uint32_t	mem_map_handle;
-	struct lsm_params_payload_v2	payload;
-} __packed;
-
 
 struct lsm_cmd_reg_snd_model {
 	struct apr_hdr	hdr;

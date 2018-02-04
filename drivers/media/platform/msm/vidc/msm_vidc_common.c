@@ -1112,9 +1112,7 @@ static void handle_sys_error(enum command_response cmd, void *data)
 {
 	struct msm_vidc_cb_cmd_done *response = data;
 	struct msm_vidc_core *core = NULL;
-	struct sys_err_handler_data *handler = NULL;
 	struct hfi_device *hdev = NULL;
-	struct msm_vidc_inst *inst = NULL;
 	int rc = 0;
 
 	subsystem_crashed("venus");
@@ -1452,7 +1450,6 @@ static void handle_fbd(enum command_response cmd, void *data)
 	enum hal_buffer buffer_type;
 	int extra_idx = 0;
 	int64_t time_usec = 0;
-	int rc = 0;
 
 	if (!response) {
 		dprintk(VIDC_ERR, "Invalid response from vidc_hal\n");
@@ -1567,14 +1564,6 @@ static void handle_fbd(enum command_response cmd, void *data)
 			break;
 		default:
 			break;
-		}
-		if (msm_vidc_dcvs_mode && inst->dcvs_mode) {
-			msm_comm_monitor_ftb(inst);
-			rc = msm_comm_scale_clocks_dcvs(inst, true);
-			if (rc)
-				dprintk(VIDC_WARN,
-					"%s: Failed to scale clocks in DCVS: %d\n",
-					__func__, rc);
 		}
 		inst->count.fbd++;
 		if (fill_buf_done->filled_len1)
@@ -3785,40 +3774,6 @@ void msm_comm_flush_pending_dynamic_buffers(struct msm_vidc_inst *inst)
 	mutex_unlock(&inst->registeredbufs.lock);
 }
 
-void msm_comm_flush_pending_dynamic_buffers(struct msm_vidc_inst *inst)
-{
-	struct buffer_info *binfo = NULL;
-	struct list_head *list = NULL;
-
-	if (!inst)
-		return;
-
-	if (inst->buffer_mode_set[CAPTURE_PORT] != HAL_BUFFER_MODE_DYNAMIC)
-		return;
-
-	if (list_empty(&inst->pendingq) || list_empty(&inst->registered_bufs))
-		return;
-
-	list = &inst->registered_bufs;
-
-	/*
-	* Dynamic Buffer mode - Since pendingq is not empty
-	* no output buffers have been sent to firmware yet.
-	* Hence remove reference to all pendingq o/p buffers
-	* before flushing them.
-	*/
-
-	list_for_each_entry(binfo, list, list) {
-		if (binfo && binfo->type ==
-			V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
-			dprintk(VIDC_DBG,
-				"%s: binfo = %pK device_addr = 0x%pa\n",
-				__func__, binfo, &binfo->device_addr[0]);
-			buf_ref_put(inst, binfo);
-		}
-	}
-}
-
 int msm_comm_flush(struct msm_vidc_inst *inst, u32 flags)
 {
 	int rc =  0;
@@ -4169,84 +4124,6 @@ int msm_vidc_check_scaling_supported(struct msm_vidc_inst *inst)
 	return 0;
 }
 
-static int msm_comm_check_dcvs_supported(struct msm_vidc_inst *inst)
-{
-	int rc = 0;
-	int num_mbs_per_frame = 0;
-	int instance_count = 0;
-	bool codec_supported = false;
-	struct msm_vidc_inst *temp = NULL;
-	struct msm_vidc_core *core;
-	enum hal_video_codec codec;
-	struct hal_buffer_requirements *output_buf_req;
-	struct dcvs_stats *dcvs;
-
-	if (!inst || !inst->core || !inst->core->device) {
-		dprintk(VIDC_WARN, "%s: Invalid parameter\n", __func__);
-		return -EINVAL;
-	}
-
-	core = inst->core;
-	dcvs = &inst->dcvs;
-	instance_count = msm_comm_count_active_instances(core);
-
-	if (instance_count == 1 && inst->session_type == MSM_VIDC_DECODER) {
-
-		mutex_lock(&inst->lock);
-		num_mbs_per_frame = msm_comm_get_mbs_per_frame(inst);
-		output_buf_req = get_buff_req_buffer(inst,
-			msm_comm_get_hal_output_buffer(inst));
-		mutex_unlock(&inst->lock);
-
-		codec = get_hal_codec_type(inst->fmts[OUTPUT_PORT]->fourcc);
-		codec_supported = (codec == HAL_VIDEO_CODEC_H264);
-		if (!(codec_supported &&
-			IS_VALID_DCVS_SESSION(num_mbs_per_frame,
-				DCVS_MIN_SUPPORTED_MBPERFRAME)))
-				return -ENOTSUPP;
-
-		if (!output_buf_req) {
-			dprintk(VIDC_ERR,
-				"%s: No buffer requirement for buffer type %x\n",
-				__func__, HAL_BUFFER_OUTPUT);
-			return -EINVAL;
-		}
-		if (inst->count.ftb - dcvs->prev_ftb_count >
-			output_buf_req->buffer_count_actual)
-				dcvs->prev_ftb_count = inst->count.ftb;
-	} else {
-		rc = -ENOTSUPP;
-		/*
-		*.For multiple instance use case with 4K, clocks will be scaled
-		* as per load in streamon, but the clocks may be scaled
-		* down as DCVS is running for first playback instance
-		* Rescaling the core clock for multiple instance use case
-		*/
-		if (!dcvs->is_clock_scaled) {
-			if (!msm_comm_scale_clocks(core)) {
-				dcvs->is_clock_scaled = true;
-				dprintk(VIDC_DBG,
-					"%s: Scaled clocks = %d\n",
-					__func__, dcvs->is_clock_scaled);
-			} else {
-				dprintk(VIDC_DBG,
-					"%s: Failed to Scale clocks. Perf might be impacted\n",
-					__func__);
-			}
-		}
-		/*
-		* For multiple instance use case turn OFF DCVS algorithm
-		* immediately
-		*/
-		if (instance_count > 1) {
-			mutex_lock(&core->lock);
-			list_for_each_entry(temp, &core->instances, list)
-				temp->dcvs_mode = false;
-			mutex_unlock(&core->lock);
-		}
-	}
-	return rc;
-}
 int msm_vidc_check_session_supported(struct msm_vidc_inst *inst)
 {
 	struct msm_vidc_core_capability *capability;

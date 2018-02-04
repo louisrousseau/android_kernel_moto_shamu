@@ -1181,9 +1181,8 @@ int msm_vdec_s_fmt(struct msm_vidc_inst *inst, struct v4l2_format *f)
 	int i;
 	struct hal_buffer_requirements *bufreq;
 	int max_input_size = 0;
-	struct hfi_device *hdev;
 
-	if (!inst || !f || !inst->core || !inst->core->device) {
+	if (!inst || !f) {
 		dprintk(VIDC_ERR, "%s invalid parameters\n", __func__);
 		return -EINVAL;
 	}
