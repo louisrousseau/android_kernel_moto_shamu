@@ -1,5 +1,4 @@
-/*
- * Copyright (c) 2014 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -9,18 +8,20 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
  */
-#ifndef ADSPRPC_COMPAT_H
-#define ADSPRPC_COMPAT_H
 
-#ifdef CONFIG_COMPAT
+#ifndef DIAGFWD_SDIO_H
+#define DIAGFWD_SDIO_H
 
-long compat_fastrpc_device_ioctl(struct file *filp, unsigned int cmd,
-				unsigned long arg);
-#else
+#include <mach/sdio_al.h>
+#define N_MDM_SDIO_WRITE	1 /* Upgrade to 2 with ping pong buffer */
+#define N_MDM_SDIO_READ	1
 
-#define compat_fastrpc_device_ioctl	NULL
+void diagfwd_sdio_init(void);
+void diagfwd_sdio_exit(void);
+int diagfwd_connect_sdio(void);
+int diagfwd_disconnect_sdio(void);
+int diagfwd_read_complete_sdio(void);
+int diagfwd_write_complete_sdio(void);
 
-#endif /* CONFIG_COMPAT */
-#endif /* ADSPRPC_COMPAT_H */
+#endif
