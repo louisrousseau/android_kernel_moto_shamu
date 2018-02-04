@@ -532,20 +532,6 @@ struct gpio_config_data {
 };
 
 /**
- *  gpio_config_data - gpio configuration data
- *  @source_sel - source selection
- *  @mode_ctrl - mode control
- *  @vin_ctrl - input control
- *  @enable - flag indicating LED on or off
- */
-struct gpio_config_data {
-	u8	source_sel;
-	u8	mode_ctrl;
-	u8	vin_ctrl;
-	bool	enable;
-};
-
-/**
  * struct qpnp_led_data - internal led data structure
  * @led_classdev - led class device
  * @delayed_work - delayed work for turning off the LED
