@@ -26,7 +26,6 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
-#include <linux/clk.h>
 
 #include <linux/fsm_rfic.h>
 
@@ -92,7 +91,7 @@ static void reset_msbcal(void)
 {
 	int read_data;
 	int i;
-	void __iomem *dac_base = bbif_base + COMBODAC_CSR;
+	unsigned int dac_base = (unsigned int) bbif_base + COMBODAC_CSR;
 	pr_debug("%s: COMBODAC MSB CAL  Reset Module\n", __func__);
 
 	/*  RESET COMBODAC 0 - 4 */
@@ -128,7 +127,7 @@ static void reset_dccal(void)
 {
 	int read_data;
 	int i;
-	void __iomem *dac_base = bbif_base + COMBODAC_CSR;
+	unsigned int dac_base = (unsigned int) bbif_base + COMBODAC_CSR;
 
 	pr_debug("%s: COMBODAC DCCAL  Reset Module\n", __func__);
 
@@ -168,7 +167,7 @@ static void set_combodac_cfg(int config_type)
 	int wdata = 0;
 	int config_0, config_1;
 	int i;
-	void __iomem *dac_base = bbif_base + COMBODAC_CSR;
+	unsigned int dac_base = (unsigned int) bbif_base + COMBODAC_CSR;
 
 	pr_debug("%s: ComboDAC0-1 Config Module\n", __func__);
 
@@ -209,31 +208,23 @@ static int bbif_release(struct inode *inode, struct file *file)
 static long bbif_ioctl(struct file *file,
 	unsigned int cmd, unsigned long arg)
 {
-	void __iomem *argp = (void __iomem *) arg;
-	void __iomem *bbif_adc_base;
-	bbif_adc_base = bbif_base + BBIF_MISC;
+	unsigned int __user *argp = (unsigned int __user *) arg;
 
 	switch (cmd) {
 	case BBIF_IOCTL_GET:
 		{
 			struct bbif_param param;
 
-			if (copy_from_user(&param, argp, sizeof(param))) {
-				pr_err("%s: copy_from_user error\n", __func__);
+			if (copy_from_user(&param, argp, sizeof(param)))
 				return -EFAULT;
-			}
 
-			if (param.offset > BBIF_MAX_OFFSET) {
-				pr_err("%s: Exceeds max offset\n", __func__);
+			if (param.offset > BBIF_MAX_OFFSET)
 				return -EFAULT;
-			}
 
-			param.value = __raw_readl(bbif_adc_base + param.offset);
+			param.value = __raw_readl(bbif_base + param.offset);
 
-			if (copy_to_user(argp, &param, sizeof(param))) {
-				pr_err("%s: copy_to_user error\n", __func__);
+			if (copy_to_user(argp, &param, sizeof(param)))
 				return -EFAULT;
-			}
 		}
 		break;
 
@@ -241,35 +232,28 @@ static long bbif_ioctl(struct file *file,
 		{
 			struct bbif_param param;
 
-			if (copy_from_user(&param, argp, sizeof(param))) {
-				pr_err("%s: copy_from_user error\n", __func__);
+			if (copy_from_user(&param, argp, sizeof(param)))
 				return -EFAULT;
-			}
 
-			if (param.offset > BBIF_MAX_OFFSET) {
-				pr_err("%s: Exceeds max offset\n", __func__);
+			if (param.offset > BBIF_MAX_OFFSET)
 				return -EFAULT;
-			}
 
-			__raw_writel(param.value, bbif_adc_base +
-					param.offset);
+			__raw_writel(param.value, (unsigned int)bbif_base +
+				param.offset);
 			mb();
 		}
-		break;
 
 	case BBIF_IOCTL_SET_ADC_BW:
 		{
+			unsigned int bbif_adc_base;
 			struct bbif_bw_config param;
 
-			if (copy_from_user(&param, argp, sizeof(param))) {
-				pr_err("%s: copy_from_user error\n", __func__);
+			bbif_adc_base = (unsigned int)bbif_base + BBIF_MISC;
+			if (copy_from_user(&param, argp, sizeof(param)))
 				return -EFAULT;
-			}
 
-			if (param.adc_number > BBIF_MAX_ADC) {
-				pr_err("%s: Exceeds max offset\n", __func__);
+			if (param.adc_number > BBIF_MAX_ADC)
 				return -EFAULT;
-			}
 
 			__raw_writel(param.bbrx_test1, bbif_adc_base +
 				BBIF_BBRX_TEST1_BASE + param.adc_number*4);
@@ -280,33 +264,8 @@ static long bbif_ioctl(struct file *file,
 			__raw_writel(param.bbrx_config, bbif_adc_base +
 				BBIF_BBRX_CONFIG_BASE + param.adc_number*4);
 		}
-		break;
-
-	case BBIF_IOCTL_SET_ADC_CLK:
-		{
-			unsigned int rate;
-
-			if (copy_from_user(&rate, argp, sizeof(unsigned int))) {
-				pr_err("%s: Invalid rate %d\n", __func__, rate);
-				return -EFAULT;
-			}
-
-			switch (rate) {
-			case 1:
-				mpll10_326_clk_init();
-				break;
-			case 2:
-				mpll10_345_clk_init();
-				break;
-			default:
-				pr_err("%s: Unknown ADC RATE\n", __func__);
-				break;
-			}
-		}
-	break;
 
 	default:
-		pr_err("%s: Invalid IOCTL\n", __func__);
 		return -EINVAL;
 	}
 
@@ -366,7 +325,7 @@ static int bbif_probe(struct platform_device *pdev)
 	struct resource *mem_res;
 	int ret;
 	int i;
-	void __iomem *bbif_misc_base;
+	unsigned int bbif_misc_base;
 
 	pr_debug("%s: Entry\n", __func__);
 
@@ -386,7 +345,7 @@ static int bbif_probe(struct platform_device *pdev)
 	}
 
 	/*ADC config */
-	bbif_misc_base = bbif_base + BBIF_MISC;
+	bbif_misc_base = (unsigned int)bbif_base + BBIF_MISC;
 
 	__raw_writel(SIGMA_DELTA_VAL_0, bbif_misc_base +
 		BBIF_MAP_SIGMA_DELTA_0);
@@ -465,7 +424,7 @@ void __exit bbif_exit(void)
 }
 
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("Qualcomm Technologies, Inc. fsm9900 BBIF driver");
+MODULE_DESCRIPTION("Qualcomm fsm9900 BBIF driver");
 
 module_init(bbif_init);
 module_exit(bbif_exit);

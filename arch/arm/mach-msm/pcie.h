@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,7 +27,6 @@
 #define MSM_PCIE_MAX_PIPE_CLK 1
 
 #define MAX_RC_NUM 2
-#define MAX_DEVICE_NUM 20
 
 #ifdef CONFIG_ARM_LPAE
 #define PCIE_UPPER_ADDR(addr) ((u32)((addr) >> 32))
@@ -41,42 +40,19 @@
 #define PCIE_LOG_PAGES (50)
 
 #define PCIE_DBG(dev, fmt, arg...) do {			 \
-	if ((dev) && (dev)->ipc_log_long)   \
-		ipc_log_string((dev)->ipc_log_long, \
-			"DBG1:%s: " fmt, __func__, arg); \
 	if ((dev) && (dev)->ipc_log)   \
 		ipc_log_string((dev)->ipc_log, "%s: " fmt, __func__, arg); \
 	if (msm_pcie_get_debug_mask())   \
 		pr_alert("%s: " fmt, __func__, arg);              \
 	} while (0)
 
-#define PCIE_DBG2(dev, fmt, arg...) do {			 \
-	if ((dev) && (dev)->ipc_log)   \
-		ipc_log_string((dev)->ipc_log, "DBG2:%s: " fmt, __func__, arg);\
-	if (msm_pcie_get_debug_mask())   \
-		pr_alert("%s: " fmt, __func__, arg);              \
-	} while (0)
-
-#define PCIE_DBG3(dev, fmt, arg...) do {			 \
-	if ((dev) && (dev)->ipc_log)   \
-		ipc_log_string((dev)->ipc_log, "DBG3:%s: " fmt, __func__, arg);\
-	if (msm_pcie_get_debug_mask())   \
-		pr_alert("%s: " fmt, __func__, arg);              \
-	} while (0)
-
 #define PCIE_INFO(dev, fmt, arg...) do {			 \
-	if ((dev) && (dev)->ipc_log_long)   \
-		ipc_log_string((dev)->ipc_log_long, \
-			"INFO:%s: " fmt, __func__, arg); \
 	if ((dev) && (dev)->ipc_log)   \
 		ipc_log_string((dev)->ipc_log, "%s: " fmt, __func__, arg); \
 	pr_info("%s: " fmt, __func__, arg);  \
 	} while (0)
 
 #define PCIE_ERR(dev, fmt, arg...) do {			 \
-	if ((dev) && (dev)->ipc_log_long)   \
-		ipc_log_string((dev)->ipc_log_long, \
-			"ERR:%s: " fmt, __func__, arg); \
 	if ((dev) && (dev)->ipc_log)   \
 		ipc_log_string((dev)->ipc_log, "%s: " fmt, __func__, arg); \
 	pr_err("%s: " fmt, __func__, arg);  \
@@ -179,15 +155,6 @@ struct msm_pcie_irq_info_t {
 	uint32_t          num;
 };
 
-/* PCIe device info structure */
-struct msm_pcie_device_info {
-	u32			bdf;
-	struct pci_dev		*dev;
-	int			domain;
-	void __iomem		*conf_base;
-	unsigned long		phy_address;
-};
-
 /* msm pcie device structure */
 struct msm_pcie_dev_t {
 	struct platform_device       *pdev;
@@ -241,7 +208,6 @@ struct msm_pcie_dev_t {
 	bool                         l1ss_supported;
 	bool                         aux_clk_sync;
 	uint32_t                     n_fts;
-	bool                         ext_ref_clk;
 	uint32_t                     ep_latency;
 	bool                         ep_wakeirq;
 
@@ -254,16 +220,12 @@ struct msm_pcie_dev_t {
 	ulong                        linkdown_counter;
 	bool                         suspending;
 	ulong                        wake_counter;
-	ulong                        req_exit_l1_counter;
-	struct msm_pcie_device_info  pcidev_table[MAX_DEVICE_NUM];
-	u32			     current_bdf;
-	u32		ep_shadow[MAX_DEVICE_NUM][PCIE_CONF_SPACE_DW];
+	u32			     ep_shadow[PCIE_CONF_SPACE_DW];
 	u32                          rc_shadow[PCIE_CONF_SPACE_DW];
 	bool                         shadow_en;
 	struct msm_pcie_register_event *event_reg;
 	bool                         power_on;
 	void                         *ipc_log;
-	void                         *ipc_log_long;
 };
 
 extern int msm_pcie_enumerate(u32 rc_idx);
@@ -276,7 +238,7 @@ extern int32_t msm_pcie_wake_irq_init(struct msm_pcie_dev_t *dev);
 extern void msm_pcie_irq_deinit(struct msm_pcie_dev_t *dev);
 extern int msm_pcie_get_debug_mask(void);
 extern bool msm_pcie_confirm_linkup(struct msm_pcie_dev_t *dev,
-			bool check_sw_stts, bool check_ep);
+		bool check_sw_stts, bool check_ep);
 
 extern void pcie_phy_init(struct msm_pcie_dev_t *dev);
 extern bool pcie_phy_is_ready(struct msm_pcie_dev_t *dev);

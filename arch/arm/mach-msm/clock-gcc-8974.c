@@ -1117,8 +1117,8 @@ static struct rcg_clk pdm2_clk_src = {
 	},
 };
 
-/* For MSM8974Pro SDCC1 */
-static struct clk_freq_tbl ftbl_gcc_sdcc1_apps_clk_pro[] = {
+/* This table is for MSM8974Pro AC SDCC1 */
+static struct clk_freq_tbl ftbl_gcc_sdcc1_apps_clk_ac[] = {
 	F(   144000,    cxo,  16,   3,  25),
 	F(   400000,    cxo,  12,   1,   4),
 	F( 20000000,  gpll0,  15,   1,   2),
@@ -1130,7 +1130,11 @@ static struct clk_freq_tbl ftbl_gcc_sdcc1_apps_clk_pro[] = {
 	F_END
 };
 
-/* For SDCC1 on MSM8974 v2 and SDCC[2-4] on all MSM8974 */
+/*
+ * This table is for:
+ * 1) SDCC[1-4] on MSM8974Pro AB, MSM8974 v2 and before
+ * 2) SDCC[2-4] on MSM8974Pro AC
+ */
 static struct clk_freq_tbl ftbl_gcc_sdcc1_4_apps_clk[] = {
 	F(   144000,    cxo,  16,   3,  25),
 	F(   400000,    cxo,  12,   1,   4),
@@ -1218,7 +1222,6 @@ static struct rcg_clk tsif_ref_clk_src = {
 };
 
 static struct clk_freq_tbl ftbl_gcc_usb30_mock_utmi_clk[] = {
-	F(48000000,  gpll0, 12.5,   0,   0),
 	F(60000000,  gpll0,   10,   0,   0),
 	F_END
 };
@@ -2262,16 +2265,11 @@ static struct clk_mux_ops gcc_debug_mux_ops;
 static struct mux_clk gcc_debug_mux = {
 	.priv = &debug_mux_priv,
 	.ops = &gcc_debug_mux_ops,
+	.rec_set_par = 1,
 	.offset = GCC_DEBUG_CLK_CTL_REG,
-	.mask = 0x1FF,
-	.en_offset = GCC_DEBUG_CLK_CTL_REG,
 	.en_mask = BIT(16),
+	.mask = 0x1FF,
 	.base = &virt_bases[GCC_BASE],
-	MUX_REC_SRC_LIST(
-		&kpss_debug_clk.c,
-		&mmss_debug_clk.c,
-		&rpm_debug_clk.c,
-	),
 	MUX_SRC_LIST(
 		{&kpss_debug_clk.c,		 0x016A},
 		{&mmss_debug_clk.c,		 0x002c},
@@ -2359,7 +2357,7 @@ static struct mux_clk gcc_debug_mux = {
 	.c = {
 		.dbg_name = "gcc_debug_mux",
 		.ops = &clk_ops_debug_mux,
-		.flags = CLKFLAG_NO_RATE_CACHE | CLKFLAG_MEASURE,
+		.flags = CLKFLAG_NO_RATE_CACHE,
 		CLK_INIT(gcc_debug_mux.c),
 	},
 };
@@ -2463,22 +2461,10 @@ static struct clk_lookup msm_clocks_gcc_8974[] = {
 	CLK_LOOKUP_OF("bus_clk",      gcc_ce1_axi_clk,     "mcd"),
 	CLK_LOOKUP_OF("core_clk_src", ce1_clk_src,         "mcd"),
 
-	/* Crypto clocks */
-	CLK_LOOKUP_OF("scm_core_clk", gcc_ce1_clk, "fe200000.qcom,lpass"),
-	CLK_LOOKUP_OF("scm_iface_clk", gcc_ce1_ahb_clk, "fe200000.qcom,lpass"),
-	CLK_LOOKUP_OF("scm_bus_clk", gcc_ce1_axi_clk, "fe200000.qcom,lpass"),
-	CLK_LOOKUP_OF("scm_core_clk_src", ce1_clk_src, "fe200000.qcom,lpass"),
-
-	CLK_LOOKUP_OF("scm_core_clk", gcc_ce1_clk, "fb21b000.qcom,pronto"),
-	CLK_LOOKUP_OF("scm_iface_clk", gcc_ce1_ahb_clk,
-						"fb21b000.qcom,pronto"),
-	CLK_LOOKUP_OF("scm_bus_clk",  gcc_ce1_axi_clk, "fb21b000.qcom,pronto"),
-	CLK_LOOKUP_OF("scm_core_clk_src", ce1_clk_src, "fb21b000.qcom,pronto"),
-
-	CLK_LOOKUP_OF("scm_core_clk", gcc_ce1_clk, "fdce0000.qcom,venus"),
-	CLK_LOOKUP_OF("scm_iface_clk", gcc_ce1_ahb_clk, "fdce0000.qcom,venus"),
-	CLK_LOOKUP_OF("scm_bus_clk", gcc_ce1_axi_clk, "fdce0000.qcom,venus"),
-	CLK_LOOKUP_OF("scm_core_clk_src", ce1_clk_src, "fdce0000.qcom,venus"),
+	CLK_LOOKUP_OF("core_clk",     gcc_ce1_clk,         "scm"),
+	CLK_LOOKUP_OF("iface_clk",    gcc_ce1_ahb_clk,     "scm"),
+	CLK_LOOKUP_OF("bus_clk",      gcc_ce1_axi_clk,     "scm"),
+	CLK_LOOKUP_OF("core_clk_src", ce1_clk_src,         "scm"),
 
 	CLK_LOOKUP_OF("core_clk", gcc_gp1_clk, ""),
 	CLK_LOOKUP_OF("core_clk", gcc_gp2_clk, ""),
@@ -2505,16 +2491,14 @@ static struct clk_lookup msm_clocks_gcc_8974[] = {
 	CLK_LOOKUP_OF("core_clk", gcc_usb30_master_clk,    "f92f8800.hsphy"),
 	CLK_LOOKUP_OF("core_clk", gcc_usb30_master_clk,    "f92f8800.ssphy"),
 	CLK_LOOKUP_OF("core_clk", gcc_usb30_master_clk,    "msm_dwc3"),
-	CLK_LOOKUP_OF("utmi_clk_src", usb30_mock_utmi_clk_src, "msm_dwc3"),
 	CLK_LOOKUP_OF("utmi_clk", gcc_usb30_mock_utmi_clk, "msm_dwc3"),
 	CLK_LOOKUP_OF("iface_clk", gcc_sys_noc_usb3_axi_clk, "msm_dwc3"),
 	CLK_LOOKUP_OF("iface_clk", gcc_sys_noc_usb3_axi_clk, "msm_usb3"),
 	CLK_LOOKUP_OF("sleep_clk", gcc_usb30_sleep_clk, "msm_dwc3"),
-	CLK_LOOKUP_OF("phy_sleep_clk", gcc_usb2a_phy_sleep_clk,
-			"f92f8800.hsphy"),
+	CLK_LOOKUP_OF("sleep_a_clk", gcc_usb2a_phy_sleep_clk, "msm_dwc3"),
+	CLK_LOOKUP_OF("sleep_b_clk", gcc_usb2b_phy_sleep_clk, "msm_dwc3"),
 	CLK_LOOKUP_OF("iface_clk", gcc_usb_hs_ahb_clk,     "msm_otg"),
 	CLK_LOOKUP_OF("core_clk", gcc_usb_hs_system_clk,   "msm_otg"),
-	CLK_LOOKUP_OF("sleep_clk", gcc_usb2b_phy_sleep_clk, "msm_otg"),
 	CLK_LOOKUP_OF("iface_clk", gcc_usb_hsic_ahb_clk,  "msm_hsic_host"),
 	CLK_LOOKUP_OF("phy_clk", gcc_usb_hsic_clk,	  "msm_hsic_host"),
 	CLK_LOOKUP_OF("cal_clk", gcc_usb_hsic_io_cal_clk,  "msm_hsic_host"),
@@ -2542,6 +2526,8 @@ static struct clk_lookup msm_clocks_gcc_8974[] = {
 
 static struct clk_lookup msm_clocks_gcc_8974_only[] = {
 	/* Camera Sensor clocks */
+	CLK_LOOKUP_OF("cam_src_clk", gp1_clk_src, "6c.qcom,camera"),
+	CLK_LOOKUP_OF("cam_clk", gcc_gp1_clk, "6c.qcom,camera"),
 	CLK_LOOKUP_OF("cam_src_clk", gp1_clk_src, "2.qcom,camera"),
 	CLK_LOOKUP_OF("cam_clk", gcc_gp1_clk, "2.qcom,camera"),
 };
@@ -2571,7 +2557,7 @@ void msm8974_v2_clock_override(void)
 		qup_i2c_clks[i][0]->parent =  qup_i2c_clks[i][1];
 }
 
-/* v2 to Pro clock changes */
+/* v2 to v3 clock changes */
 void msm8974_pro_clock_override(bool ac)
 {
 	ce1_clk_src.c.fmax[VDD_DIG_LOW] = 75000000;
@@ -2581,9 +2567,11 @@ void msm8974_pro_clock_override(bool ac)
 	ce2_clk_src.c.fmax[VDD_DIG_NOMINAL] = 150000000;
 	ce2_clk_src.freq_tbl = ftbl_gcc_ce2_pro_clk;
 
-	sdcc1_apps_clk_src.c.fmax[VDD_DIG_LOW] = 200000000;
-	sdcc1_apps_clk_src.c.fmax[VDD_DIG_NOMINAL] = 400000000;
-	sdcc1_apps_clk_src.freq_tbl = ftbl_gcc_sdcc1_apps_clk_pro;
+	if (ac) {
+		sdcc1_apps_clk_src.c.fmax[VDD_DIG_LOW] = 200000000;
+		sdcc1_apps_clk_src.c.fmax[VDD_DIG_NOMINAL] = 400000000;
+		sdcc1_apps_clk_src.freq_tbl = ftbl_gcc_sdcc1_apps_clk_ac;
+	}
 }
 
 static struct of_device_id msm_clock_gcc_match_table[] = {
@@ -2652,7 +2640,6 @@ static int msm_gcc_8974_probe(struct platform_device *pdev)
 				GCC_REG_BASE(APCS_CLOCK_BRANCH_ENA_VOTE));
 		writel_relaxed(regval | BIT(26) | BIT(25),
 				GCC_REG_BASE(APCS_CLOCK_BRANCH_ENA_VOTE));
-		gcc_usb30_mock_utmi_clk.max_div = 3;
 		msm8974_v2_clock_override();
 	}
 
@@ -2710,7 +2697,7 @@ static int msm_gcc_8974_probe(struct platform_device *pdev)
 static struct platform_driver msm_clock_gcc_driver = {
 	.probe = msm_gcc_8974_probe,
 	.driver = {
-		.name = "qcom,gcc-8974",
+		.name = "gcc",
 		.of_match_table = msm_clock_gcc_match_table,
 		.owner = THIS_MODULE,
 	},
@@ -2772,7 +2759,7 @@ static int msm_clock_debug_8974_probe(struct platform_device *pdev)
 static struct platform_driver msm_clock_debug_driver = {
 	.probe = msm_clock_debug_8974_probe,
 	.driver = {
-		.name = "qcom,cc-debug-8974",
+		.name = "cc-debug",
 		.of_match_table = msm_clock_debug_match_table,
 		.owner = THIS_MODULE,
 	},

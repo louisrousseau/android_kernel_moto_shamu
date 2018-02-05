@@ -134,9 +134,8 @@ static DEFINE_CLK_BRANCH_VOTER(cxo_lpm_clk, &cxo_clk_src.c);
 static struct mux_clk rpm_debug_mux = {
 	.ops = &mux_reg_ops,
 	.offset = GCC_DEBUG_CLK_CTL_REG,
-	.mask = 0x1FF,
-	.en_offset = GCC_DEBUG_CLK_CTL_REG,
 	.en_mask = BIT(16),
+	.mask = 0x1FF,
 	.base = &virt_base,
 	MUX_SRC_LIST(
 	{&cnoc_clk.c, 0x0008},
@@ -305,9 +304,7 @@ static int msm_rpmcc_8974_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	ret = enable_rpm_scaling();
-	if (ret < 0)
-		return ret;
+	enable_rpm_scaling();
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cc_base");
 	if (!res) {
@@ -352,7 +349,7 @@ static int msm_rpmcc_8974_probe(struct platform_device *pdev)
 static struct platform_driver msm_clock_rpm_driver = {
 	.probe = msm_rpmcc_8974_probe,
 	.driver = {
-		.name = "qcom,rpmcc-8974",
+		.name = "rpmcc",
 		.of_match_table = msm_clock_rpm_match_table,
 		.owner = THIS_MODULE,
 	},

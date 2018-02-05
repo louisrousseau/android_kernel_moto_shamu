@@ -25,12 +25,11 @@
 #include <linux/clkdev.h>
 #include <linux/of_platform.h>
 #include <linux/ssbi.h>
-#include <linux/msm-bus.h>
+#include <mach/msm_bus.h>
 
 #define RF_TYPE_16 0x10
 #define RF_TYPE_17 0x11
 #define RF_TYPE_18 0x12
-#define RF_TYPE_19 0x13
 #define RF_TYPE_32 0x20
 #define RF_TYPE_33 0x21
 #define RF_TYPE_48 0x30
@@ -527,6 +526,14 @@ struct msm_mhl_platform_data {
  *       unprepare_disable) is controlled by i2c-transaction's begining and
  *       ending. When false, the clock's state is controlled by runtime-pm
  *       events.
+ * @extended_recovery : Bitfield.
+ *       Bit 0 will make the driver will try to do extra 1-pulse
+ *       bit-banged recovery if the HW-driven 9-clk bus recovery
+ *	 has failed. SDA and CLK GPIOs have to be configured
+ *	 to make the extra recovery work.
+ *	 Bit 1 will make the driver attempt recovery regardless
+ *	 of current mastership of the bus (useful for some
+ *	 single-master devices with badly misbehaving slaves)
  * @master_id master id number of the i2c core or its wrapper (BLSP/GSBI).
  *       When zero, clock path voting is disabled.
  * @noise_rjct_sda Number of low samples on data line to consider it low.
@@ -631,12 +638,10 @@ void msm_map_fsm9xxx_io(void);
 void msm_map_fsm9900_io(void);
 void fsm9900_init_gpiomux(void);
 void fsm9900_rf_init_gpiomux(void);
-void msm_map_fsm9010_io(void);
 void msm_map_8974_io(void);
 void msm_map_8084_io(void);
 void msm_map_mdm9630_io(void);
-void msm_map_mdm9640_io(void);
-void msm_map_msmvpipa_io(void);
+void msm_map_msmsamarium_io(void);
 void msm_map_msm8625_io(void);
 void msm_map_msm9625_io(void);
 void msm_init_irq(void);
@@ -649,8 +654,10 @@ void apq8084_init_gpiomux(void);
 void apq8084_moto_init_gpiomux(void);
 void msm9625_init_gpiomux(void);
 void mdm9630_init_gpiomux(void);
+void msmsamarium_init_gpiomux(void);
+void msm_map_mpq8092_io(void);
 void msm_map_msm8916_io(void);
-void msm_map_msm8909_io(void);
+void mpq8092_init_gpiomux(void);
 void msm_map_msm8226_io(void);
 void msm8226_init_irq(void);
 void msm8226_init_gpiomux(void);
