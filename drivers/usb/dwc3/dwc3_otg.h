@@ -1,7 +1,7 @@
 /**
  * dwc3_otg.h - DesignWare USB3 DRD Controller OTG
  *
- * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,20 +24,17 @@
 #include "power.h"
 
 #define DWC3_IDEV_CHG_MAX 1500
-#define DWC3_HVDCP_CHG_MAX 1800
-#define DWC3_USB30_CHG_MAX 900
-
-/*
- * Module param to override current drawn for DCP charger
- * Declared in dwc3-msm module
- */
-extern int dcp_max_current;
+#define DWC3_IDEV_CHG_MIN 500
+#define DWC_LS_DM	  0x1
+#define DWC_LS_DP	  0x2
+#define DWC3_LS		  0x3
 
 struct dwc3_charger;
 
 /**
  * struct dwc3_otg: OTG driver data. Shared by HCD and DCD.
  * @otg: USB OTG Transceiver structure.
+ * @irq: IRQ number assigned for HSUSB controller.
  * @regs: ioremapped register base address.
  * @sm_work: OTG state machine work.
  * @charger: DWC3 external charger detector
@@ -45,15 +42,15 @@ struct dwc3_charger;
  */
 struct dwc3_otg {
 	struct usb_otg		otg;
+	int			irq;
 	struct dwc3		*dwc;
 	void __iomem		*regs;
 	struct regulator	*vbus_otg;
 	struct delayed_work	sm_work;
 	struct dwc3_charger	*charger;
 	struct dwc3_ext_xceiv	*ext_xceiv;
-#define ID		 0
-#define B_SESS_VLD	 1
-#define DWC3_OTG_SUSPEND 2
+#define ID		0
+#define B_SESS_VLD	1
 	unsigned long inputs;
 	struct power_supply	*psy;
 	struct completion	dwc3_xcvr_vbus_init;
@@ -91,7 +88,7 @@ struct dwc3_charger {
 	bool			charging_disabled;
 
 	bool			skip_chg_detect;
-	bool			internal_chg_detect;
+
 	/* start/stop charger detection, provided by external charger module */
 	void	(*start_detection)(struct dwc3_charger *charger, bool start);
 
@@ -120,7 +117,7 @@ enum dwc3_id_state {
 struct dwc3_ext_xceiv {
 	enum dwc3_id_state	id;
 	bool			bsv;
-	unsigned int	cc_power_max;
+	bool			otg_capability;
 
 	/* to notify OTG about LPM exit event, provided by OTG */
 	void	(*notify_ext_events)(struct usb_otg *otg,
@@ -133,4 +130,5 @@ struct dwc3_ext_xceiv {
 /* for external transceiver driver */
 extern int dwc3_set_ext_xceiv(struct usb_otg *otg,
 				struct dwc3_ext_xceiv *ext_xceiv);
+
 #endif /* __LINUX_USB_DWC3_OTG_H */

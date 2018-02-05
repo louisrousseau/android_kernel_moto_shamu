@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -148,7 +148,7 @@ static int emac_set_settings(struct net_device *netdev,
 	emac_info(adpt, link, "ethtool cmd autoneg %d, speed %d, duplex %d\n",
 		  ecmd->autoneg, ecmd->speed, ecmd->duplex);
 
-	while (TEST_N_SET_FLAG(adpt, ADPT_STATE_RESETTING))
+	while (CHK_AND_SET_ADPT_FLAG(STATE_RESETTING))
 		msleep(20); /* Reset might take few 10s of ms */
 
 	old = hw->autoneg_advertised;
@@ -163,7 +163,7 @@ static int emac_set_settings(struct net_device *netdev,
 			if (ecmd->duplex != DUPLEX_FULL) {
 				emac_warn(adpt, hw,
 					  "1000M half is invalid\n");
-				CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+				CLI_ADPT_FLAG(STATE_RESETTING);
 				return -EINVAL;
 			}
 			advertised = EMAC_LINK_SPEED_1GB_FULL;
@@ -202,7 +202,7 @@ static int emac_set_settings(struct net_device *netdev,
 	}
 
 done:
-	CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+	CLI_ADPT_FLAG(STATE_RESETTING);
 	return retval;
 }
 
@@ -212,7 +212,8 @@ static void emac_get_pauseparam(struct net_device *netdev,
 	struct emac_adapter *adpt = netdev_priv(netdev);
 	struct emac_hw *hw = &adpt->hw;
 
-	if (hw->disable_fc_autoneg)
+	if (hw->disable_fc_autoneg ||
+	    hw->cur_fc_mode == emac_fc_none)
 		pause->autoneg = 0;
 	else
 		pause->autoneg = 1;
@@ -236,7 +237,7 @@ static int emac_set_pauseparam(struct net_device *netdev,
 	bool disable_fc_autoneg;
 	int retval = 0;
 
-	while (TEST_N_SET_FLAG(adpt, ADPT_STATE_RESETTING))
+	while (CHK_AND_SET_ADPT_FLAG(STATE_RESETTING))
 		msleep(20); /* Reset might take few 10s of ms */
 
 	req_fc_mode        = hw->req_fc_mode;
@@ -247,7 +248,7 @@ static int emac_set_pauseparam(struct net_device *netdev,
 	else
 		disable_fc_autoneg = false;
 
-	if (pause->rx_pause && pause->tx_pause)
+	if ((pause->rx_pause && pause->tx_pause) || pause->autoneg)
 		req_fc_mode = emac_fc_full;
 	else if (pause->rx_pause && !pause->tx_pause)
 		req_fc_mode = emac_fc_rx_pause;
@@ -256,7 +257,7 @@ static int emac_set_pauseparam(struct net_device *netdev,
 	else if (!pause->rx_pause && !pause->tx_pause)
 		req_fc_mode = emac_fc_none;
 	else {
-		CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+		CLI_ADPT_FLAG(STATE_RESETTING);
 		return -EINVAL;
 	}
 
@@ -264,16 +265,14 @@ static int emac_set_pauseparam(struct net_device *netdev,
 	    (hw->disable_fc_autoneg != disable_fc_autoneg)) {
 		hw->req_fc_mode = req_fc_mode;
 		hw->disable_fc_autoneg = disable_fc_autoneg;
-		if (!adpt->no_ephy)
-			retval = emac_setup_phy_link(hw,
-						     hw->autoneg_advertised,
-						     hw->autoneg,
-						     !disable_fc_autoneg);
+		if (!hw->disable_fc_autoneg)
+			retval = emac_setup_phy_link(hw, hw->autoneg_advertised,
+						     true, true);
 		if (!retval)
 			emac_hw_config_fc(hw);
 	}
 
-	CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+	CLI_ADPT_FLAG(STATE_RESETTING);
 	return retval;
 }
 

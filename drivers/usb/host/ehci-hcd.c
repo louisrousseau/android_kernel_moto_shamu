@@ -984,6 +984,8 @@ rescan:
 	}
 
 	qh->exception = 1;
+	if (ehci->rh_state < EHCI_RH_RUNNING)
+		qh->qh_state = QH_STATE_IDLE;
 	switch (qh->qh_state) {
 	case QH_STATE_LINKED:
 	case QH_STATE_COMPLETING:
@@ -1226,14 +1228,8 @@ void ehci_init_driver(struct hc_driver *drv,
 
 	if (over) {
 		drv->hcd_priv_size += over->extra_priv_size;
-		if (over->flags)
-			drv->flags = over->flags;
 		if (over->reset)
 			drv->reset = over->reset;
-		if (over->bus_suspend)
-			drv->bus_suspend = over->bus_suspend;
-		if (over->bus_resume)
-			drv->bus_resume = over->bus_resume;
 	}
 }
 EXPORT_SYMBOL_GPL(ehci_init_driver);

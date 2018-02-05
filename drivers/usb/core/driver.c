@@ -582,15 +582,11 @@ static int usb_unbind_interface(struct device *dev)
 int usb_driver_claim_interface(struct usb_driver *driver,
 				struct usb_interface *iface, void *priv)
 {
-	struct device *dev;
+	struct device *dev = &iface->dev;
 	struct usb_device *udev;
 	int retval = 0;
 	int lpm_disable_error;
 
-	if (!iface)
-		return -ENODEV;
-
-	dev = &iface->dev;
 	if (dev->driver)
 		return -EBUSY;
 
@@ -1958,13 +1954,10 @@ int usb_runtime_suspend(struct device *dev)
 	if (status == -EAGAIN || status == -EBUSY)
 		usb_mark_last_busy(udev);
 
-	/*
-	 * The PM core reacts badly unless the return code is 0,
-	 * -EAGAIN, or -EBUSY, so always return -EBUSY on an error
-	 * (except for root hubs, because they don't suspend through
-	 * an upstream port like other USB devices).
+	/* The PM core reacts badly unless the return code is 0,
+	 * -EAGAIN, or -EBUSY, so always return -EBUSY on an error.
 	 */
-	if (status != 0 && udev->parent)
+	if (status != 0)
 		return -EBUSY;
 	return status;
 }

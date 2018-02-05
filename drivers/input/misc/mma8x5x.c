@@ -2,7 +2,7 @@
  *  mma8x5x.c - Linux kernel modules for 3-Axis Orientation/Motion
  *  Detection Sensor MMA8451/MMA8452/MMA8453
  *
- *  Copyright (c) 2013-2015, The Linux Foundation. All Rights Reserved.
+ *  Copyright (c) 2013-2014, The Linux Foundation. All Rights Reserved.
  *  Linux Foundation chooses to take subject only to the GPLv2 license
  *  terms, and distributes only under these terms.
  *  Copyright (C) 2010-2011 Freescale Semiconductor, Inc. All Rights Reserved.
@@ -26,12 +26,11 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
+#include <linux/input-polldev.h>
 #include <linux/sensors.h>
-#include <linux/input.h>
 #include <linux/regulator/consumer.h>
 #include <linux/of_gpio.h>
 #include <linux/irq.h>
-#include <linux/interrupt.h>
 
 #define ACCEL_INPUT_DEV_NAME		"accelerometer"
 #define MMA8451_ID			0x1A
@@ -45,6 +44,8 @@
 #define POLL_INTERVAL_MAX	10000
 #define POLL_INTERVAL		100 /* msecs */
 
+/* if sensor is standby ,set POLL_STOP_TIME to slow down the poll */
+#define POLL_STOP_TIME		10000
 #define INPUT_FUZZ			32
 #define INPUT_FLAT			32
 #define INPUT_DATA_DIVIDER	16
@@ -80,7 +81,6 @@ static struct sensors_classdev sensors_cdev = {
 #define MMA_INT_ROUTING_CFG	0x01
 
 #define MMA_POWER_CFG_MASK	0xFE
-#define MMA_ODR_MASK		0x38
 
 struct sensor_regulator {
 	struct regulator *vreg;
@@ -189,8 +189,7 @@ struct mma8x5x_data_axis {
 };
 struct mma8x5x_data {
 	struct i2c_client *client;
-	struct workqueue_struct *data_wq;
-	struct delayed_work dwork;
+	struct input_polled_dev *poll_dev;
 	struct input_dev *idev;
 	struct mutex data_lock;
 	struct sensors_classdev cdev;
@@ -230,6 +229,7 @@ static int mma8x5x_position_setting[8][3][3] = {
 	{{ 0,  1,  0}, { 1,  0,	0}, {0, 0,  -1} },
 	{{ 1,  0,  0}, { 0, -1,	0}, {0, 0,  -1} },
 };
+static struct mma8x5x_data *drv_data;
 static int mma8x5x_config_regulator(struct i2c_client *client, bool on)
 {
 	int rc = 0, i;
@@ -396,13 +396,8 @@ static int mma8x5x_delay2odr(u32 delay_ms)
 
 static int mma8x5x_device_set_odr(struct i2c_client *client, u32 delay_ms)
 {
-	struct mma8x5x_data *pdata = i2c_get_clientdata(client);
 	int result;
 	u8 val;
-
-	/* set ODR is only required for interrupt mode */
-	if (!pdata->use_int)
-		return 0;
 
 	result = mma8x5x_delay2odr(delay_ms);
 	if (result < 0)
@@ -413,7 +408,7 @@ static int mma8x5x_device_set_odr(struct i2c_client *client, u32 delay_ms)
 	if (result < 0)
 		goto out;
 
-	val = ((u8)result & ~MMA_ODR_MASK) | val;
+	val = (u8)result | val;
 	result = i2c_smbus_write_byte_data(client, MMA8X5X_CTRL_REG1,
 					   (val & MMA_POWER_CFG_MASK));
 	if (result < 0)
@@ -492,31 +487,32 @@ static int mma8x5x_read_data(struct i2c_client *client,
 
 static void mma8x5x_report_data(struct mma8x5x_data *pdata)
 {
+	struct input_polled_dev *poll_dev = pdata->poll_dev;
 	struct mma8x5x_data_axis data;
-
 	mutex_lock(&pdata->data_lock);
+	if ((pdata->active & MMA_STATE_MASK) == MMA_STANDBY) {
+		poll_dev->poll_interval = POLL_STOP_TIME;
+		/* if standby ,set as 10s to slow the poll. */
+		goto out;
+	} else {
+		if (poll_dev->poll_interval == POLL_STOP_TIME)
+			poll_dev->poll_interval = pdata->poll_delay;
+	}
 	if (mma8x5x_read_data(pdata->client, &data) != 0)
 		goto out;
 	mma8x5x_data_convert(pdata, &data);
-	input_report_abs(pdata->idev, ABS_X, data.x);
-	input_report_abs(pdata->idev, ABS_Y, data.y);
-	input_report_abs(pdata->idev, ABS_Z, data.z);
-	input_sync(pdata->idev);
+	input_report_abs(poll_dev->input, ABS_X, data.x);
+	input_report_abs(poll_dev->input, ABS_Y, data.y);
+	input_report_abs(poll_dev->input, ABS_Z, data.z);
+	input_sync(poll_dev->input);
 out:
 	mutex_unlock(&pdata->data_lock);
 }
 
-static void mma8x5x_dev_poll(struct work_struct *work)
+static void mma8x5x_dev_poll(struct input_polled_dev *dev)
 {
-	struct mma8x5x_data *pdata = container_of((struct delayed_work *)work,
-				struct mma8x5x_data, dwork);
-
-	if ((pdata->active & MMA_STATE_MASK) == MMA_ACTIVED) {
-		mma8x5x_report_data(pdata);
-		queue_delayed_work(pdata->data_wq,
-				&pdata->dwork,
-				msecs_to_jiffies(pdata->poll_delay));
-	}
+	struct mma8x5x_data *pdata = (struct mma8x5x_data *)dev->private;
+	mma8x5x_report_data(pdata);
 }
 
 static irqreturn_t mma8x5x_interrupt(int vec, void *data)
@@ -581,11 +577,6 @@ static int mma8x5x_enable_set(struct sensors_classdev *sensors_cdev,
 				dev_err(&client->dev, "change device state failed!");
 				goto err_failed;
 			}
-			if (!pdata->use_int)
-				queue_delayed_work(pdata->data_wq,
-					&pdata->dwork,
-					msecs_to_jiffies(pdata->poll_delay));
-
 			pdata->active = MMA_ACTIVED;
 			dev_dbg(&client->dev, "%s:mma enable setting active.\n",
 					__func__);
@@ -606,10 +597,7 @@ static int mma8x5x_enable_set(struct sensors_classdev *sensors_cdev,
 				dev_err(&client->dev, "change device state failed!");
 				goto err_failed;
 			}
-			/*
-			 * Set standby state,
-			 * polling work queue will stop after next call.
-			 */
+
 			pdata->active = MMA_STANDBY;
 			dev_dbg(&client->dev, "%s:mma enable setting inactive.\n",
 					__func__);
@@ -628,7 +616,7 @@ err_failed:
 static ssize_t mma8x5x_enable_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
-	struct mma8x5x_data *pdata = dev_get_drvdata(dev);
+	struct mma8x5x_data *pdata = drv_data;
 	struct i2c_client *client;
 	u8 val;
 	int enable;
@@ -653,7 +641,7 @@ static ssize_t mma8x5x_enable_store(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t count)
 {
-	struct mma8x5x_data *pdata = dev_get_drvdata(dev);
+	struct mma8x5x_data *pdata = drv_data;
 	struct i2c_client *client;
 	int ret;
 	unsigned long enable;
@@ -675,7 +663,7 @@ static ssize_t mma8x5x_enable_store(struct device *dev,
 static ssize_t mma8x5x_position_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
-	struct mma8x5x_data *pdata = dev_get_drvdata(dev);
+	struct mma8x5x_data *pdata = drv_data;
 	int position = 0;
 
 	if (!pdata) {
@@ -692,7 +680,7 @@ static ssize_t mma8x5x_position_store(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t count)
 {
-	struct mma8x5x_data *pdata = dev_get_drvdata(dev);
+	struct mma8x5x_data *pdata = drv_data;
 	int position;
 	int ret;
 
@@ -726,6 +714,7 @@ static int mma8x5x_poll_delay_set(struct sensors_classdev *sensors_cdev,
 	} else {
 		mutex_lock(&pdata->data_lock);
 		pdata->poll_delay = delay_ms;
+		pdata->poll_dev->poll_interval = pdata->poll_delay;
 		mutex_unlock(&pdata->data_lock);
 	}
 
@@ -735,7 +724,7 @@ static int mma8x5x_poll_delay_set(struct sensors_classdev *sensors_cdev,
 static ssize_t mma8x5x_poll_delay_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
-	struct mma8x5x_data *pdata = dev_get_drvdata(dev);
+	struct mma8x5x_data *pdata = drv_data;
 
 	if (!pdata) {
 		dev_err(dev, "Invalid driver private data!");
@@ -749,7 +738,7 @@ static ssize_t mma8x5x_poll_delay_store(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t count)
 {
-	struct mma8x5x_data *pdata = dev_get_drvdata(dev);
+	struct mma8x5x_data *pdata = drv_data;
 	int delay;
 	int ret;
 
@@ -836,6 +825,7 @@ static int mma8x5x_probe(struct i2c_client *client,
 	struct input_dev *idev;
 	struct mma8x5x_data *pdata;
 	struct i2c_adapter *adapter;
+	struct input_polled_dev *poll_dev;
 	adapter = to_i2c_adapter(client->dev.parent);
 	/* power on the device */
 	result = mma8x5x_config_regulator(client, 1);
@@ -846,7 +836,7 @@ static int mma8x5x_probe(struct i2c_client *client,
 					 I2C_FUNC_SMBUS_BYTE |
 					 I2C_FUNC_SMBUS_BYTE_DATA);
 	if (!result)
-		goto err_check_id;
+		goto err_out;
 
 	chip_id = i2c_smbus_read_byte_data(client, MMA8X5X_WHO_AM_I);
 
@@ -856,14 +846,14 @@ static int mma8x5x_probe(struct i2c_client *client,
 			chip_id, MMA8451_ID, MMA8452_ID, MMA8453_ID,
 			MMA8652_ID, MMA8653_ID);
 		result = -EINVAL;
-		goto err_check_id;
+		goto err_out;
 	}
 	/* set the private data */
 	pdata = kzalloc(sizeof(struct mma8x5x_data), GFP_KERNEL);
 	if (!pdata) {
 		result = -ENOMEM;
 		dev_err(&client->dev, "alloc data memory error!\n");
-		goto err_check_id;
+		goto err_out;
 	}
 
 	if (client->dev.of_node) {
@@ -877,16 +867,17 @@ static int mma8x5x_probe(struct i2c_client *client,
 	}
 
 	/* Initialize the MMA8X5X chip */
+	drv_data = pdata;
 	pdata->client = client;
 	pdata->chip_id = chip_id;
 	pdata->mode = MODE_2G;
-	pdata->poll_delay = POLL_INTERVAL;
+	pdata->poll_delay = POLL_STOP_TIME;
+	pdata->poll_dev = NULL;
 
 	mutex_init(&pdata->data_lock);
 	i2c_set_clientdata(client, pdata);
 	/* Initialize the MMA8X5X chip */
 	mma8x5x_device_init(client);
-	pdata->data_wq = NULL;
 	if (pdata->use_int) {
 		if (pdata->int_pin >= 0)
 			client->irq = gpio_to_irq(pdata->int_pin);
@@ -903,9 +894,29 @@ static int mma8x5x_probe(struct i2c_client *client,
 			if (result) {
 				dev_err(&client->dev,
 					"set_direction for irq gpio failed\n");
-				goto err_set_gpio_direction;
+				goto err_set_direction;
 			}
 		}
+		idev = input_allocate_device();
+		if (!idev) {
+			result = -ENOMEM;
+			dev_err(&client->dev, "alloc input device failed!\n");
+			goto err_alloc_poll_device;
+		}
+		input_set_drvdata(idev, pdata);
+		idev->name = ACCEL_INPUT_DEV_NAME;
+		idev->uniq = mma8x5x_id2name(pdata->chip_id);
+		idev->id.bustype = BUS_I2C;
+		idev->evbit[0] = BIT_MASK(EV_ABS);
+		input_set_abs_params(idev, ABS_X, -0x7fff, 0x7fff, 0, 0);
+		input_set_abs_params(idev, ABS_Y, -0x7fff, 0x7fff, 0, 0);
+		input_set_abs_params(idev, ABS_Z, -0x7fff, 0x7fff, 0, 0);
+		result = input_register_device(idev);
+		if (result) {
+			dev_err(&client->dev, "register input device failed!\n");
+			goto err_register_device;
+		}
+		pdata->idev = idev;
 		device_init_wakeup(&client->dev, true);
 		enable_irq_wake(client->irq);
 		result = request_threaded_irq(client->irq, NULL,
@@ -919,39 +930,39 @@ static int mma8x5x_probe(struct i2c_client *client,
 		}
 		mma8x5x_device_int_init(client);
 	} else {
-		INIT_DELAYED_WORK(&pdata->dwork, mma8x5x_dev_poll);
-		pdata->data_wq = create_freezable_workqueue("mma_data_work");
-		if (!pdata->data_wq) {
-			dev_err(&client->dev, "Create workqueue failed!\n");
-			goto err_alloc_work_queue;
+		/* create the input poll device */
+		poll_dev = input_allocate_polled_device();
+		if (!poll_dev) {
+			result = -ENOMEM;
+			dev_err(&client->dev, "alloc poll device failed!\n");
+			goto err_alloc_poll_device;
+		}
+		pdata->poll_dev = poll_dev;
+		pdata->idev = NULL;
+		poll_dev->poll = mma8x5x_dev_poll;
+		poll_dev->poll_interval = POLL_STOP_TIME;
+		poll_dev->poll_interval_min = POLL_INTERVAL_MIN;
+		poll_dev->poll_interval_max = POLL_INTERVAL_MAX;
+		poll_dev->private = pdata;
+		idev = poll_dev->input;
+		idev->name = ACCEL_INPUT_DEV_NAME;
+		idev->uniq = mma8x5x_id2name(pdata->chip_id);
+		idev->id.bustype = BUS_I2C;
+		idev->evbit[0] = BIT_MASK(EV_ABS);
+		input_set_abs_params(idev, ABS_X, -0x7fff, 0x7fff, 0, 0);
+		input_set_abs_params(idev, ABS_Y, -0x7fff, 0x7fff, 0, 0);
+		input_set_abs_params(idev, ABS_Z, -0x7fff, 0x7fff, 0, 0);
+		result = input_register_polled_device(pdata->poll_dev);
+		if (result) {
+			dev_err(&client->dev, "register poll device failed!\n");
+			goto err_register_device;
 		}
 	}
-	idev = devm_input_allocate_device(&client->dev);
-	if (!idev) {
-		result = -ENOMEM;
-		dev_err(&client->dev, "alloc input device failed!\n");
-		goto err_alloc_poll_device;
-	}
-	input_set_drvdata(idev, pdata);
-	idev->name = ACCEL_INPUT_DEV_NAME;
-	idev->uniq = mma8x5x_id2name(pdata->chip_id);
-	idev->id.bustype = BUS_I2C;
-	idev->evbit[0] = BIT_MASK(EV_ABS);
-	input_set_abs_params(idev, ABS_X, -0x7fff, 0x7fff, 0, 0);
-	input_set_abs_params(idev, ABS_Y, -0x7fff, 0x7fff, 0, 0);
-	input_set_abs_params(idev, ABS_Z, -0x7fff, 0x7fff, 0, 0);
-	result = input_register_device(idev);
-	if (result) {
-		dev_err(&client->dev, "register input device failed!\n");
-		goto err_alloc_poll_device;
-	}
-	pdata->idev = idev;
-
 	result = sysfs_create_group(&idev->dev.kobj, &mma8x5x_attr_group);
 	if (result) {
 		dev_err(&client->dev, "create device file failed!\n");
 		result = -EINVAL;
-		goto err_alloc_poll_device;
+		goto err_create_sysfs;
 	}
 	pdata->cdev = sensors_cdev;
 	pdata->cdev.min_delay = POLL_INTERVAL_MIN * 1000;
@@ -971,20 +982,24 @@ static int mma8x5x_probe(struct i2c_client *client,
 	return 0;
 err_create_class_sysfs:
 	sysfs_remove_group(&idev->dev.kobj, &mma8x5x_attr_group);
-err_alloc_poll_device:
-	if (pdata->data_wq)
-		destroy_workqueue(pdata->data_wq);
+err_create_sysfs:
+	input_unregister_polled_device(pdata->poll_dev);
 err_register_irq:
 	if (pdata->use_int)
 		device_init_wakeup(&client->dev, false);
-err_alloc_work_queue:
-err_set_gpio_direction:
+err_register_device:
+	if (pdata->use_int)
+		input_free_device(idev);
+	else
+		input_free_polled_device(pdata->poll_dev);
+err_alloc_poll_device:
+err_set_direction:
 	if (gpio_is_valid(pdata->int_pin) && pdata->use_int)
 		gpio_free(pdata->int_pin);
 err_request_gpio:
 err_parse_dt:
 	kfree(pdata);
-err_check_id:
+err_out:
 	mma8x5x_config_regulator(client, 0);
 err_power_on:
 	return result;
@@ -992,22 +1007,14 @@ err_power_on:
 static int mma8x5x_remove(struct i2c_client *client)
 {
 	struct mma8x5x_data *pdata = i2c_get_clientdata(client);
-	struct input_dev *idev;
-
+	struct input_polled_dev *poll_dev;
 	mma8x5x_device_stop(client);
 	if (pdata) {
-		idev = pdata->idev;
-		sysfs_remove_group(&idev->dev.kobj, &mma8x5x_attr_group);
-		if (pdata->data_wq)
-			destroy_workqueue(pdata->data_wq);
-		if (pdata->use_int) {
-			device_init_wakeup(&client->dev, false);
-			if (gpio_is_valid(pdata->int_pin))
-				gpio_free(pdata->int_pin);
-		}
+		poll_dev = pdata->poll_dev;
+		input_unregister_polled_device(poll_dev);
+		input_free_polled_device(poll_dev);
 		kfree(pdata);
 	}
-	mma8x5x_config_regulator(client, 0);
 	return 0;
 }
 
@@ -1019,10 +1026,8 @@ static int mma8x5x_suspend(struct device *dev)
 
 	if (pdata->use_int && pdata->active == MMA_ACTIVED)
 		return 0;
-	if (pdata->active == MMA_ACTIVED) {
+	if (pdata->active == MMA_ACTIVED)
 		mma8x5x_device_stop(client);
-		cancel_delayed_work_sync(&pdata->dwork);
-	}
 	if (pdata->active & MMA_SHUTTEDDOWN)
 		return 0;
 	if (!mma8x5x_config_regulator(client, 0))
@@ -1053,9 +1058,6 @@ static int mma8x5x_resume(struct device *dev)
 	if (pdata->active == MMA_ACTIVED) {
 		val = i2c_smbus_read_byte_data(client, MMA8X5X_CTRL_REG1);
 		i2c_smbus_write_byte_data(client, MMA8X5X_CTRL_REG1, val|0x01);
-		queue_delayed_work(pdata->data_wq,
-				&pdata->dwork,
-				msecs_to_jiffies(pdata->poll_delay));
 	}
 
 	return 0;

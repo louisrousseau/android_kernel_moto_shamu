@@ -22,7 +22,6 @@
 #include <linux/pagemap.h>
 #include <linux/export.h>
 #include <linux/hid.h>
-#include <linux/workqueue.h>
 #include <asm/unaligned.h>
 
 #include <linux/usb/composite.h>
@@ -30,8 +29,6 @@
 
 
 #define FUNCTIONFS_MAGIC	0xa647361 /* Chosen by a honest dice roll ;) */
-
-#define ENDPOINT_ALLOC_MAX	1 << 25 /* Max endpoint buffer size, 32 MB */
 
 
 /* Debugging ****************************************************************/
@@ -74,26 +71,6 @@ enum ffs_state {
 	 * succeed.
 	 */
 	FFS_ACTIVE,
-
-	/*
-	 * Function is visible to host, but it's not functional. All
-	 * setup requests are stalled and transfers on another endpoints
-	 * are refused. All epfiles, except ep0, are deleted so there
-	 * is no way to perform any operations on them.
-	 *
-	 * This state is set after closing all functionfs files, when
-	 * mount parameter "no_disconnect=1" has been set. Function will
-	 * remain in deactivated state until filesystem is umounted or
-	 * ep0 is opened again. In the second case functionfs state will
-	 * be reset, and it will be ready for descriptors and strings
-	 * writing.
-	 *
-	 * This is useful only when functionfs is composed to gadget
-	 * with another function which can perform some critical
-	 * operations, and it's strongly desired to have this operations
-	 * completed, even after functionfs files closure.
-	 */
-	FFS_DEACTIVATED,
 
 	/*
 	 * All endpoints have been closed.  This state is also set if
@@ -258,9 +235,6 @@ struct ffs_data {
 		kgid_t				gid;
 	}				file_perms;
 
-	bool no_disconnect;
-	struct work_struct reset_work;
-
 	/*
 	 * The endpoint files, filled by ffs_epfiles_create(),
 	 * destroyed by ffs_epfiles_destroy().
@@ -359,9 +333,6 @@ struct ffs_epfile {
 	unsigned char			isoc;	/* P: ffs->eps_lock */
 
 	unsigned char			_pad;
-
-	unsigned long			buf_len;
-	char				*buffer;
 };
 
 static int  __must_check ffs_epfiles_create(struct ffs_data *ffs);
@@ -726,10 +697,6 @@ static int ffs_ep0_open(struct inode *inode, struct file *file)
 	if (unlikely(ffs->state == FFS_CLOSING))
 		return -EBUSY;
 
-	smp_mb__before_atomic();
-	if (atomic_read(&ffs->opened))
-		return -EBUSY;
-
 	file->private_data = ffs;
 	ffs_data_opened(ffs);
 
@@ -782,18 +749,14 @@ static const struct file_operations ffs_ep0_operations = {
 
 static void ffs_epfile_io_complete(struct usb_ep *_ep, struct usb_request *req)
 {
-	struct ffs_ep *ep = _ep->driver_data;
 	ENTER();
-
-	/* req may be freed during unbind */
-	if (ep && ep->req && likely(req->context)) {
+	if (likely(req->context)) {
 		struct ffs_ep *ep = _ep->driver_data;
 		ep->status = req->status ? req->status : req->actual;
 		complete(req->context);
 	}
 }
 
-#define MAX_BUF_LEN	4096
 static ssize_t ffs_epfile_io(struct file *file,
 			     char __user *buf, size_t len, int read)
 {
@@ -802,12 +765,9 @@ static ssize_t ffs_epfile_io(struct file *file,
 	char *data = NULL;
 	ssize_t ret;
 	int halt;
-	size_t buffer_len = 0;
+	int buffer_len = 0;
 
-	pr_debug("%s: len %zu, read %d\n", __func__, len, read);
-
-	if (atomic_read(&epfile->error))
-		return -ENODEV;
+	pr_debug("%s: len %d, read %d\n", __func__, len, read);
 
 	if (atomic_read(&epfile->error))
 		return -ENODEV;
@@ -866,10 +826,7 @@ first_try:
 
 		/* Allocate & copy */
 		if (!halt && !data) {
-
-			data = buffer_len > epfile->buf_len ?
-				kzalloc(buffer_len, GFP_KERNEL) :
-				epfile->buffer;
+			data = kzalloc(buffer_len, GFP_KERNEL);
 			if (unlikely(!data))
 				return -ENOMEM;
 
@@ -909,10 +866,10 @@ first_try:
 		DECLARE_COMPLETION_ONSTACK(done);
 
 		struct usb_request *req = ep->req;
+		req->context  = &done;
 		req->complete = ffs_epfile_io_complete;
 		req->buf      = data;
 		req->length   = buffer_len;
-		req->context  = &done;
 
 		ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
 
@@ -922,50 +879,29 @@ first_try:
 			ret = -EIO;
 		} else if (unlikely(wait_for_completion_interruptible(&done))) {
 			spin_lock_irq(&epfile->ffs->eps_lock);
-			/*
-			 * While we were acquiring lock endpoint got disabled
-			 * (disconnect) or changed (composition switch) ?
-			 */
-			if (epfile->ep == ep)
+			if (ep->ep)
 				usb_ep_dequeue(ep->ep, req);
 			spin_unlock_irq(&epfile->ffs->eps_lock);
 			ret = -EINTR;
 		} else {
 			spin_lock_irq(&epfile->ffs->eps_lock);
-			/*
-			 * While we were acquiring lock endpoint got disabled
-			 * (disconnect) or changed (composition switch) ?
-			 */
-			if (epfile->ep == ep)
+			if (ep->ep)
 				ret = ep->status;
 			else
 				ret = -ENODEV;
 			spin_unlock_irq(&epfile->ffs->eps_lock);
 			if (read && ret > 0) {
-				if (len != MAX_BUF_LEN && ret < len)
-					pr_debug("less data(%zd) received than intended length(%zu)\n",
-								ret, len);
-				if (ret > len) {
-					pr_err("More data(%zd) received than intended length(%zu)\n",
-								ret, len);
+				if (ret > len)
 					ret = -EOVERFLOW;
-				} else if (unlikely(copy_to_user(
-						buf, data, ret))) {
-					pr_err("Fail to copy to user len:%zd\n",
-									ret);
+				else if (unlikely(copy_to_user(buf, data, ret)))
 					ret = -EFAULT;
-				}
 			}
 		}
 	}
 
 	mutex_unlock(&epfile->mutex);
 error:
-	if (buffer_len > epfile->buf_len)
-		kfree(data);
-	if (ret < 0 && ret != -ERESTARTSYS)
-		pr_err_ratelimited("%s(): Error: returning %zd value\n",
-							__func__, ret);
+	kfree(data);
 	return ret;
 }
 
@@ -1011,9 +947,6 @@ ffs_epfile_release(struct inode *inode, struct file *file)
 	ENTER();
 
 	atomic_set(&epfile->error, 1);
-	epfile->buf_len = 0;
-	kfree(epfile->buffer);
-	epfile->buffer = NULL;
 	ffs_data_closed(epfile->ffs);
 	file->private_data = NULL;
 
@@ -1032,7 +965,7 @@ static long ffs_epfile_ioctl(struct file *file, unsigned code,
 		return -ENODEV;
 
 	spin_lock_irq(&epfile->ffs->eps_lock);
-	if (epfile->ep) {
+	if (likely(epfile->ep)) {
 		switch (code) {
 		case FUNCTIONFS_FIFO_STATUS:
 			ret = usb_ep_fifo_status(epfile->ep->ep);
@@ -1047,51 +980,6 @@ static long ffs_epfile_ioctl(struct file *file, unsigned code,
 		case FUNCTIONFS_ENDPOINT_REVMAP:
 			ret = epfile->ep->num;
 			break;
-		case FUNCTIONFS_ENDPOINT_DESC:
-		{
-			int desc_idx;
-			struct usb_endpoint_descriptor *desc;
-
-			switch (epfile->ffs->gadget->speed) {
-			case USB_SPEED_SUPER:
-				desc_idx = 2;
-				break;
-			case USB_SPEED_HIGH:
-				desc_idx = 1;
-				break;
-			default:
-				desc_idx = 0;
-			}
-			desc = epfile->ep->descs[desc_idx];
-
-			spin_unlock_irq(&epfile->ffs->eps_lock);
-			ret = copy_to_user((void *)value, desc, sizeof(*desc));
-			if (ret)
-				ret = -EFAULT;
-			return ret;
-		}
-		case FUNCTIONFS_ENDPOINT_ALLOC:
-		{
-			void *temp = epfile->buffer;
-			epfile->buffer = NULL;
-			epfile->buf_len = 0;
-			spin_unlock_irq(&epfile->ffs->eps_lock);
-			kfree(temp);
-			if (!value)
-				return 0;
-			if (value > ENDPOINT_ALLOC_MAX)
-				return -EINVAL;
-
-			temp = kzalloc(value, GFP_KERNEL);
-			if (!temp)
-				return -ENOMEM;
-
-			spin_lock_irq(&epfile->ffs->eps_lock);
-			epfile->buffer = temp;
-			epfile->buf_len = value;
-			ret = 0;
-			break;
-		}
 		default:
 			ret = -ENOTTY;
 		}
@@ -1192,7 +1080,6 @@ struct ffs_sb_fill_data {
 	struct ffs_file_perms perms;
 	umode_t root_mode;
 	const char *dev_name;
-	bool no_disconnect;
 	struct ffs_data *ffs_data;
 };
 
@@ -1263,12 +1150,6 @@ static int ffs_fs_parse_opts(struct ffs_sb_fill_data *data, char *opts)
 
 		/* Interpret option */
 		switch (eq - opts) {
-		case 13:
-			if (!memcmp(opts, "no_disconnect", 13))
-				data->no_disconnect = !!value;
-			else
-				goto invalid;
-			break;
 		case 5:
 			if (!memcmp(opts, "rmode", 5))
 				data->root_mode  = (value & 0555) | S_IFDIR;
@@ -1333,7 +1214,6 @@ ffs_fs_mount(struct file_system_type *t, int flags,
 			.gid = GLOBAL_ROOT_GID,
 		},
 		.root_mode = S_IFDIR | 0500,
-		.no_disconnect = false,
 	};
 	struct dentry *rv;
 	int ret;
@@ -1350,7 +1230,6 @@ ffs_fs_mount(struct file_system_type *t, int flags,
 	if (unlikely(!ffs))
 		return ERR_PTR(-ENOMEM);
 	ffs->file_perms = data.perms;
-	ffs->no_disconnect = data.no_disconnect;
 
 	ffs->dev_name = kstrdup(dev_name, GFP_KERNEL);
 	if (unlikely(!ffs->dev_name)) {
@@ -1382,7 +1261,6 @@ ffs_fs_kill_sb(struct super_block *sb)
 	kill_litter_super(sb);
 	if (sb->s_fs_info) {
 		functionfs_release_dev_callback(sb->s_fs_info);
-		ffs_data_closed(sb->s_fs_info);
 		ffs_data_put(sb->s_fs_info);
 	}
 }
@@ -1431,7 +1309,6 @@ static void ffs_data_get(struct ffs_data *ffs)
 {
 	ENTER();
 
-	smp_mb__before_atomic();
 	atomic_inc(&ffs->ref);
 }
 
@@ -1439,20 +1316,14 @@ static void ffs_data_opened(struct ffs_data *ffs)
 {
 	ENTER();
 
-	smp_mb__before_atomic();
 	atomic_inc(&ffs->ref);
-	if (atomic_add_return(1, &ffs->opened) == 1 &&
-			ffs->state == FFS_DEACTIVATED) {
-		ffs->state = FFS_CLOSING;
-		ffs_data_reset(ffs);
-	}
+	atomic_inc(&ffs->opened);
 }
 
 static void ffs_data_put(struct ffs_data *ffs)
 {
 	ENTER();
 
-	smp_mb__before_atomic();
 	if (unlikely(atomic_dec_and_test(&ffs->ref))) {
 		pr_info("%s(): freeing\n", __func__);
 		ffs_data_clear(ffs);
@@ -1467,23 +1338,7 @@ static void ffs_data_closed(struct ffs_data *ffs)
 {
 	ENTER();
 
-	smp_mb__before_atomic();
 	if (atomic_dec_and_test(&ffs->opened)) {
-		if (ffs->no_disconnect) {
-			ffs->state = FFS_DEACTIVATED;
-			if (ffs->epfiles) {
-				ffs_epfiles_destroy(ffs->epfiles,
-						   ffs->eps_count);
-				ffs->epfiles = NULL;
-			}
-			if (ffs->setup_state == FFS_SETUP_PENDING)
-				__ffs_ep0_stall(ffs);
-		} else {
-			ffs->state = FFS_CLOSING;
-			ffs_data_reset(ffs);
-		}
-	}
-	if (atomic_read(&ffs->opened) < 0) {
 		ffs->state = FFS_CLOSING;
 		ffs_data_reset(ffs);
 	}
@@ -1517,15 +1372,9 @@ static void ffs_data_clear(struct ffs_data *ffs)
 {
 	ENTER();
 
-	pr_debug("%s: ffs->gadget= %p, ffs->flags= %lu\n", __func__,
-						ffs->gadget, ffs->flags);
 	if (test_and_clear_bit(FFS_FL_CALL_CLOSED_CALLBACK, &ffs->flags))
 		functionfs_closed_callback(ffs);
 
-	/* Dump ffs->gadget and ffs->flags */
-	if (ffs->gadget)
-		pr_err("%s: ffs:%p ffs->gadget= %p, ffs->flags= %lu\n",
-				__func__, ffs, ffs->gadget, ffs->flags);
 	BUG_ON(ffs->gadget);
 
 	if (ffs->epfiles)
@@ -1596,13 +1445,11 @@ static int functionfs_bind(struct ffs_data *ffs, struct usb_composite_dev *cdev)
 	ffs->ep0req->context = ffs;
 
 	lang = ffs->stringtabs;
-	if (lang) {
-		for (; *lang; ++lang) {
-			struct usb_string *str = (*lang)->strings;
-			int id = ffs->first_id;
-			for (; str->s; ++id, ++str)
-				str->id = id;
-		}
+	for (lang = ffs->stringtabs; *lang; ++lang) {
+		struct usb_string *str = (*lang)->strings;
+		int id = ffs->first_id;
+		for (; str->s; ++id, ++str)
+			str->id = id;
 	}
 
 	ffs->gadget = cdev->gadget;
@@ -1719,14 +1566,9 @@ static void ffs_func_free(struct ffs_function *func)
 	/* cleanup after autoconfig */
 	spin_lock_irqsave(&func->ffs->eps_lock, flags);
 	do {
-		if (likely(ep->ep)) {
-			if(ep->req)
-				usb_ep_free_request(ep->ep, ep->req);
-			/* mark the ep reclaimable */
-			ep->ep->driver_data = NULL;
-		}
+		if (ep->ep && ep->req)
+			usb_ep_free_request(ep->ep, ep->req);
 		ep->req = NULL;
-		ep->ep = NULL;
 		++ep;
 	} while (--count);
 	spin_unlock_irqrestore(&func->ffs->eps_lock, flags);
@@ -1752,17 +1594,16 @@ static void ffs_func_eps_disable(struct ffs_function *func)
 
 	spin_lock_irqsave(&func->ffs->eps_lock, flags);
 	do {
-		if (epfile)
-			atomic_set(&epfile->error, 1);
+		atomic_set(&epfile->error, 1);
 		/* pending requests get nuked */
 		if (likely(ep->ep)) {
 			usb_ep_disable(ep->ep);
-		++ep;
-
-		if (epfile) {
-			epfile->ep = NULL;
-			++epfile;
+			ep->ep->driver_data = NULL;
 		}
+		epfile->ep = NULL;
+
+		++ep;
+		++epfile;
 	} while (--count);
 	spin_unlock_irqrestore(&func->ffs->eps_lock, flags);
 }
@@ -2590,13 +2431,6 @@ error:
 
 /* Other USB function hooks *************************************************/
 
-static void ffs_reset_work(struct work_struct *work)
-{
-	struct ffs_data *ffs = container_of(work,
-		struct ffs_data, reset_work);
-	ffs_data_reset(ffs);
-}
-
 static void ffs_func_unbind(struct usb_configuration *c,
 			    struct usb_function *f)
 {
@@ -2631,13 +2465,6 @@ static int ffs_func_set_alt(struct usb_function *f,
 	if (ffs->func) {
 		ffs_func_eps_disable(ffs->func);
 		ffs->func = NULL;
-	}
-
-	if (ffs->state == FFS_DEACTIVATED) {
-		ffs->state = FFS_CLOSING;
-		INIT_WORK(&ffs->reset_work, ffs_reset_work);
-		schedule_work(&ffs->reset_work);
-		return -ENODEV;
 	}
 
 	if (ffs->state != FFS_ACTIVE)

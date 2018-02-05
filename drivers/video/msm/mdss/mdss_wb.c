@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -22,7 +22,6 @@
 #include <linux/spinlock.h>
 #include <linux/types.h>
 #include <linux/version.h>
-#include <linux/switch.h>
 
 #include "mdss_panel.h"
 #include "mdss_wb.h"
@@ -45,11 +44,6 @@ static int mdss_wb_check_params(struct mdss_panel_data *pdata,
 
 	if (!pdata || !new) {
 		pr_err("%s: Invalid input\n", __func__);
-		return -EINVAL;
-	}
-
-	if (new->xres >= 4096 || new->yres >= 4096) {
-		pr_err("%s: Invalid resolutions\n", __func__);
 		return -EINVAL;
 	}
 
@@ -157,12 +151,12 @@ static int mdss_wb_probe(struct platform_device *pdev)
 
 	rc = !mdss_wb_parse_dt(pdev, pdata);
 	if (!rc)
-		goto error_no_mem;
+		return rc;
 
 	rc = mdss_wb_dev_init(wb_ctrl);
 	if (rc) {
 		dev_err(&pdev->dev, "unable to set up device nodes for writeback panel\n");
-		goto error_no_mem;
+		return rc;
 	}
 
 	pdata->panel_info.type = WRITEBACK_PANEL;
@@ -176,15 +170,9 @@ static int mdss_wb_probe(struct platform_device *pdev)
 	rc = mdss_register_panel(pdev, pdata);
 	if (rc) {
 		dev_err(&pdev->dev, "unable to register writeback panel\n");
-		goto error_init;
+		return rc;
 	}
 
-	return rc;
-
-error_init:
-	mdss_wb_dev_uninit(wb_ctrl);
-error_no_mem:
-	devm_kfree(&pdev->dev, wb_ctrl);
 	return rc;
 }
 

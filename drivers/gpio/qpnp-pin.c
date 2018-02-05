@@ -182,7 +182,6 @@ struct qpnp_pin_chip {
 	struct device_node	*int_ctrl;
 	struct list_head	chip_list;
 	struct dentry		*dfs_dir;
-	bool			chip_registered;
 };
 
 static LIST_HEAD(qpnp_pin_chips);
@@ -913,7 +912,7 @@ static int qpnp_pin_apply_config(struct qpnp_pin_chip *q_chip,
 static int qpnp_pin_free_chip(struct qpnp_pin_chip *q_chip)
 {
 	struct spmi_device *spmi = q_chip->spmi;
-	int i, rc = 0;
+	int rc, i;
 
 	if (q_chip->chip_gpios)
 		for (i = 0; i < spmi->num_dev_node; i++)
@@ -922,12 +921,10 @@ static int qpnp_pin_free_chip(struct qpnp_pin_chip *q_chip)
 	mutex_lock(&qpnp_pin_chips_lock);
 	list_del(&q_chip->chip_list);
 	mutex_unlock(&qpnp_pin_chips_lock);
-	if (q_chip->chip_registered) {
-		rc = gpiochip_remove(&q_chip->gpio_chip);
-		if (rc)
-			dev_err(&q_chip->spmi->dev, "%s: unable to remove gpio\n",
-					__func__);
-	}
+	rc = gpiochip_remove(&q_chip->gpio_chip);
+	if (rc)
+		dev_err(&q_chip->spmi->dev, "%s: unable to remove gpio\n",
+				__func__);
 	kfree(q_chip->chip_gpios);
 	kfree(q_chip->pmic_pins);
 	kfree(q_chip);
@@ -1184,7 +1181,7 @@ static int qpnp_pin_probe(struct spmi_device *spmi)
 	struct resource *res;
 	struct spmi_resource *d_node;
 	int i, rc;
-	u32 lowest_gpio = UINT_MAX, highest_gpio = 0;
+	int lowest_gpio = UINT_MAX, highest_gpio = 0;
 	u32 gpio;
 	char version[Q_REG_SUBTYPE - Q_REG_DIG_MAJOR_REV + 1];
 	const char *dev_name;
@@ -1242,8 +1239,8 @@ static int qpnp_pin_probe(struct spmi_device *spmi)
 
 	/* allocate gpio lookup tables */
 	q_chip->pmic_pins = kzalloc(sizeof(struct qpnp_pin_spec *) *
-					(highest_gpio - lowest_gpio + 1),
-					GFP_KERNEL);
+						highest_gpio - lowest_gpio + 1,
+						GFP_KERNEL);
 	q_chip->chip_gpios = kzalloc(sizeof(struct qpnp_pin_spec *) *
 						spmi->num_dev_node, GFP_KERNEL);
 	if (!q_chip->pmic_pins || !q_chip->chip_gpios) {
@@ -1345,7 +1342,6 @@ static int qpnp_pin_probe(struct spmi_device *spmi)
 		goto err_probe;
 	}
 
-	q_chip->chip_registered = true;
 	/* now configure gpio config defaults if they exist */
 	for (i = 0; i < spmi->num_dev_node; i++) {
 		q_spec = qpnp_chip_gpio_get_spec(q_chip, i);
@@ -1433,5 +1429,5 @@ static void __exit qpnp_pin_exit(void)
 MODULE_DESCRIPTION("QPNP PMIC gpio driver");
 MODULE_LICENSE("GPL v2");
 
-arch_initcall(qpnp_pin_init);
+module_init(qpnp_pin_init);
 module_exit(qpnp_pin_exit);

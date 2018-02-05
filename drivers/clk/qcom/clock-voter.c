@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -10,16 +10,13 @@
  * GNU General Public License for more details.
  */
 
-#define pr_fmt(fmt) "%s: " fmt, __func__
-
 #include <linux/err.h>
-#include <linux/rtmutex.h>
+#include <linux/mutex.h>
 #include <linux/clk.h>
 #include <linux/clk/msm-clk-provider.h>
 #include <soc/qcom/clock-voter.h>
-#include <soc/qcom/msm-clock-controller.h>
 
-static DEFINE_RT_MUTEX(voter_clk_lock);
+static DEFINE_MUTEX(voter_clk_lock);
 
 /* Aggregate the rate of clocks that are currently on. */
 static unsigned long voter_clk_aggregate_rate(const struct clk *parent)
@@ -45,7 +42,7 @@ static int voter_clk_set_rate(struct clk *clk, unsigned long rate)
 	if (v->is_branch)
 		return 0;
 
-	rt_mutex_lock(&voter_clk_lock);
+	mutex_lock(&voter_clk_lock);
 
 	if (v->enabled) {
 		struct clk *parent = clk->parent;
@@ -71,7 +68,7 @@ static int voter_clk_set_rate(struct clk *clk, unsigned long rate)
 	}
 	clk->rate = rate;
 unlock:
-	rt_mutex_unlock(&voter_clk_lock);
+	mutex_unlock(&voter_clk_lock);
 
 	return ret;
 }
@@ -83,7 +80,7 @@ static int voter_clk_prepare(struct clk *clk)
 	struct clk *parent;
 	struct clk_voter *v = to_clk_voter(clk);
 
-	rt_mutex_lock(&voter_clk_lock);
+	mutex_lock(&voter_clk_lock);
 	parent = clk->parent;
 
 	if (v->is_branch) {
@@ -103,7 +100,7 @@ static int voter_clk_prepare(struct clk *clk)
 	}
 	v->enabled = true;
 out:
-	rt_mutex_unlock(&voter_clk_lock);
+	mutex_unlock(&voter_clk_lock);
 
 	return ret;
 }
@@ -115,7 +112,7 @@ static void voter_clk_unprepare(struct clk *clk)
 	struct clk_voter *v = to_clk_voter(clk);
 
 
-	rt_mutex_lock(&voter_clk_lock);
+	mutex_lock(&voter_clk_lock);
 	parent = clk->parent;
 
 	/*
@@ -133,7 +130,7 @@ static void voter_clk_unprepare(struct clk *clk)
 		clk_set_rate(parent, new_rate);
 
 out:
-	rt_mutex_unlock(&voter_clk_lock);
+	mutex_unlock(&voter_clk_lock);
 }
 
 static int voter_clk_is_enabled(struct clk *clk)
@@ -176,27 +173,3 @@ struct clk_ops clk_ops_voter = {
 	.is_local = voter_clk_is_local,
 	.handoff = voter_clk_handoff,
 };
-
-static void *sw_vote_clk_dt_parser(struct device *dev,
-					struct device_node *np)
-{
-	struct clk_voter *v;
-	int rc;
-	u32 temp;
-
-	v = devm_kzalloc(dev, sizeof(*v), GFP_KERNEL);
-	if (!v) {
-		dt_err(np, "failed to alloc memory\n");
-		return ERR_PTR(-ENOMEM);
-	}
-
-	rc = of_property_read_u32(np, "qcom,config-rate", &temp);
-	if (rc) {
-		dt_prop_err(np, "qcom,config-rate", "is missing");
-		return ERR_PTR(rc);
-	}
-
-	v->c.ops = &clk_ops_voter;
-	return msmclk_generic_clk_init(dev, np, &v->c);
-}
-MSMCLK_PARSER(sw_vote_clk_dt_parser, "qcom,sw-vote-clk", 0);

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,8 +17,7 @@
 #include <linux/err.h>
 #include <linux/string.h>
 #include <linux/clk/msm-clock-generic.h>
-#include <linux/of_address.h>
-#include <linux/dma-mapping.h>
+
 #include "mdss-pll.h"
 
 int mdss_pll_util_resource_init(struct platform_device *pdev,
@@ -46,40 +45,6 @@ clk_err:
 	msm_dss_config_vreg(&pdev->dev, mp->vreg_config, mp->num_vreg, 0);
 vreg_err:
 	return rc;
-}
-
-/**
- * mdss_pll_get_mp_by_reg_name() -- Find power module by regulator name
- *@pll_res: Pointer to the PLL resource
- *@name: Regulator name as specified in the pll dtsi
- *
- * This is a helper function to retrieve the regulator information
- * for each pll resource.
- */
-struct dss_vreg *mdss_pll_get_mp_by_reg_name(struct mdss_pll_resources *pll_res
-		, char *name)
-{
-
-	struct dss_vreg *regulator = NULL;
-	int i;
-
-	if ((pll_res == NULL) || (pll_res->mp.vreg_config == NULL)) {
-		pr_err("%s Invalid PLL resource\n", __func__);
-		goto error;
-	}
-
-	regulator = pll_res->mp.vreg_config;
-
-	for (i = 0; i < pll_res->mp.num_vreg; i++) {
-		if (!strcmp(name, regulator->vreg_name)) {
-			pr_debug("Found regulator match for %s\n", name);
-			break;
-		}
-		regulator++;
-	}
-
-error:
-	return regulator;
 }
 
 void mdss_pll_util_resource_deinit(struct platform_device *pdev,
@@ -110,6 +75,11 @@ int mdss_pll_util_resource_enable(struct mdss_pll_resources *pll_res,
 	struct dss_module_power *mp = &pll_res->mp;
 
 	if (enable) {
+		if (pll_res->resource_refcount) {
+			pll_res->resource_refcount++;
+			return 0;
+		}
+
 		rc = msm_dss_enable_vreg(mp->vreg_config, mp->num_vreg, enable);
 		if (rc) {
 			pr_err("Failed to enable vregs rc=%d\n", rc);
@@ -127,10 +97,21 @@ int mdss_pll_util_resource_enable(struct mdss_pll_resources *pll_res,
 			pr_err("clock enable failed rc:%d\n", rc);
 			goto clk_err;
 		}
+		pll_res->resource_refcount++;
 	} else {
-		msm_dss_enable_clk(mp->clk_config, mp->num_clk, enable);
+		if (pll_res->resource_refcount) {
+			pll_res->resource_refcount--;
+		} else {
+			pr_err("Trying to disable the resources without enabling them\n");
+			return -EINVAL;
+		}
 
-		msm_dss_enable_vreg(mp->vreg_config, mp->num_vreg, enable);
+		if (!pll_res->resource_refcount) {
+			msm_dss_enable_clk(mp->clk_config, mp->num_clk, enable);
+
+			msm_dss_enable_vreg(mp->vreg_config, mp->num_vreg,
+									enable);
+		}
 	}
 
 	return rc;
@@ -328,48 +309,6 @@ clk_err:
 	return rc;
 }
 
-static int mdss_pll_util_parse_dfps(struct platform_device *pdev,
-	struct mdss_pll_resources *pll_res)
-{
-	int rc = 0;
-	struct device_node *pnode;
-	const u32 *addr;
-	u64 size;
-	phys_addr_t phys;
-
-	pnode = of_parse_phandle(pdev->dev.of_node, "linux,contiguous-region",
-		0);
-	if (IS_ERR_OR_NULL(pnode)) {
-		rc = -EINVAL;
-		goto parse_dfps_node_err;
-	}
-
-	addr = (const u32 *) of_get_address(pnode, 0, &size, NULL);
-	if (IS_ERR_OR_NULL(addr)) {
-		rc = -EINVAL;
-		pr_err("dfps addr error\n!");
-		goto parse_dfps_addr_err;
-	}
-
-	pll_res->dfps = (struct dfps_info *)dma_alloc_coherent(&pdev->dev,
-		size, &phys, GFP_KERNEL);
-	if (IS_ERR_OR_NULL(pll_res->dfps)) {
-		rc = -EINVAL;
-		pr_err("dfps alloc error\n!");
-		goto parse_dfps_addr_err;
-	}
-
-	pr_debug("dfps=%p phys=%pa enabled=%d cnt=%d\n", pll_res->dfps,
-		&phys, pll_res->dfps->panel_dfps.enabled,
-		pll_res->dfps->panel_dfps.frame_rate_cnt);
-
-parse_dfps_addr_err:
-	of_node_put(pnode);
-
-parse_dfps_node_err:
-	return rc;
-}
-
 int mdss_pll_util_resource_parse(struct platform_device *pdev,
 				struct mdss_pll_resources *pll_res)
 {
@@ -387,9 +326,6 @@ int mdss_pll_util_resource_parse(struct platform_device *pdev,
 		pr_err("clock name parsing failed rc=%d", rc);
 		goto clk_err;
 	}
-
-	if (mdss_pll_util_parse_dfps(pdev, pll_res))
-		pr_info("dfps not enabled!\n");
 
 	return rc;
 

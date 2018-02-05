@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/of.h>
@@ -32,7 +33,6 @@
 #define SW_OVERRIDE_MASK	BIT(2)
 #define HW_CONTROL_MASK		BIT(1)
 #define SW_COLLAPSE_MASK	BIT(0)
-#define GMEM_CLAMP_IO_MASK	BIT(0)
 
 /* Wait 2^n CXO cycles between all states. Here, n=2 (4 cycles). */
 #define EN_REST_WAIT_VAL	(0x2 << 20)
@@ -40,41 +40,6 @@
 #define CLK_DIS_WAIT_VAL	(0x2 << 12)
 
 #define TIMEOUT_US		100
-#define MAX_GDSCR_READS		100
-
-enum gdscr_status {
-	ENABLED,
-	DISABLED,
-};
-
-static int poll_gdsc_status(void __iomem *gdscr, enum gdscr_status status)
-{
-	int count;
-	u32 val;
-	for (count = MAX_GDSCR_READS; count > 0; count--) {
-		val = readl_relaxed(gdscr);
-		val &= PWR_ON_MASK;
-		switch (status) {
-		case ENABLED:
-			if (val)
-				return 0;
-			break;
-		case DISABLED:
-			if (!val)
-				return 0;
-			break;
-		}
-		/*
-		 * There is no guarantee about the delay needed for the enable
-		 * bit in the GDSCR to be set or reset after the GDSC state
-		 * changes. Hence, keep on checking for a reasonable number
-		 * of times until the bit is set with the least possible delay
-		 * between succeessive tries.
-		 */
-		udelay(1);
-	}
-	return -ETIMEDOUT;
-}
 
 struct gdsc {
 	struct regulator_dev	*rdev;
@@ -86,9 +51,6 @@ struct gdsc {
 	bool			toggle_periph;
 	bool			toggle_logic;
 	bool			resets_asserted;
-	bool			root_en;
-	int			root_clk_idx;
-	void __iomem		*domain_addr;
 };
 
 static int gdsc_is_enabled(struct regulator_dev *rdev)
@@ -107,20 +69,7 @@ static int gdsc_enable(struct regulator_dev *rdev)
 	uint32_t regval;
 	int i, ret;
 
-	if (sc->root_en)
-		clk_prepare_enable(sc->clocks[sc->root_clk_idx]);
-
 	if (sc->toggle_logic) {
-		if (sc->domain_addr) {
-			regval = readl_relaxed(sc->domain_addr);
-			regval &= ~GMEM_CLAMP_IO_MASK;
-			writel_relaxed(regval, sc->domain_addr);
-			/*
-			 * Make sure CLAMP_IO is de-asserted before continuing.
-			 */
-			wmb();
-		}
-
 		regval = readl_relaxed(sc->gdscr);
 		if (regval & HW_CONTROL_MASK) {
 			dev_warn(&rdev->dev, "Invalid enable while %s is under HW control\n",
@@ -131,7 +80,8 @@ static int gdsc_enable(struct regulator_dev *rdev)
 		regval &= ~SW_COLLAPSE_MASK;
 		writel_relaxed(regval, sc->gdscr);
 
-		ret = poll_gdsc_status(sc->gdscr, ENABLED);
+		ret = readl_tight_poll_timeout(sc->gdscr, regval,
+					regval & PWR_ON_MASK, TIMEOUT_US);
 		if (ret) {
 			dev_err(&rdev->dev, "%s enable timed out: 0x%x\n",
 				sc->rdesc.name, regval);
@@ -143,14 +93,11 @@ static int gdsc_enable(struct regulator_dev *rdev)
 		}
 	} else {
 		for (i = 0; i < sc->clock_count; i++)
-			if (likely(i != sc->root_clk_idx))
-				clk_reset(sc->clocks[i], CLK_RESET_DEASSERT);
+			clk_reset(sc->clocks[i], CLK_RESET_DEASSERT);
 		sc->resets_asserted = false;
 	}
 
 	for (i = 0; i < sc->clock_count; i++) {
-		if (unlikely(i == sc->root_clk_idx))
-			continue;
 		if (sc->toggle_mem)
 			clk_set_flags(sc->clocks[i], CLKFLAG_RETAIN_MEM);
 		if (sc->toggle_periph)
@@ -175,8 +122,6 @@ static int gdsc_disable(struct regulator_dev *rdev)
 	int i, ret = 0;
 
 	for (i = sc->clock_count-1; i >= 0; i--) {
-		if (unlikely(i == sc->root_clk_idx))
-			continue;
 		if (sc->toggle_mem)
 			clk_set_flags(sc->clocks[i], CLKFLAG_NORETAIN_MEM);
 		if (sc->toggle_periph)
@@ -194,25 +139,17 @@ static int gdsc_disable(struct regulator_dev *rdev)
 		regval |= SW_COLLAPSE_MASK;
 		writel_relaxed(regval, sc->gdscr);
 
-		ret = poll_gdsc_status(sc->gdscr, DISABLED);
+		ret = readl_tight_poll_timeout(sc->gdscr, regval,
+					       !(regval & PWR_ON_MASK),
+						TIMEOUT_US);
 		if (ret)
 			dev_err(&rdev->dev, "%s disable timed out: 0x%x\n",
 				sc->rdesc.name, regval);
-
-		if (sc->domain_addr) {
-			regval = readl_relaxed(sc->domain_addr);
-			regval |= GMEM_CLAMP_IO_MASK;
-			writel_relaxed(regval, sc->domain_addr);
-		}
 	} else {
 		for (i = sc->clock_count-1; i >= 0; i--)
-			if (likely(i != sc->root_clk_idx))
-				clk_reset(sc->clocks[i], CLK_RESET_ASSERT);
+			clk_reset(sc->clocks[i], CLK_RESET_ASSERT);
 		sc->resets_asserted = true;
 	}
-
-	if (sc->root_en)
-		clk_disable_unprepare(sc->clocks[sc->root_clk_idx]);
 
 	return ret;
 }
@@ -276,7 +213,8 @@ static int gdsc_set_mode(struct regulator_dev *rdev, unsigned int mode)
 		 */
 		mb();
 		udelay(1);
-		ret = poll_gdsc_status(sc->gdscr, ENABLED);
+		ret = readl_tight_poll_timeout(sc->gdscr, regval,
+					regval & PWR_ON_MASK, TIMEOUT_US);
 		if (ret) {
 			dev_err(&rdev->dev, "%s set_mode timed out: 0x%x\n",
 				sc->rdesc.name, regval);
@@ -332,15 +270,6 @@ static int gdsc_probe(struct platform_device *pdev)
 	if (sc->gdscr == NULL)
 		return -ENOMEM;
 
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-							"domain_addr");
-	if (res) {
-		sc->domain_addr = devm_ioremap(&pdev->dev, res->start,
-							resource_size(res));
-		if (sc->domain_addr == NULL)
-			return -ENOMEM;
-	}
-
 	sc->clock_count = of_property_count_strings(pdev->dev.of_node,
 					    "clock-names");
 	if (sc->clock_count == -EINVAL) {
@@ -354,12 +283,6 @@ static int gdsc_probe(struct platform_device *pdev)
 			sizeof(struct clk *) * sc->clock_count, GFP_KERNEL);
 	if (!sc->clocks)
 		return -ENOMEM;
-
-	sc->root_clk_idx = -1;
-
-	sc->root_en = of_property_read_bool(pdev->dev.of_node,
-						"qcom,enable-root-clk");
-
 	for (i = 0; i < sc->clock_count; i++) {
 		const char *clock_name;
 		of_property_read_string_index(pdev->dev.of_node, "clock-names",
@@ -372,14 +295,6 @@ static int gdsc_probe(struct platform_device *pdev)
 					clock_name);
 			return rc;
 		}
-
-		if (!strcmp(clock_name, "core_root_clk"))
-			sc->root_clk_idx = i;
-	}
-
-	if (sc->root_en && (sc->root_clk_idx == -1)) {
-		dev_err(&pdev->dev, "Failed to get root clock name\n");
-		return -EINVAL;
 	}
 
 	sc->rdesc.id = atomic_inc_return(&gdsc_count);
@@ -420,7 +335,8 @@ static int gdsc_probe(struct platform_device *pdev)
 		regval &= ~SW_COLLAPSE_MASK;
 		writel_relaxed(regval, sc->gdscr);
 
-		ret = poll_gdsc_status(sc->gdscr, ENABLED);
+		ret = readl_tight_poll_timeout(sc->gdscr, regval,
+					regval & PWR_ON_MASK, TIMEOUT_US);
 		if (ret) {
 			dev_err(&pdev->dev, "%s enable timed out: 0x%x\n",
 				sc->rdesc.name, regval);

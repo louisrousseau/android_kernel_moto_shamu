@@ -227,7 +227,6 @@ void usb_free_all_descriptors(struct usb_function *f)
 {
 	usb_free_descriptors(f->fs_descriptors);
 	usb_free_descriptors(f->hs_descriptors);
-	if (f->ss_descriptors)
-		usb_free_descriptors(f->ss_descriptors);
+	usb_free_descriptors(f->ss_descriptors);
 }
 EXPORT_SYMBOL_GPL(usb_free_all_descriptors);

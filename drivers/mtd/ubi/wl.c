@@ -1,8 +1,5 @@
 /*
  * Copyright (c) International Business Machines Corp., 2006
- * Copyright (c) 2014 - 2015, Linux Foundation. All rights reserved.
- * Linux Foundation chooses to take subject only to the GPLv2
- * license terms, and distributes only under these terms.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -142,10 +139,6 @@ static int self_check_in_wl_tree(const struct ubi_device *ubi,
 				 struct ubi_wl_entry *e, struct rb_root *root);
 static int self_check_in_pq(const struct ubi_device *ubi,
 			    struct ubi_wl_entry *e);
-static int schedule_erase(struct ubi_device *ubi, struct ubi_wl_entry *e,
-			  int vol_id, int lnum, int torture);
-static int sync_erase(struct ubi_device *ubi, struct ubi_wl_entry *e,
-		      int torture);
 
 #ifdef CONFIG_MTD_UBI_FASTMAP
 /**
@@ -260,7 +253,7 @@ static int do_work(struct ubi_device *ubi)
 	 */
 	err = wrk->func(ubi, wrk, 0);
 	if (err)
-		ubi_err(ubi->ubi_num, "work failed with error code %d", err);
+		ubi_err("work failed with error code %d", err);
 	up_read(&ubi->work_sem);
 
 	return err;
@@ -279,7 +272,7 @@ static int produce_free_peb(struct ubi_device *ubi)
 {
 	int err;
 
-	while (!ubi->free.rb_node && ubi->works_count) {
+	while (!ubi->free.rb_node) {
 		spin_unlock(&ubi->wl_lock);
 
 		dbg_wl("do one work synchronously");
@@ -294,14 +287,14 @@ static int produce_free_peb(struct ubi_device *ubi)
 }
 
 /**
- * ubi_in_wl_tree - check if wear-leveling entry is present in a WL RB-tree.
+ * in_wl_tree - check if wear-leveling entry is present in a WL RB-tree.
  * @e: the wear-leveling entry to check
  * @root: the root of the tree
  *
  * This function returns non-zero if @e is in the @root RB-tree and zero if it
  * is not.
  */
-int ubi_in_wl_tree(struct ubi_wl_entry *e, struct rb_root *root)
+static int in_wl_tree(struct ubi_wl_entry *e, struct rb_root *root)
 {
 	struct rb_node *p;
 
@@ -477,12 +470,8 @@ struct ubi_wl_entry *ubi_wl_get_fm_peb(struct ubi_device *ubi, int anchor)
 {
 	struct ubi_wl_entry *e = NULL;
 
-	if (!ubi->free.rb_node || (ubi->free_count - ubi->beb_rsvd_pebs < 1)) {
-		ubi_warn(ubi->ubi_num,
-		"Can't get peb for fastmap:anchor=%d, free_cnt=%d, reserved=%d",
-			 anchor, ubi->free_count, ubi->beb_rsvd_pebs);
+	if (!ubi->free.rb_node || (ubi->free_count - ubi->beb_rsvd_pebs < 1))
 		goto out;
-	}
 
 	if (anchor)
 		e = find_anchor_wl_entry(&ubi->free);
@@ -518,7 +507,7 @@ static int __wl_get_peb(struct ubi_device *ubi)
 retry:
 	if (!ubi->free.rb_node) {
 		if (ubi->works_count == 0) {
-			ubi_err(ubi->ubi_num, "no free eraseblocks");
+			ubi_err("no free eraseblocks");
 			ubi_assert(list_empty(&ubi->works));
 			return -ENOSPC;
 		}
@@ -531,7 +520,7 @@ retry:
 
 	e = find_mean_wl_entry(ubi, &ubi->free);
 	if (!e) {
-		ubi_err(ubi->ubi_num, "no free eraseblocks");
+		ubi_err("no free eraseblocks");
 		return -ENOSPC;
 	}
 
@@ -606,27 +595,13 @@ static void refill_wl_pool(struct ubi_device *ubi)
 static void refill_wl_user_pool(struct ubi_device *ubi)
 {
 	struct ubi_fm_pool *pool = &ubi->fm_pool;
-	int err;
 
 	return_unused_pool_pebs(ubi, pool);
 
 	for (pool->size = 0; pool->size < pool->max_size; pool->size++) {
-retry:
 		if (!ubi->free.rb_node ||
-		   (ubi->free_count - ubi->beb_rsvd_pebs < 1)) {
-			/* There are no avaliable pebs. Try to free
-			 * PEB by means of synchronous execution of
-			 * pending works.
-			 */
-			if (ubi->works_count == 0)
-				break;
-			spin_unlock(&ubi->wl_lock);
-			err = do_work(ubi);
-			spin_lock(&ubi->wl_lock);
-			if (err < 0)
-				break;
-			goto retry;
-		}
+		   (ubi->free_count - ubi->beb_rsvd_pebs < 1))
+			break;
 
 		pool->pebs[pool->size] = __wl_get_peb(ubi);
 		if (pool->pebs[pool->size] < 0)
@@ -700,8 +675,6 @@ static struct ubi_wl_entry *get_peb_for_wl(struct ubi_device *ubi)
 
 	e = find_wl_entry(ubi, &ubi->free, WL_FREE_MAX_DIFF);
 	self_check_in_wl_tree(ubi, e, &ubi->free);
-	ubi->free_count--;
-	ubi_assert(ubi->free_count >= 0);
 	rb_erase(&e->u.rb, &ubi->free);
 
 	return e;
@@ -715,172 +688,16 @@ int ubi_wl_get_peb(struct ubi_device *ubi)
 	peb = __wl_get_peb(ubi);
 	spin_unlock(&ubi->wl_lock);
 
-	if (peb < 0)
-		return peb;
-
 	err = ubi_self_check_all_ff(ubi, peb, ubi->vid_hdr_aloffset,
 				    ubi->peb_size - ubi->vid_hdr_aloffset);
 	if (err) {
-		ubi_err(ubi->ubi_num,
-			"new PEB %d does not contain all 0xFF bytes", peb);
+		ubi_err("new PEB %d does not contain all 0xFF bytes", peb);
 		return err;
 	}
 
 	return peb;
 }
 #endif
-
-/**
- * ubi_wl_scan_all - Scan all PEB's
- * @ubi: UBI device description object
- *
- * This function schedules all device PEBs for erasure if free, or for
- * scrubbing otherwise. This trigger is used to prevent data loss due to read
- * disturb, data retention.
- *
- * Return 0 in case of success, (negative) error code otherwise
- *
- */
-int ubi_wl_scrub_all(struct ubi_device *ubi)
-{
-	struct rb_node *node;
-	struct ubi_wl_entry *wl_e, *tmp;
-	int i, err = 0;
-	struct ubi_wl_entry *sync_erase_q[NUM_PEBS_TO_SYNC_ERASE] = {0};
-	int sync_erase_pos = 0;
-
-	if (!ubi->lookuptbl) {
-		ubi_err(ubi->ubi_num, "lookuptbl is null");
-		return -ENOENT;
-	}
-
-	spin_lock(&ubi->wl_lock);
-	if (ubi->scrub_in_progress) {
-		ubi_err(ubi->ubi_num,
-			"Scan already in progress, ignoring the trigger");
-		err = -EPERM;
-		spin_unlock(&ubi->wl_lock);
-		return err;
-	}
-	ubi->scrub_in_progress = true;
-	/* stop all works in order to freeze system state */
-	ubi->thread_enabled = 0;
-	spin_unlock(&ubi->wl_lock);
-	down_write(&ubi->work_sem);
-	up_write(&ubi->work_sem);
-
-	/*
-	 * fm_mutex prevents fastmap flush.
-	 * Without FM flush there is no pools refill.
-	 * When the pools are empty, there are no available PEBSs for write.
-	 * Thus prevent PEBS's from moving under our feet.
-	 *
-	 * Keep the wl_lock, while iterating the wl data structures.
-	 */
-	mutex_lock(&ubi->fm_mutex);
-	spin_lock(&ubi->wl_lock);
-
-	ubi_msg(ubi->ubi_num, "Scheduling all PEBs for scrub/erasure");
-
-	/*
-	 * Flush the pools into the free list before erasing all the
-	 * PEBS in the free list.
-	 */
-	return_unused_pool_pebs(ubi, &ubi->fm_wl_pool);
-	ubi->fm_wl_pool.used = ubi->fm_wl_pool.size = 0;
-	return_unused_pool_pebs(ubi, &ubi->fm_pool);
-	ubi->fm_pool.used = ubi->fm_pool.size = 0;
-
-	/* PEBs in free list */
-	while ((node = rb_first(&ubi->free)) != NULL) {
-		wl_e = rb_entry(node, struct ubi_wl_entry, u.rb);
-		/* Sanity check to verify consistency */
-		if (self_check_in_wl_tree(ubi, wl_e, &ubi->free)) {
-			ubi_err(ubi->ubi_num, "PEB %d moved from free tree",
-				wl_e->pnum);
-			err = -EAGAIN;
-			spin_unlock(&ubi->wl_lock);
-			goto out;
-		}
-		rb_erase(&wl_e->u.rb, &ubi->free);
-		ubi->free_count--;
-		if (sync_erase_pos < NUM_PEBS_TO_SYNC_ERASE) {
-			sync_erase_q[sync_erase_pos++] = wl_e;
-		} else {
-			spin_unlock(&ubi->wl_lock);
-			err = schedule_erase(ubi, wl_e, UBI_UNKNOWN,
-					 UBI_UNKNOWN, 0);
-			spin_lock(&ubi->wl_lock);
-		}
-		if (err) {
-			ubi_err(ubi->ubi_num,
-				"Failed to schedule erase for PEB %d (err=%d)",
-				wl_e->pnum, err);
-			ubi_ro_mode(ubi);
-			spin_unlock(&ubi->wl_lock);
-			goto out;
-		}
-	}
-
-	/* Move all used pebs to scrub tree */
-	while ((node = rb_first(&ubi->used)) != NULL) {
-		wl_e = rb_entry(node, struct ubi_wl_entry, u.rb);
-		rb_erase(&wl_e->u.rb, &ubi->used);
-		wl_tree_add(wl_e, &ubi->scrub);
-	}
-
-	/* Go over protection queue */
-	for (i = 0; i < UBI_PROT_QUEUE_LEN; i++) {
-		list_for_each_entry_safe(wl_e, tmp, &ubi->pq[i], u.list) {
-			spin_unlock(&ubi->wl_lock);
-			err = ubi_wl_scrub_peb(ubi, wl_e->pnum);
-			spin_lock(&ubi->wl_lock);
-			if (err)
-				ubi_err(ubi->ubi_num,
-					"Failed to schedule scrub for PEB %d (err=%d)",
-					wl_e->pnum, err);
-		}
-	}
-	spin_unlock(&ubi->wl_lock);
-	for (i = 0; i < sync_erase_pos; i++) {
-		wl_e = sync_erase_q[i];
-		err = sync_erase(ubi, wl_e, 0);
-		if (err) {
-			ubi_err(ubi->ubi_num, "Failed to erase PEB %d (err=%d)",
-				wl_e->pnum, err);
-			err = schedule_erase(ubi, wl_e, UBI_UNKNOWN,
-					UBI_UNKNOWN, 0);
-			if (err)
-				ubi_err(ubi->ubi_num, "Failed to schedule scrub for PEB %d (err=%d)",
-					wl_e->pnum, err);
-		}
-		/* even if have errors we still have to return those PEB's */
-		spin_lock(&ubi->wl_lock);
-		wl_tree_add(wl_e, &ubi->free);
-		ubi->free_count++;
-		spin_unlock(&ubi->wl_lock);
-	}
-
-out:
-	mutex_unlock(&ubi->fm_mutex);
-
-	/* Resume the worker thread */
-	spin_lock(&ubi->wl_lock);
-	ubi->thread_enabled = 1;
-	spin_unlock(&ubi->wl_lock);
-	if (!ubi_dbg_is_bgt_disabled(ubi))
-		wake_up_process(ubi->bgt_thread);
-
-	/* Make sure all PEBs are scrubed after reset */
-	err = ubi_update_fastmap(ubi);
-
-	spin_lock(&ubi->wl_lock);
-	ubi->scrub_in_progress = false;
-	spin_unlock(&ubi->wl_lock);
-	ubi_msg(ubi->ubi_num, "Scrubbing all PEBs completed. err = %d", err);
-
-	return err;
-}
 
 /**
  * prot_queue_del - remove a physical eraseblock from the protection queue.
@@ -942,8 +759,7 @@ static int sync_erase(struct ubi_device *ubi, struct ubi_wl_entry *e,
 		 * Erase counter overflow. Upgrade UBI and use 64-bit
 		 * erase counters internally.
 		 */
-		ubi_err(ubi->ubi_num,
-			"erase counter overflow at PEB %d, EC %llu",
+		ubi_err("erase counter overflow at PEB %d, EC %llu",
 			e->pnum, ec);
 		err = -EINVAL;
 		goto out_free;
@@ -1256,7 +1072,6 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 
 			/* Give the unused PEB back */
 			wl_tree_add(e2, &ubi->free);
-			ubi->free_count++;
 			goto out_cancel;
 		}
 		self_check_in_wl_tree(ubi, e1, &ubi->used);
@@ -1319,8 +1134,7 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 			goto out_not_moved;
 		}
 
-		ubi_err(ubi->ubi_num,
-			"error %d while reading VID header from PEB %d",
+		ubi_err("error %d while reading VID header from PEB %d",
 			err, e1->pnum);
 		goto out_error;
 	}
@@ -1364,8 +1178,7 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 			 * UBI from trying to move it over and over again.
 			 */
 			if (ubi->erroneous_peb_count > ubi->max_erroneous) {
-				ubi_err(ubi->ubi_num,
-					"too many erroneous eraseblocks (%d)",
+				ubi_err("too many erroneous eraseblocks (%d)",
 					ubi->erroneous_peb_count);
 				goto out_error;
 			}
@@ -1381,8 +1194,7 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 
 	/* The PEB has been successfully moved */
 	if (scrubbing)
-		ubi_msg(ubi->ubi_num,
-			"scrubbed PEB %d (LEB %d:%d), data moved to PEB %d",
+		ubi_msg("scrubbed PEB %d (LEB %d:%d), data moved to PEB %d",
 			e1->pnum, vol_id, lnum, e2->pnum);
 	ubi_free_vid_hdr(ubi, vid_hdr);
 
@@ -1397,6 +1209,7 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 
 	err = do_sync_erase(ubi, e1, vol_id, lnum, 0);
 	if (err) {
+		kmem_cache_free(ubi_wl_entry_slab, e1);
 		if (e2)
 			kmem_cache_free(ubi_wl_entry_slab, e2);
 		goto out_ro;
@@ -1410,8 +1223,10 @@ static int wear_leveling_worker(struct ubi_device *ubi, struct ubi_work *wrk,
 		dbg_wl("PEB %d (LEB %d:%d) was put meanwhile, erase",
 		       e2->pnum, vol_id, lnum);
 		err = do_sync_erase(ubi, e2, vol_id, lnum, 0);
-		if (err)
+		if (err) {
+			kmem_cache_free(ubi_wl_entry_slab, e2);
 			goto out_ro;
+		}
 	}
 
 	dbg_wl("done");
@@ -1447,19 +1262,19 @@ out_not_moved:
 
 	ubi_free_vid_hdr(ubi, vid_hdr);
 	err = do_sync_erase(ubi, e2, vol_id, lnum, torture);
-	if (err)
+	if (err) {
+		kmem_cache_free(ubi_wl_entry_slab, e2);
 		goto out_ro;
-
+	}
 	mutex_unlock(&ubi->move_mutex);
 	return 0;
 
 out_error:
 	if (vol_id != -1)
-		ubi_err(ubi->ubi_num, "error %d while moving PEB %d to PEB %d",
+		ubi_err("error %d while moving PEB %d to PEB %d",
 			err, e1->pnum, e2->pnum);
 	else
-		ubi_err(ubi->ubi_num,
-			"error %d while moving PEB %d (LEB %d:%d) to PEB %d",
+		ubi_err("error %d while moving PEB %d (LEB %d:%d) to PEB %d",
 			err, e1->pnum, vol_id, lnum, e2->pnum);
 	spin_lock(&ubi->wl_lock);
 	ubi->move_from = ubi->move_to = NULL;
@@ -1639,7 +1454,7 @@ static int erase_worker(struct ubi_device *ubi, struct ubi_work *wl_wrk,
 		return err;
 	}
 
-	ubi_err(ubi->ubi_num, "failed to erase PEB %d, error %d", pnum, err);
+	ubi_err("failed to erase PEB %d, error %d", pnum, err);
 	kfree(wl_wrk);
 
 	if (err == -EINTR || err == -ENOMEM || err == -EAGAIN ||
@@ -1667,8 +1482,7 @@ static int erase_worker(struct ubi_device *ubi, struct ubi_work *wl_wrk,
 	/* It is %-EIO, the PEB went bad */
 
 	if (!ubi->bad_allowed) {
-		ubi_err(ubi->ubi_num, "bad physical eraseblock %d detected",
-			pnum);
+		ubi_err("bad physical eraseblock %d detected", pnum);
 		goto out_ro;
 	}
 
@@ -1676,8 +1490,7 @@ static int erase_worker(struct ubi_device *ubi, struct ubi_work *wl_wrk,
 	if (ubi->beb_rsvd_pebs == 0) {
 		if (ubi->avail_pebs == 0) {
 			spin_unlock(&ubi->volumes_lock);
-			ubi_err(ubi->ubi_num,
-				"no reserved/available physical eraseblocks");
+			ubi_err("no reserved/available physical eraseblocks");
 			goto out_ro;
 		}
 		ubi->avail_pebs -= 1;
@@ -1685,7 +1498,7 @@ static int erase_worker(struct ubi_device *ubi, struct ubi_work *wl_wrk,
 	}
 	spin_unlock(&ubi->volumes_lock);
 
-	ubi_msg(ubi->ubi_num, "mark PEB %d as bad", pnum);
+	ubi_msg("mark PEB %d as bad", pnum);
 	err = ubi_io_mark_bad(ubi, pnum);
 	if (err)
 		goto out_ro;
@@ -1706,13 +1519,11 @@ static int erase_worker(struct ubi_device *ubi, struct ubi_work *wl_wrk,
 	ubi->good_peb_count -= 1;
 	ubi_calculate_reserved(ubi);
 	if (available_consumed)
-		ubi_warn(ubi->ubi_num,
-			 "no PEBs in the reserved pool, used an available PEB");
+		ubi_warn("no PEBs in the reserved pool, used an available PEB");
 	else if (ubi->beb_rsvd_pebs)
-		ubi_msg(ubi->ubi_num, "%d PEBs left in the reserve",
-			ubi->beb_rsvd_pebs);
+		ubi_msg("%d PEBs left in the reserve", ubi->beb_rsvd_pebs);
 	else
-		ubi_warn(ubi->ubi_num, "last PEB from the reserve was used");
+		ubi_warn("last PEB from the reserve was used");
 	spin_unlock(&ubi->volumes_lock);
 
 	return err;
@@ -1782,13 +1593,13 @@ retry:
 		spin_unlock(&ubi->wl_lock);
 		return 0;
 	} else {
-		if (ubi_in_wl_tree(e, &ubi->used)) {
+		if (in_wl_tree(e, &ubi->used)) {
 			self_check_in_wl_tree(ubi, e, &ubi->used);
 			rb_erase(&e->u.rb, &ubi->used);
-		} else if (ubi_in_wl_tree(e, &ubi->scrub)) {
+		} else if (in_wl_tree(e, &ubi->scrub)) {
 			self_check_in_wl_tree(ubi, e, &ubi->scrub);
 			rb_erase(&e->u.rb, &ubi->scrub);
-		} else if (ubi_in_wl_tree(e, &ubi->erroneous)) {
+		} else if (in_wl_tree(e, &ubi->erroneous)) {
 			self_check_in_wl_tree(ubi, e, &ubi->erroneous);
 			rb_erase(&e->u.rb, &ubi->erroneous);
 			ubi->erroneous_peb_count -= 1;
@@ -1798,7 +1609,7 @@ retry:
 		} else {
 			err = prot_queue_del(ubi, e->pnum);
 			if (err) {
-				ubi_err(ubi->ubi_num, "PEB %d not found", pnum);
+				ubi_err("PEB %d not found", pnum);
 				ubi_ro_mode(ubi);
 				spin_unlock(&ubi->wl_lock);
 				return err;
@@ -1831,13 +1642,13 @@ int ubi_wl_scrub_peb(struct ubi_device *ubi, int pnum)
 {
 	struct ubi_wl_entry *e;
 
-	ubi_msg(ubi->ubi_num, "schedule PEB %d for scrubbing", pnum);
+	ubi_msg("schedule PEB %d for scrubbing", pnum);
 
 retry:
 	spin_lock(&ubi->wl_lock);
 	e = ubi->lookuptbl[pnum];
-	if (e == ubi->move_from || ubi_in_wl_tree(e, &ubi->scrub) ||
-				   ubi_in_wl_tree(e, &ubi->erroneous)) {
+	if (e == ubi->move_from || in_wl_tree(e, &ubi->scrub) ||
+				   in_wl_tree(e, &ubi->erroneous)) {
 		spin_unlock(&ubi->wl_lock);
 		return 0;
 	}
@@ -1855,7 +1666,7 @@ retry:
 		goto retry;
 	}
 
-	if (ubi_in_wl_tree(e, &ubi->used)) {
+	if (in_wl_tree(e, &ubi->used)) {
 		self_check_in_wl_tree(ubi, e, &ubi->used);
 		rb_erase(&e->u.rb, &ubi->used);
 	} else {
@@ -1863,14 +1674,13 @@ retry:
 
 		err = prot_queue_del(ubi, e->pnum);
 		if (err) {
-			ubi_err(ubi->ubi_num, "PEB %d not found", pnum);
+			ubi_err("PEB %d not found", pnum);
 			ubi_ro_mode(ubi);
 			spin_unlock(&ubi->wl_lock);
 			return err;
 		}
 	}
 
-	ubi_msg(ubi->ubi_num, "schedule PEB %d for scrubbing", pnum);
 	wl_tree_add(e, &ubi->scrub);
 	spin_unlock(&ubi->wl_lock);
 
@@ -1906,12 +1716,12 @@ int ubi_wl_flush(struct ubi_device *ubi, int vol_id, int lnum)
 	       vol_id, lnum, ubi->works_count);
 
 	while (found) {
-		struct ubi_work *wrk, *tmp;
+		struct ubi_work *wrk;
 		found = 0;
 
 		down_read(&ubi->work_sem);
 		spin_lock(&ubi->wl_lock);
-		list_for_each_entry_safe(wrk, tmp, &ubi->works, list) {
+		list_for_each_entry(wrk, &ubi->works, list) {
 			if ((vol_id == UBI_ALL || wrk->vol_id == vol_id) &&
 			    (lnum == UBI_ALL || wrk->lnum == lnum)) {
 				list_del(&wrk->list);
@@ -1984,19 +1794,15 @@ int ubi_thread(void *u)
 	int failures = 0;
 	struct ubi_device *ubi = u;
 
-	ubi_msg(ubi->ubi_num, "background thread \"%s\" started, PID %d",
+	ubi_msg("background thread \"%s\" started, PID %d",
 		ubi->bgt_name, task_pid_nr(current));
 
 	set_freezable();
 	for (;;) {
 		int err;
 
-		if (kthread_should_stop()) {
-			ubi_msg(ubi->ubi_num,
-				"background thread \"%s\" should stop, PID %d",
-					ubi->bgt_name, task_pid_nr(current));
+		if (kthread_should_stop())
 			break;
-		}
 
 		if (try_to_freeze())
 			continue;
@@ -2013,16 +1819,14 @@ int ubi_thread(void *u)
 
 		err = do_work(ubi);
 		if (err) {
-			ubi_err(ubi->ubi_num,
-				"%s: work failed with error code %d",
+			ubi_err("%s: work failed with error code %d",
 				ubi->bgt_name, err);
 			if (failures++ > WL_MAX_FAILURES) {
 				/*
 				 * Too many failures, disable the thread and
 				 * switch to read-only mode.
 				 */
-				ubi_msg(ubi->ubi_num,
-					"%s: %d consecutive failures",
+				ubi_msg("%s: %d consecutive failures",
 					ubi->bgt_name, WL_MAX_FAILURES);
 				ubi_ro_mode(ubi);
 				ubi->thread_enabled = 0;
@@ -2173,12 +1977,10 @@ int ubi_wl_init(struct ubi_device *ubi, struct ubi_attach_info *ai)
 #endif
 
 	if (ubi->avail_pebs < reserved_pebs) {
-		ubi_err(ubi->ubi_num,
-			"no enough physical eraseblocks (%d, need %d)",
+		ubi_err("no enough physical eraseblocks (%d, need %d)",
 			ubi->avail_pebs, reserved_pebs);
 		if (ubi->corr_peb_count)
-			ubi_err(ubi->ubi_num,
-				"%d PEBs are corrupted and not used",
+			ubi_err("%d PEBs are corrupted and not used",
 				ubi->corr_peb_count);
 		goto out_free;
 	}
@@ -2224,7 +2026,7 @@ static void protection_queue_destroy(struct ubi_device *ubi)
  */
 void ubi_wl_close(struct ubi_device *ubi)
 {
-	ubi_msg(ubi->ubi_num, "close the WL sub-system");
+	dbg_wl("close the WL sub-system");
 	cancel_pending(ubi);
 	protection_queue_destroy(ubi);
 	tree_destroy(&ubi->used);
@@ -2266,9 +2068,8 @@ static int self_check_ec(struct ubi_device *ubi, int pnum, int ec)
 
 	read_ec = be64_to_cpu(ec_hdr->ec);
 	if (ec != read_ec && read_ec - ec > 1) {
-		ubi_err(ubi->ubi_num, "self-check failed for PEB %d", pnum);
-		ubi_err(ubi->ubi_num, "read EC is %lld, should be %d",
-			read_ec, ec);
+		ubi_err("self-check failed for PEB %d", pnum);
+		ubi_err("read EC is %lld, should be %d", read_ec, ec);
 		dump_stack();
 		err = 1;
 	} else
@@ -2294,11 +2095,10 @@ static int self_check_in_wl_tree(const struct ubi_device *ubi,
 	if (!ubi_dbg_chk_gen(ubi))
 		return 0;
 
-	if (ubi_in_wl_tree(e, root))
+	if (in_wl_tree(e, root))
 		return 0;
 
-	ubi_err(ubi->ubi_num,
-		"self-check failed for PEB %d, EC %d, RB-tree %p ",
+	ubi_err("self-check failed for PEB %d, EC %d, RB-tree %p ",
 		e->pnum, e->ec, root);
 	dump_stack();
 	return -EINVAL;
@@ -2326,8 +2126,7 @@ static int self_check_in_pq(const struct ubi_device *ubi,
 			if (p == e)
 				return 0;
 
-	ubi_err(ubi->ubi_num,
-		"self-check failed for PEB %d, EC %d, Protect queue",
+	ubi_err("self-check failed for PEB %d, EC %d, Protect queue",
 		e->pnum, e->ec);
 	dump_stack();
 	return -EINVAL;

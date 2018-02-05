@@ -18,8 +18,6 @@
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/vmalloc.h>
-#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/input/mt.h>
@@ -55,7 +53,7 @@ struct evdev_client {
 	struct list_head node;
 	int clkid;
 	unsigned int bufsize;
-	struct input_event buffer[];
+	struct input_event *buffer;
 };
 
 static void __pass_event(struct evdev_client *client,
@@ -302,7 +300,8 @@ static int evdev_release(struct inode *inode, struct file *file)
 	if (client->use_wake_lock)
 		wake_lock_destroy(&client->wake_lock);
 
-	kvfree(client);
+	kfree(client->buffer);
+	kfree(client);
 
 	evdev_close_device(evdev);
 
@@ -322,16 +321,22 @@ static int evdev_open(struct inode *inode, struct file *file)
 {
 	struct evdev *evdev = container_of(inode->i_cdev, struct evdev, cdev);
 	unsigned int bufsize = evdev_compute_buffer_size(evdev->handle.dev);
-	unsigned int size = sizeof(struct evdev_client) +
-					bufsize * sizeof(struct input_event);
 	struct evdev_client *client;
 	int error;
 
-	client = kzalloc(size, GFP_KERNEL | __GFP_NOWARN);
-	if (!client)
-		client = vzalloc(size);
-	if (!client)
-		return -ENOMEM;
+	client = kzalloc(sizeof(struct evdev_client), GFP_KERNEL);
+	if (!client) {
+		error = -ENOMEM;
+		goto err_return;
+	} else {
+		client->buffer = kzalloc(bufsize * sizeof(struct input_event),
+					GFP_KERNEL);
+		if (!client->buffer) {
+			kfree(client);
+			error = -ENOMEM;
+			goto err_return;
+		}
+	}
 
 	client->clkid = CLOCK_MONOTONIC;
 	client->bufsize = bufsize;
@@ -352,7 +357,9 @@ static int evdev_open(struct inode *inode, struct file *file)
 
  err_free_client:
 	evdev_detach_client(evdev, client);
-	kvfree(client);
+	kfree(client->buffer);
+	kfree(client);
+ err_return:
 	return error;
 }
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,8 +25,6 @@
 #include <linux/mmc/mmc.h>
 
 #define MODULE_NAME "mmc_block_test"
-#define MMC_TEST_BLK_DEV_TYPE_PREFIX "mmc"
-
 #define TEST_MAX_SECTOR_RANGE		(600*1024*1024) /* 600 MB */
 #define TEST_MAX_BIOS_PER_REQ		128
 #define CMD23_PACKED_BIT	(1 << 30)
@@ -184,8 +182,6 @@ struct mmc_block_test_debug {
 	struct dentry *new_req_notification_test;
 };
 
-static struct blk_dev_test_type *mmc_bdt;
-
 struct mmc_block_test_data {
 	/* The number of write requests that the test will issue */
 	int num_requests;
@@ -213,15 +209,17 @@ struct mmc_block_test_data {
 	 * self-defined specific data
 	 */
 	struct test_info test_info;
+	/* mmc block device test */
+	struct blk_dev_test_type bdt;
 	/* Current BKOPs test stage */
 	enum bkops_test_stages	bkops_stage;
 	/* A wait queue for BKOPs tests */
 	wait_queue_head_t bkops_wait_q;
 	/* A counter for the number of test requests completed */
 	unsigned int completed_req_count;
-
-	struct test_iosched *test_iosched;
 };
+
+static struct mmc_block_test_data *mbtd;
 
 void print_mmc_packing_stats(struct mmc_card *card)
 {
@@ -297,8 +295,6 @@ static void test_invalid_packed_cmd(struct request_queue *q,
 	struct mmc_blk_request *brq = &mqrq->brq;
 	int num_requests;
 	int max_packed_reqs;
-	struct test_iosched *tios = q->elevator->elevator_data;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 
 	if (!mq) {
 		pr_err("%s: NULL mq", __func__);
@@ -433,9 +429,7 @@ static int test_err_check(struct mmc_card *card, struct mmc_async_req *areq)
 {
 	struct mmc_queue_req *mq_rq = container_of(areq, struct mmc_queue_req,
 			mmc_active);
-	struct request_queue *req_q = mq_rq->req->q;
-	struct test_iosched *tios = req_q->elevator->elevator_data;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
+	struct request_queue *req_q = test_iosched_get_req_queue();
 	struct mmc_queue *mq;
 	int max_packed_reqs;
 	int ret = 0;
@@ -553,9 +547,14 @@ static int test_err_check(struct mmc_card *card, struct mmc_async_req *areq)
  * pointer in the test_info data structure. Given a valid test_data instance,
  * the function returns a string resembling the test name, based on the testcase
  */
-static char *get_test_case_str(int testcase)
+static char *get_test_case_str(struct test_data *td)
 {
-	switch (testcase) {
+	if (!td) {
+		pr_err("%s: NULL td", __func__);
+		return NULL;
+	}
+
+switch (td->test_info.testcase) {
 	case TEST_STOP_DUE_TO_FLUSH:
 		return "\"stop due to flush\"";
 	case TEST_STOP_DUE_TO_FLUSH_AFTER_MAX_REQS:
@@ -652,33 +651,32 @@ static char *get_test_case_str(int testcase)
 		return "\"long sequential write\"";
 	case TEST_NEW_REQ_NOTIFICATION:
 		return "\"new request notification test\"";
+	default:
+		return " Unknown testcase";
 	}
 
-	return "Unknown testcase";
+	return NULL;
 }
 
 /*
  * Compare individual testcase's statistics to the expected statistics:
  * Compare stop reason and number of packing events
  */
-static int check_wr_packing_statistics(struct test_iosched *tios)
+static int check_wr_packing_statistics(struct test_data *td)
 {
 	struct mmc_wr_pack_stats *mmc_packed_stats;
-	struct mmc_queue *mq = tios->req_q->queuedata;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
-	int max_packed_reqs;
+	struct mmc_queue *mq = td->req_q->queuedata;
+	int max_packed_reqs = mq->card->ext_csd.max_packed_writes;
 	int i;
-	struct mmc_card *card;
+	struct mmc_card *card = mq->card;
 	struct mmc_wr_pack_stats expected_stats;
 	int *stop_reason;
 	int ret = 0;
 
-	if (!mq || !mq->card) {
-		pr_err("%s: mq or mq->card are NULL", __func__);
+	if (!mq) {
+		pr_err("%s: NULL mq", __func__);
 		return -EINVAL;
 	}
-	max_packed_reqs = mq->card->ext_csd.max_packed_writes;
-	card = mq->card;
 
 	expected_stats = mbtd->exp_packed_stats;
 
@@ -711,7 +709,7 @@ static int check_wr_packing_statistics(struct test_iosched *tios)
 			"%s: Wrong pack stats in index %d, got %d, expected %d",
 			__func__, i, mmc_packed_stats->packing_events[i],
 			       expected_stats.packing_events[i]);
-			if (tios->fs_wr_reqs_during_test)
+			if (td->fs_wr_reqs_during_test)
 				goto cancel_round;
 			ret = -EINVAL;
 			goto exit_err;
@@ -724,7 +722,7 @@ static int check_wr_packing_statistics(struct test_iosched *tios)
 		"%s: Wrong pack stop reason EXCEEDS_SEGMENTS %d, expected %d",
 			__func__, stop_reason[EXCEEDS_SEGMENTS],
 		       expected_stats.pack_stop_reason[EXCEEDS_SEGMENTS]);
-		if (tios->fs_wr_reqs_during_test)
+		if (td->fs_wr_reqs_during_test)
 			goto cancel_round;
 		ret = -EINVAL;
 		goto exit_err;
@@ -736,7 +734,7 @@ static int check_wr_packing_statistics(struct test_iosched *tios)
 		"%s: Wrong pack stop reason EXCEEDS_SECTORS %d, expected %d",
 			__func__, stop_reason[EXCEEDS_SECTORS],
 		       expected_stats.pack_stop_reason[EXCEEDS_SECTORS]);
-		if (tios->fs_wr_reqs_during_test)
+		if (td->fs_wr_reqs_during_test)
 			goto cancel_round;
 		ret = -EINVAL;
 		goto exit_err;
@@ -748,7 +746,7 @@ static int check_wr_packing_statistics(struct test_iosched *tios)
 		"%s: Wrong pack stop reason WRONG_DATA_DIR %d, expected %d",
 		       __func__, stop_reason[WRONG_DATA_DIR],
 		       expected_stats.pack_stop_reason[WRONG_DATA_DIR]);
-		if (tios->fs_wr_reqs_during_test)
+		if (td->fs_wr_reqs_during_test)
 			goto cancel_round;
 		ret = -EINVAL;
 		goto exit_err;
@@ -760,7 +758,7 @@ static int check_wr_packing_statistics(struct test_iosched *tios)
 		"%s: Wrong pack stop reason FLUSH_OR_DISCARD %d, expected %d",
 		       __func__, stop_reason[FLUSH_OR_DISCARD],
 		       expected_stats.pack_stop_reason[FLUSH_OR_DISCARD]);
-		if (tios->fs_wr_reqs_during_test)
+		if (td->fs_wr_reqs_during_test)
 			goto cancel_round;
 		ret = -EINVAL;
 		goto exit_err;
@@ -772,7 +770,7 @@ static int check_wr_packing_statistics(struct test_iosched *tios)
 		"%s: Wrong pack stop reason EMPTY_QUEUE %d, expected %d",
 		       __func__, stop_reason[EMPTY_QUEUE],
 		       expected_stats.pack_stop_reason[EMPTY_QUEUE]);
-		if (tios->fs_wr_reqs_during_test)
+		if (td->fs_wr_reqs_during_test)
 			goto cancel_round;
 		ret = -EINVAL;
 		goto exit_err;
@@ -784,7 +782,7 @@ static int check_wr_packing_statistics(struct test_iosched *tios)
 			"%s: Wrong pack stop reason REL_WRITE %d, expected %d",
 		       __func__, stop_reason[REL_WRITE],
 		       expected_stats.pack_stop_reason[REL_WRITE]);
-		if (tios->fs_wr_reqs_during_test)
+		if (td->fs_wr_reqs_during_test)
 			goto cancel_round;
 		ret = -EINVAL;
 		goto exit_err;
@@ -797,7 +795,7 @@ exit_err:
 	return ret;
 cancel_round:
 	spin_unlock(&mmc_packed_stats->lock);
-	test_iosched_set_ignore_round(tios, true);
+	test_iosched_set_ignore_round(true);
 	return 0;
 }
 
@@ -836,24 +834,24 @@ static void pseudo_rnd_num_of_bios(unsigned int *num_bios_seed,
 	} while ((*num_of_bios) * BIO_U32_SIZE * 4 > TEST_MAX_SECTOR_RANGE);
 }
 
-/* Add a single read request to the given test_iosched's request queue */
-static int prepare_request_add_read(struct test_iosched *tios)
+/* Add a single read request to the given td's request queue */
+static int prepare_request_add_read(struct test_data *td)
 {
 	int ret;
 	int start_sec;
 
-	if (tios)
-		start_sec = tios->start_sector;
+	if (td)
+		start_sec = td->start_sector;
 	else {
-		pr_err("%s: NULL test_iosched", __func__);
+		pr_err("%s: NULL td", __func__);
 		return 0;
 	}
 
 	pr_info("%s: Adding a read request, first req_id=%d", __func__,
-		     tios->wr_rd_next_req_id);
+		     td->wr_rd_next_req_id);
 
-	ret = test_iosched_add_wr_rd_test_req(tios, 0, READ, start_sec,
-		2, TEST_PATTERN_5A, NULL);
+	ret = test_iosched_add_wr_rd_test_req(0, READ, start_sec, 2,
+					      TEST_PATTERN_5A, NULL);
 	if (ret) {
 		pr_err("%s: failed to add a read request", __func__);
 		return ret;
@@ -862,20 +860,20 @@ static int prepare_request_add_read(struct test_iosched *tios)
 	return 0;
 }
 
-/* Add a single flush request to the given test_iosched's request queue */
-static int prepare_request_add_flush(struct test_iosched *tios)
+/* Add a single flush request to the given td's request queue */
+static int prepare_request_add_flush(struct test_data *td)
 {
 	int ret;
 
-	if (!tios) {
-		pr_err("%s: NULL test_iosched", __func__);
+	if (!td) {
+		pr_err("%s: NULL td", __func__);
 		return 0;
 	}
 
 	pr_info("%s: Adding a flush request, first req_id=%d", __func__,
-		     tios->unique_next_req_id);
-	ret = test_iosched_add_unique_test_req(tios, 0,
-		REQ_UNIQUE_FLUSH, 0, 0, NULL);
+		     td->unique_next_req_id);
+	ret = test_iosched_add_unique_test_req(0, REQ_UNIQUE_FLUSH,
+				  0, 0, NULL);
 	if (ret) {
 		pr_err("%s: failed to add a flush request", __func__);
 		return ret;
@@ -885,11 +883,11 @@ static int prepare_request_add_flush(struct test_iosched *tios)
 }
 
 /*
- * Add num_requets amount of write requests to the given test_iosched's request
- * queue. If random test mode is chosen we pseudo-randomly choose the number of
- * bios for each write request, otherwise add between 1 to 5 bio per request.
+ * Add num_requets amount of write requests to the given td's request queue.
+ * If random test mode is chosen we pseudo-randomly choose the number of bios
+ * for each write request, otherwise add between 1 to 5 bio per request.
  */
-static int prepare_request_add_write_reqs(struct test_iosched *tios,
+static int prepare_request_add_write_reqs(struct test_data *td,
 					  int num_requests, int is_err_expected,
 					  int is_random)
 {
@@ -897,25 +895,22 @@ static int prepare_request_add_write_reqs(struct test_iosched *tios,
 	unsigned int start_sec;
 	int num_bios;
 	int ret = 0;
-	struct mmc_block_test_data *mbtd;
-	unsigned int *bio_seed;
+	unsigned int *bio_seed = &mbtd->random_test_seed;
 
-	if (!tios) {
-		pr_err("%s: NULL test_iosched", __func__);
+	if (td)
+		start_sec = td->start_sector;
+	else {
+		pr_err("%s: NULL td", __func__);
 		return ret;
 	}
 
-	mbtd = tios->blk_dev_test_data;
-	bio_seed = &mbtd->random_test_seed;
-	start_sec = tios->start_sector;
-
 	pr_info("%s: Adding %d write requests, first req_id=%d", __func__,
-		     num_requests, tios->wr_rd_next_req_id);
+		     num_requests, td->wr_rd_next_req_id);
 
 	for (i = 1 ; i <= num_requests ; i++) {
 		start_sec =
-			tios->start_sector + sizeof(int) *
-			BIO_U32_SIZE * tios->num_of_write_bios;
+			td->start_sector + sizeof(int) *
+			BIO_U32_SIZE * td->num_of_write_bios;
 		if (is_random)
 			pseudo_rnd_num_of_bios(bio_seed, &num_bios);
 		else
@@ -925,9 +920,8 @@ static int prepare_request_add_write_reqs(struct test_iosched *tios,
 			 */
 			num_bios = (i%5)+1;
 
-		ret = test_iosched_add_wr_rd_test_req(tios,
-			is_err_expected, WRITE, start_sec, num_bios,
-			TEST_PATTERN_5A, NULL);
+		ret = test_iosched_add_wr_rd_test_req(is_err_expected, WRITE,
+				start_sec, num_bios, TEST_PATTERN_5A, NULL);
 
 		if (ret) {
 			pr_err("%s: failed to add a write request",
@@ -942,21 +936,20 @@ static int prepare_request_add_write_reqs(struct test_iosched *tios,
  * Prepare the write, read and flush requests for a generic packed commands
  * testcase
  */
-static int prepare_packed_requests(struct test_iosched *tios,
-	int is_err_expected, int num_requests, int is_random)
+static int prepare_packed_requests(struct test_data *td, int is_err_expected,
+				   int num_requests, int is_random)
 {
 	int ret = 0;
 	struct mmc_queue *mq;
 	int max_packed_reqs;
 	struct request_queue *req_q;
-	struct mmc_block_test_data *mbtd;
 
-	if (!tios) {
-		pr_err("%s: NULL test_iosched", __func__);
+	if (!td) {
+		pr_err("%s: NULL td", __func__);
 		return -EINVAL;
 	}
-	mbtd = tios->blk_dev_test_data;
-	req_q = tios->req_q;
+
+	req_q = td->req_q;
 
 	if (!req_q) {
 		pr_err("%s: NULL request queue", __func__);
@@ -978,13 +971,13 @@ static int prepare_packed_requests(struct test_iosched *tios,
 			     __func__, mbtd->random_test_seed);
 	}
 
-	ret = prepare_request_add_write_reqs(tios, num_requests,
-		is_err_expected, is_random);
+	ret = prepare_request_add_write_reqs(td, num_requests, is_err_expected,
+					     is_random);
 	if (ret)
 		return ret;
 
 	/* Avoid memory corruption in upcoming stats set */
-	if (tios->test_info.testcase == TEST_STOP_DUE_TO_THRESHOLD)
+	if (td->test_info.testcase == TEST_STOP_DUE_TO_THRESHOLD)
 		num_requests--;
 
 	memset((void *)mbtd->exp_packed_stats.pack_stop_reason, 0,
@@ -994,10 +987,10 @@ static int prepare_packed_requests(struct test_iosched *tios,
 	if (num_requests <= max_packed_reqs)
 		mbtd->exp_packed_stats.packing_events[num_requests] = 1;
 
-	switch (tios->test_info.testcase) {
+	switch (td->test_info.testcase) {
 	case TEST_STOP_DUE_TO_FLUSH:
 	case TEST_STOP_DUE_TO_FLUSH_AFTER_MAX_REQS:
-		ret = prepare_request_add_flush(tios);
+		ret = prepare_request_add_flush(td);
 		if (ret)
 			return ret;
 
@@ -1005,7 +998,7 @@ static int prepare_packed_requests(struct test_iosched *tios,
 		break;
 	case TEST_STOP_DUE_TO_READ:
 	case TEST_STOP_DUE_TO_READ_AFTER_MAX_REQS:
-		ret = prepare_request_add_read(tios);
+		ret = prepare_request_add_read(td);
 		if (ret)
 			return ret;
 
@@ -1033,11 +1026,9 @@ static int prepare_packed_requests(struct test_iosched *tios,
  * Prepare the write, read and flush requests for the packing control
  * testcases
  */
-static int prepare_packed_control_tests_requests(
-	struct test_iosched *tios, int is_err_expected,
-	int num_requests, int is_random)
+static int prepare_packed_control_tests_requests(struct test_data *td,
+			int is_err_expected, int num_requests, int is_random)
 {
-	struct mmc_block_test_data *mbtd;
 	int ret = 0;
 	struct mmc_queue *mq;
 	int max_packed_reqs;
@@ -1046,13 +1037,12 @@ static int prepare_packed_control_tests_requests(
 	int test_packed_trigger;
 	int num_packed_reqs;
 
-	if (!tios) {
-		pr_err("%s: NULL test_iosched", __func__);
+	if (!td) {
+		pr_err("%s: NULL td", __func__);
 		return -EINVAL;
 	}
 
-	mbtd = tios->blk_dev_test_data;
-	req_q = tios->req_q;
+	req_q = td->req_q;
 
 	if (!req_q) {
 		pr_err("%s: NULL request queue", __func__);
@@ -1076,7 +1066,7 @@ static int prepare_packed_control_tests_requests(
 			     __func__, mbtd->random_test_seed);
 	}
 
-	if (tios->test_info.testcase ==
+	if (td->test_info.testcase ==
 			TEST_PACK_MIX_NO_PACKED_PACKED_NO_PACKED) {
 		temp_num_req = num_requests;
 		num_requests = test_packed_trigger - 1;
@@ -1086,20 +1076,18 @@ static int prepare_packed_control_tests_requests(
 	mq->wr_packing_enabled = false;
 	mq->num_of_potential_packed_wr_reqs = 0;
 
-	if (tios->test_info.testcase ==
-		TEST_PACK_MIX_PACKED_NO_PACKED_PACKED) {
+	if (td->test_info.testcase == TEST_PACK_MIX_PACKED_NO_PACKED_PACKED) {
 		mq->num_of_potential_packed_wr_reqs = test_packed_trigger + 1;
 		mq->wr_packing_enabled = true;
 		num_requests = test_packed_trigger + 2;
 	}
 
-	ret = prepare_request_add_write_reqs(tios, num_requests,
-		is_err_expected, is_random);
+	ret = prepare_request_add_write_reqs(td, num_requests, is_err_expected,
+					     is_random);
 	if (ret)
 		goto exit;
 
-	if (tios->test_info.testcase ==
-		TEST_PACK_MIX_NO_PACKED_PACKED_NO_PACKED)
+	if (td->test_info.testcase == TEST_PACK_MIX_NO_PACKED_PACKED_NO_PACKED)
 		num_requests = temp_num_req;
 
 	memset((void *)mbtd->exp_packed_stats.pack_stop_reason, 0,
@@ -1107,10 +1095,10 @@ static int prepare_packed_control_tests_requests(
 	memset(mbtd->exp_packed_stats.packing_events, 0,
 		(max_packed_reqs + 1) * sizeof(u32));
 
-	switch (tios->test_info.testcase) {
+	switch (td->test_info.testcase) {
 	case TEST_PACKING_EXP_N_OVER_TRIGGER_FB_READ:
 	case TEST_PACKING_EXP_ONE_OVER_TRIGGER_FB_READ:
-		ret = prepare_request_add_read(tios);
+		ret = prepare_request_add_read(td);
 		if (ret)
 			goto exit;
 
@@ -1118,12 +1106,12 @@ static int prepare_packed_control_tests_requests(
 		mbtd->exp_packed_stats.packing_events[num_packed_reqs] = 1;
 		break;
 	case TEST_PACKING_EXP_N_OVER_TRIGGER_FLUSH_N:
-		ret = prepare_request_add_flush(tios);
+		ret = prepare_request_add_flush(td);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_write_reqs(tios,
-			num_packed_reqs, is_err_expected, is_random);
+		ret = prepare_request_add_write_reqs(td, num_packed_reqs,
+					     is_err_expected, is_random);
 		if (ret)
 			goto exit;
 
@@ -1132,41 +1120,41 @@ static int prepare_packed_control_tests_requests(
 		mbtd->exp_packed_stats.packing_events[num_packed_reqs] = 2;
 		break;
 	case TEST_PACKING_NOT_EXP_TRIGGER_READ_TRIGGER:
-		ret = prepare_request_add_read(tios);
+		ret = prepare_request_add_read(td);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_write_reqs(tios,
-			test_packed_trigger, is_err_expected, is_random);
+		ret = prepare_request_add_write_reqs(td, test_packed_trigger,
+						    is_err_expected, is_random);
 		if (ret)
 			goto exit;
 
 		mbtd->exp_packed_stats.packing_events[num_packed_reqs] = 1;
 		break;
 	case TEST_PACKING_NOT_EXP_TRIGGER_FLUSH_TRIGGER:
-		ret = prepare_request_add_flush(tios);
+		ret = prepare_request_add_flush(td);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_write_reqs(tios,
-			test_packed_trigger, is_err_expected, is_random);
+		ret = prepare_request_add_write_reqs(td, test_packed_trigger,
+						    is_err_expected, is_random);
 		if (ret)
 			goto exit;
 
 		mbtd->exp_packed_stats.packing_events[num_packed_reqs] = 1;
 		break;
 	case TEST_PACK_MIX_PACKED_NO_PACKED_PACKED:
-		ret = prepare_request_add_read(tios);
+		ret = prepare_request_add_read(td);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_write_reqs(tios,
-			test_packed_trigger-1, is_err_expected, is_random);
+		ret = prepare_request_add_write_reqs(td, test_packed_trigger-1,
+						    is_err_expected, is_random);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_write_reqs(tios, num_requests,
-			is_err_expected, is_random);
+		ret = prepare_request_add_write_reqs(td, num_requests,
+						    is_err_expected, is_random);
 		if (ret)
 			goto exit;
 
@@ -1176,21 +1164,21 @@ static int prepare_packed_control_tests_requests(
 		mbtd->exp_packed_stats.pack_stop_reason[EMPTY_QUEUE] = 1;
 		break;
 	case TEST_PACK_MIX_NO_PACKED_PACKED_NO_PACKED:
-		ret = prepare_request_add_read(tios);
+		ret = prepare_request_add_read(td);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_write_reqs(tios, num_requests,
-			is_err_expected, is_random);
+		ret = prepare_request_add_write_reqs(td, num_requests,
+						    is_err_expected, is_random);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_read(tios);
+		ret = prepare_request_add_read(td);
 		if (ret)
 			goto exit;
 
-		ret = prepare_request_add_write_reqs(tios,
-			test_packed_trigger-1, is_err_expected, is_random);
+		ret = prepare_request_add_write_reqs(td, test_packed_trigger-1,
+						    is_err_expected, is_random);
 		if (ret)
 			goto exit;
 
@@ -1216,22 +1204,15 @@ exit:
  * In this testcase we have mixed error expectations from different
  * write requests, hence the special prepare function.
  */
-static int prepare_partial_followed_by_abort(struct test_iosched *tios,
+static int prepare_partial_followed_by_abort(struct test_data *td,
 					      int num_requests)
 {
 	int i, start_address;
 	int is_err_expected = 0;
 	int ret = 0;
-	struct request_queue *q = tios->req_q;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
-	struct mmc_queue *mq;
+	struct mmc_queue *mq = test_iosched_get_req_queue()->queuedata;
 	int max_packed_reqs;
 
-	if (!q) {
-		pr_err("%s: NULL q", __func__);
-		return -EINVAL;
-	}
-	mq = q->queuedata;
 	if (!mq) {
 		pr_err("%s: NULL mq", __func__);
 		return -EINVAL;
@@ -1243,12 +1224,11 @@ static int prepare_partial_followed_by_abort(struct test_iosched *tios,
 		if (i > (num_requests / 2))
 			is_err_expected = 1;
 
-		start_address = tios->start_sector +
-			sizeof(int) * BIO_U32_SIZE *
-			tios->num_of_write_bios;
-		ret = test_iosched_add_wr_rd_test_req(tios,
-			is_err_expected, WRITE, start_address, (i % 5) + 1,
-			TEST_PATTERN_5A, NULL);
+		start_address = td->start_sector +
+			sizeof(int) * BIO_U32_SIZE * td->num_of_write_bios;
+		ret = test_iosched_add_wr_rd_test_req(is_err_expected, WRITE,
+				start_address, (i % 5) + 1, TEST_PATTERN_5A,
+				NULL);
 		if (ret) {
 			pr_err("%s: failed to add a write request",
 				    __func__);
@@ -1273,9 +1253,8 @@ static int prepare_partial_followed_by_abort(struct test_iosched *tios,
  * chosen, pseudo-randomly choose the number of requests, otherwise set to
  * two less than the packing threshold.
  */
-static int get_num_requests(struct test_iosched *tios)
+static int get_num_requests(struct test_data *td)
 {
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 	int *seed = &mbtd->random_test_seed;
 	struct request_queue *req_q;
 	struct mmc_queue *mq;
@@ -1286,7 +1265,7 @@ static int get_num_requests(struct test_iosched *tios)
 	int max_for_double;
 	int test_packed_trigger;
 
-	req_q = tios->req_q;
+	req_q = test_iosched_get_req_queue();
 	if (req_q)
 		mq = req_q->queuedata;
 	else {
@@ -1310,13 +1289,13 @@ static int get_num_requests(struct test_iosched *tios)
 	 */
 	max_for_double = max_num_requests - 10;
 
-	if (tios->test_info.testcase ==
+	if (td->test_info.testcase ==
 				TEST_PACKING_NOT_EXP_LESS_THAN_TRIGGER_REQUESTS)
 		/* Don't expect packing, so issue up to trigger-1 reqs */
 		num_requests = test_packed_trigger - 1;
 
 	if (is_random) {
-		if (tios->test_info.testcase ==
+		if (td->test_info.testcase ==
 		    TEST_RET_PARTIAL_FOLLOWED_BY_ABORT)
 			/*
 			 * Here we don't want num_requests to be less than 1
@@ -1324,7 +1303,7 @@ static int get_num_requests(struct test_iosched *tios)
 			 */
 			min_num_requests = 3;
 
-		if (tios->test_info.testcase ==
+		if (td->test_info.testcase ==
 				TEST_PACKING_NOT_EXP_LESS_THAN_TRIGGER_REQUESTS)
 			/* Don't expect packing, so issue up to trigger reqs */
 			max_num_requests = test_packed_trigger;
@@ -1333,46 +1312,43 @@ static int get_num_requests(struct test_iosched *tios)
 						  max_num_requests - 1);
 	}
 
-	if (tios->test_info.testcase ==
+	if (td->test_info.testcase ==
 				TEST_PACKING_NOT_EXP_LESS_THAN_TRIGGER_REQUESTS)
 		num_requests -= test_packed_trigger;
 
-	if (tios->test_info.testcase ==
-		TEST_PACKING_EXP_N_OVER_TRIGGER_FLUSH_N)
+	if (td->test_info.testcase == TEST_PACKING_EXP_N_OVER_TRIGGER_FLUSH_N)
 		num_requests =
 		num_requests > max_for_double ? max_for_double : num_requests;
 
 	if (mbtd->test_group == TEST_PACKING_CONTROL_GROUP)
 		num_requests += test_packed_trigger;
 
-	if (tios->test_info.testcase ==
-		TEST_PACKING_NOT_EXP_TRIGGER_REQUESTS)
+	if (td->test_info.testcase == TEST_PACKING_NOT_EXP_TRIGGER_REQUESTS)
 		num_requests = test_packed_trigger;
 
 	return num_requests;
 }
 
-static int prepare_long_read_test_requests(struct test_iosched *tios)
+static int prepare_long_read_test_requests(struct test_data *td)
 {
 
 	int ret;
 	int start_sec;
 	int j;
-	unsigned long read_test_no_req = LONG_READ_TEST_ACTUAL_NUM_REQS;
 
-	if (tios)
-		start_sec = tios->start_sector;
+	if (td)
+		start_sec = td->start_sector;
 	else {
-		pr_err("%s: NULL test_iosched", __func__);
+		pr_err("%s: NULL td", __func__);
 		return -EINVAL;
 	}
 
-	pr_info("%s: Adding %lu read requests, first req_id=%d", __func__,
-		     read_test_no_req, tios->wr_rd_next_req_id);
+	pr_info("%s: Adding %d read requests, first req_id=%d", __func__,
+		     LONG_READ_TEST_ACTUAL_NUM_REQS, td->wr_rd_next_req_id);
 
 	for (j = 0; j < LONG_READ_TEST_ACTUAL_NUM_REQS; j++) {
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, READ,
+		ret = test_iosched_add_wr_rd_test_req(0, READ,
 						start_sec,
 						TEST_MAX_BIOS_PER_REQ,
 						TEST_NO_PATTERN, NULL);
@@ -1394,29 +1370,19 @@ static int prepare_long_read_test_requests(struct test_iosched *tios)
  * data structure. According to the testcase we add the right number of requests
  * and decide if an error is expected or not.
  */
-static int prepare_test(struct test_iosched *tios)
+static int prepare_test(struct test_data *td)
 {
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
-	struct request_queue *q = tios->req_q;
-	struct mmc_queue *mq;
+	struct mmc_queue *mq = test_iosched_get_req_queue()->queuedata;
 	int max_num_requests;
 	int num_requests = 0;
 	int ret = 0;
 	int is_random = mbtd->is_random;
-	int test_packed_trigger;
+	int test_packed_trigger = mq->num_wr_reqs_to_start_packing;
 
-	if (!q) {
-		pr_err("%s: q is NULL", __func__);
-		return -EINVAL;
-	}
-
-	mq = q->queuedata;
 	if (!mq) {
 		pr_err("%s: NULL mq", __func__);
 		return -EINVAL;
 	}
-
-	test_packed_trigger = mq->num_wr_reqs_to_start_packing;
 
 	max_num_requests = mq->card->ext_csd.max_packed_writes;
 
@@ -1427,7 +1393,7 @@ static int prepare_test(struct test_iosched *tios)
 			__func__, mbtd->random_test_seed);
 	}
 
-	num_requests = get_num_requests(tios);
+	num_requests = get_num_requests(td);
 
 	if (mbtd->test_group == TEST_SEND_INVALID_GROUP)
 		mq->packed_test_fn =
@@ -1436,33 +1402,31 @@ static int prepare_test(struct test_iosched *tios)
 	if (mbtd->test_group == TEST_ERR_CHECK_GROUP)
 		mq->err_check_fn = test_err_check;
 
-	switch (tios->test_info.testcase) {
+	switch (td->test_info.testcase) {
 	case TEST_STOP_DUE_TO_FLUSH:
 	case TEST_STOP_DUE_TO_READ:
 	case TEST_RET_PARTIAL_FOLLOWED_BY_SUCCESS:
 	case TEST_RET_PARTIAL_MULTIPLE_UNTIL_SUCCESS:
 	case TEST_STOP_DUE_TO_EMPTY_QUEUE:
 	case TEST_CMD23_PACKED_BIT_UNSET:
-		ret = prepare_packed_requests(tios, 0, num_requests,
-			is_random);
+		ret = prepare_packed_requests(td, 0, num_requests, is_random);
 		break;
 	case TEST_STOP_DUE_TO_FLUSH_AFTER_MAX_REQS:
 	case TEST_STOP_DUE_TO_READ_AFTER_MAX_REQS:
-		ret = prepare_packed_requests(tios, 0,
-			max_num_requests - 1, is_random);
+		ret = prepare_packed_requests(td, 0, max_num_requests - 1,
+					      is_random);
 		break;
 	case TEST_RET_PARTIAL_FOLLOWED_BY_ABORT:
-		ret = prepare_partial_followed_by_abort(tios,
-			num_requests);
+		ret = prepare_partial_followed_by_abort(td, num_requests);
 		break;
 	case TEST_STOP_DUE_TO_MAX_REQ_NUM:
 	case TEST_RET_PARTIAL_MAX_FAIL_IDX:
-		ret = prepare_packed_requests(tios, 0, max_num_requests,
-			is_random);
+		ret = prepare_packed_requests(td, 0, max_num_requests,
+					      is_random);
 		break;
 	case TEST_STOP_DUE_TO_THRESHOLD:
-		ret = prepare_packed_requests(tios, 0,
-			max_num_requests + 1, is_random);
+		ret = prepare_packed_requests(td, 0, max_num_requests + 1,
+					      is_random);
 		break;
 	case TEST_RET_ABORT:
 	case TEST_RET_RETRY:
@@ -1480,8 +1444,7 @@ static int prepare_test(struct test_iosched *tios)
 	case TEST_CMD23_BITS_16TO29_SET:
 	case TEST_CMD23_HDR_BLK_NOT_IN_COUNT:
 	case TEST_HDR_CMD23_PACKED_BIT_SET:
-		ret = prepare_packed_requests(tios, 1, num_requests,
-			is_random);
+		ret = prepare_packed_requests(td, 1, num_requests, is_random);
 		break;
 	case TEST_PACKING_EXP_N_OVER_TRIGGER:
 	case TEST_PACKING_EXP_N_OVER_TRIGGER_FB_READ:
@@ -1489,29 +1452,30 @@ static int prepare_test(struct test_iosched *tios)
 	case TEST_PACKING_NOT_EXP_LESS_THAN_TRIGGER_REQUESTS:
 	case TEST_PACK_MIX_PACKED_NO_PACKED_PACKED:
 	case TEST_PACK_MIX_NO_PACKED_PACKED_NO_PACKED:
-		ret = prepare_packed_control_tests_requests(tios, 0,
-			num_requests, is_random);
+		ret = prepare_packed_control_tests_requests(td, 0, num_requests,
+			is_random);
 		break;
 	case TEST_PACKING_EXP_THRESHOLD_OVER_TRIGGER:
-		ret = prepare_packed_control_tests_requests(tios, 0,
+		ret = prepare_packed_control_tests_requests(td, 0,
 			max_num_requests, is_random);
 		break;
 	case TEST_PACKING_EXP_ONE_OVER_TRIGGER_FB_READ:
-		ret = prepare_packed_control_tests_requests(tios, 0,
-			test_packed_trigger + 1, is_random);
+		ret = prepare_packed_control_tests_requests(td, 0,
+			test_packed_trigger + 1,
+					is_random);
 		break;
 	case TEST_PACKING_EXP_N_OVER_TRIGGER_FLUSH_N:
-		ret = prepare_packed_control_tests_requests(tios, 0,
-			num_requests, is_random);
+		ret = prepare_packed_control_tests_requests(td, 0, num_requests,
+			is_random);
 		break;
 	case TEST_PACKING_NOT_EXP_TRIGGER_READ_TRIGGER:
 	case TEST_PACKING_NOT_EXP_TRIGGER_FLUSH_TRIGGER:
-		ret = prepare_packed_control_tests_requests(tios, 0,
+		ret = prepare_packed_control_tests_requests(td, 0,
 			test_packed_trigger, is_random);
 		break;
 	case TEST_LONG_SEQUENTIAL_WRITE:
 	case TEST_LONG_SEQUENTIAL_READ:
-		ret = prepare_long_read_test_requests(tios);
+		ret = prepare_long_read_test_requests(td);
 		break;
 	default:
 		pr_info("%s: Invalid test case...", __func__);
@@ -1521,17 +1485,17 @@ static int prepare_test(struct test_iosched *tios)
 	return ret;
 }
 
-static int run_packed_test(struct test_iosched *tios)
+static int run_packed_test(struct test_data *td)
 {
 	struct mmc_queue *mq;
 	struct request_queue *req_q;
 
-	if (!tios) {
-		pr_err("%s: NULL test_iosched", __func__);
+	if (!td) {
+		pr_err("%s: NULL td", __func__);
 		return -EINVAL;
 	}
 
-	req_q = tios->req_q;
+	req_q = td->req_q;
 
 	if (!req_q) {
 		pr_err("%s: NULL request queue", __func__);
@@ -1545,8 +1509,7 @@ static int run_packed_test(struct test_iosched *tios)
 	}
 	mmc_blk_init_packed_statistics(mq->card);
 
-	if (tios->test_info.testcase !=
-		TEST_PACK_MIX_PACKED_NO_PACKED_PACKED) {
+	if (td->test_info.testcase != TEST_PACK_MIX_PACKED_NO_PACKED_PACKED) {
 		/*
 		 * Verify that the packing is disabled before starting the
 		 * test
@@ -1555,7 +1518,7 @@ static int run_packed_test(struct test_iosched *tios)
 		mq->num_of_potential_packed_wr_reqs = 0;
 	}
 
-	__blk_run_queue(req_q);
+	__blk_run_queue(td->req_q);
 
 	return 0;
 }
@@ -1566,14 +1529,14 @@ static int run_packed_test(struct test_iosched *tios)
  * the FS to be able to dispatch it's requests correctly after the test is
  * finished.
  */
-static int post_test(struct test_iosched *tios)
+static int post_test(struct test_data *td)
 {
 	struct mmc_queue *mq;
 
-	if (!tios)
+	if (!td)
 		return -EINVAL;
 
-	mq = tios->req_q->queuedata;
+	mq = td->req_q->queuedata;
 
 	if (!mq) {
 		pr_err("%s: NULL mq", __func__);
@@ -1591,16 +1554,17 @@ static int post_test(struct test_iosched *tios)
  * packed commands capability and control are set right. In addition, we check
  * if the card supports the packed command feature.
  */
-static int validate_packed_commands_settings(struct mmc_block_test_data *mbtd)
+static int validate_packed_commands_settings(void)
 {
-	struct request_queue *req_q = mbtd->test_iosched->req_q;
+	struct request_queue *req_q;
 	struct mmc_queue *mq;
 	int max_num_requests;
 	struct mmc_host *host;
 
+	req_q = test_iosched_get_req_queue();
 	if (!req_q) {
 		pr_err("%s: test_iosched_get_req_queue failed", __func__);
-		test_iosched_set_test_result(mbtd->test_iosched, TEST_FAILED);
+		test_iosched_set_test_result(TEST_FAILED);
 		return -EINVAL;
 	}
 
@@ -1616,8 +1580,7 @@ static int validate_packed_commands_settings(struct mmc_block_test_data *mbtd)
 	if (!(host->caps2 && MMC_CAP2_PACKED_WR)) {
 		pr_err("%s: Packed Write capability disabled, exit test",
 			    __func__);
-		test_iosched_set_test_result(mbtd->test_iosched,
-			TEST_NOT_SUPPORTED);
+		test_iosched_set_test_result(TEST_NOT_SUPPORTED);
 		return -EINVAL;
 	}
 
@@ -1625,8 +1588,7 @@ static int validate_packed_commands_settings(struct mmc_block_test_data *mbtd)
 		pr_err(
 		"%s: no write packing support, ext_csd.max_packed_writes=%d",
 		__func__, mq->card->ext_csd.max_packed_writes);
-		test_iosched_set_test_result(mbtd->test_iosched,
-			TEST_NOT_SUPPORTED);
+		test_iosched_set_test_result(TEST_NOT_SUPPORTED);
 		return -EINVAL;
 	}
 
@@ -1654,9 +1616,9 @@ static int validate_packed_commands_settings(struct mmc_block_test_data *mbtd)
  * Post test operations for BKOPs test
  * Disable the BKOPs statistics and clear the feature flags
  */
-static int bkops_post_test(struct test_iosched *tios)
+static int bkops_post_test(struct test_data *td)
 {
-	struct request_queue *q = tios->req_q;
+	struct request_queue *q = td->req_q;
 	struct mmc_queue *mq = (struct mmc_queue *)q->queuedata;
 	struct mmc_card *card = mq->card;
 
@@ -1673,10 +1635,9 @@ static int bkops_post_test(struct test_iosched *tios)
 /*
  * Verify the BKOPs statsistics
  */
-static int check_bkops_result(struct test_iosched *tios)
+static int check_bkops_result(struct test_data *td)
 {
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
-	struct request_queue *q = tios->req_q;
+	struct request_queue *q = td->req_q;
 	struct mmc_queue *mq = (struct mmc_queue *)q->queuedata;
 	struct mmc_card *card = mq->card;
 	struct mmc_bkops_stats *bkops_stat;
@@ -1748,13 +1709,13 @@ static int check_bkops_result(struct test_iosched *tios)
 exit:
 	return 0;
 ignore:
-	test_iosched_set_ignore_round(tios, true);
+	test_iosched_set_ignore_round(true);
 	return 0;
 fail:
-	if (tios->fs_wr_reqs_during_test) {
+	if (td->fs_wr_reqs_during_test) {
 		pr_info("%s: wr reqs during test, cancel the round",
 		     __func__);
-		test_iosched_set_ignore_round(tios, true);
+		test_iosched_set_ignore_round(true);
 		return 0;
 	}
 
@@ -1765,8 +1726,6 @@ fail:
 
 static void bkops_end_io_final_fn(struct request *rq, int err)
 {
-	struct test_iosched *tios = rq->q->elevator->elevator_data;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 	struct test_request *test_rq =
 		(struct test_request *)rq->elv.priv[0];
 	BUG_ON(!test_rq);
@@ -1785,8 +1744,6 @@ static void bkops_end_io_fn(struct request *rq, int err)
 {
 	struct test_request *test_rq =
 		(struct test_request *)rq->elv.priv[0];
-	struct test_iosched *tios = rq->q->elevator->elevator_data;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 	BUG_ON(!test_rq);
 
 	test_rq->req_completed = 1;
@@ -1799,21 +1756,20 @@ static void bkops_end_io_fn(struct request *rq, int err)
 
 }
 
-static int prepare_bkops(struct test_iosched *tios)
+static int prepare_bkops(struct test_data *td)
 {
 	int ret = 0;
-	struct request_queue *q = tios->req_q;
+	struct request_queue *q = td->req_q;
 	struct mmc_queue *mq = (struct mmc_queue *)q->queuedata;
 	struct mmc_card  *card = mq->card;
 	struct mmc_bkops_stats *bkops_stat;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 
 	if (!card)
 		return -EINVAL;
 
 	bkops_stat = &card->bkops_info.bkops_stats;
 
-	if (!(mmc_card_get_bkops_en_manual(card))) {
+	if (!card->ext_csd.bkops_en) {
 		pr_err("%s: BKOPS is not enabled by card or host)",
 				__func__);
 		return -ENOTSUPP;
@@ -1834,14 +1790,13 @@ static int prepare_bkops(struct test_iosched *tios)
 	return ret;
 }
 
-static int run_bkops(struct test_iosched *tios)
+static int run_bkops(struct test_data *td)
 {
 	int ret = 0;
-	struct request_queue *q = tios->req_q;
+	struct request_queue *q = td->req_q;
 	struct mmc_queue *mq = (struct mmc_queue *)q->queuedata;
 	struct mmc_card  *card = mq->card;
 	struct mmc_bkops_stats *bkops_stat;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 
 	if (!card)
 		return -EINVAL;
@@ -1864,7 +1819,7 @@ static int run_bkops(struct test_iosched *tios)
 		bkops_stat->ignore_card_bkops_status = false;
 		card->ext_csd.raw_bkops_status = 0;
 
-		test_iosched_mark_test_completion(tios);
+		test_iosched_mark_test_completion();
 		break;
 
 	case BKOPS_DELAYED_WORK_LEVEL_1_HPI:
@@ -1877,8 +1832,8 @@ static int run_bkops(struct test_iosched *tios)
 		__blk_run_queue(q);
 		msleep(card->bkops_info.delay_ms);
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, WRITE,
-				      tios->start_sector,
+		ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				      td->start_sector,
 				      TEST_REQUEST_NUM_OF_BIOS,
 				      TEST_PATTERN_5A,
 				      bkops_end_io_final_fn);
@@ -1894,7 +1849,7 @@ static int run_bkops(struct test_iosched *tios)
 			   mbtd->bkops_stage == BKOPS_STAGE_4);
 		bkops_stat->ignore_card_bkops_status = false;
 
-		test_iosched_mark_test_completion(tios);
+		test_iosched_mark_test_completion();
 		break;
 
 	case BKOPS_CANCEL_DELAYED_WORK:
@@ -1906,8 +1861,8 @@ static int run_bkops(struct test_iosched *tios)
 
 		__blk_run_queue(q);
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, WRITE,
-				tios->start_sector,
+		ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				td->start_sector,
 				TEST_REQUEST_NUM_OF_BIOS,
 				TEST_PATTERN_5A,
 				bkops_end_io_final_fn);
@@ -1923,7 +1878,7 @@ static int run_bkops(struct test_iosched *tios)
 			   mbtd->bkops_stage == BKOPS_STAGE_4);
 		bkops_stat->ignore_card_bkops_status = false;
 
-		test_iosched_mark_test_completion(tios);
+		test_iosched_mark_test_completion();
 		break;
 
 	case BKOPS_URGENT_LEVEL_2:
@@ -1935,8 +1890,8 @@ static int run_bkops(struct test_iosched *tios)
 			card->ext_csd.raw_bkops_status = 3;
 		mbtd->bkops_stage = BKOPS_STAGE_1;
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, WRITE,
-				tios->start_sector,
+		ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				td->start_sector,
 				TEST_REQUEST_NUM_OF_BIOS,
 				TEST_PATTERN_5A,
 				bkops_end_io_fn);
@@ -1952,8 +1907,8 @@ static int run_bkops(struct test_iosched *tios)
 			   mbtd->bkops_stage == BKOPS_STAGE_2);
 		card->ext_csd.raw_bkops_status = 0;
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, WRITE,
-				tios->start_sector,
+		ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				td->start_sector,
 				TEST_REQUEST_NUM_OF_BIOS,
 				TEST_PATTERN_5A,
 				bkops_end_io_final_fn);
@@ -1970,7 +1925,7 @@ static int run_bkops(struct test_iosched *tios)
 			   mbtd->bkops_stage == BKOPS_STAGE_4);
 
 		bkops_stat->ignore_card_bkops_status = false;
-		test_iosched_mark_test_completion(tios);
+		test_iosched_mark_test_completion();
 		break;
 
 	case BKOPS_URGENT_LEVEL_2_TWO_REQS:
@@ -1979,8 +1934,8 @@ static int run_bkops(struct test_iosched *tios)
 		card->ext_csd.raw_bkops_status = 2;
 		mbtd->bkops_stage = BKOPS_STAGE_1;
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, WRITE,
-				tios->start_sector,
+		ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				td->start_sector,
 				TEST_REQUEST_NUM_OF_BIOS,
 				TEST_PATTERN_5A,
 				NULL);
@@ -1991,8 +1946,8 @@ static int run_bkops(struct test_iosched *tios)
 			break;
 		}
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, WRITE,
-				tios->start_sector,
+		ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				td->start_sector,
 				TEST_REQUEST_NUM_OF_BIOS,
 				TEST_PATTERN_5A,
 				bkops_end_io_fn);
@@ -2008,8 +1963,8 @@ static int run_bkops(struct test_iosched *tios)
 			   mbtd->bkops_stage == BKOPS_STAGE_2);
 		card->ext_csd.raw_bkops_status = 0;
 
-		ret = test_iosched_add_wr_rd_test_req(tios, 0, WRITE,
-				tios->start_sector,
+		ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				td->start_sector,
 				TEST_REQUEST_NUM_OF_BIOS,
 				TEST_PATTERN_5A,
 				bkops_end_io_final_fn);
@@ -2026,7 +1981,7 @@ static int run_bkops(struct test_iosched *tios)
 			   mbtd->bkops_stage == BKOPS_STAGE_4);
 
 		bkops_stat->ignore_card_bkops_status = false;
-		test_iosched_mark_test_completion(tios);
+		test_iosched_mark_test_completion();
 
 		break;
 	default:
@@ -2041,19 +1996,17 @@ static int run_bkops(struct test_iosched *tios)
  * new_req_post_test() - Do post test operations for
  * new_req_notification test: disable the statistics and clear
  * the feature flags.
- * @test_iosched		The test_data for the new_req test that has
+ * @td		The test_data for the new_req test that has
  *		ended.
  */
-static int new_req_post_test(struct test_iosched *tios)
+static int new_req_post_test(struct test_data *td)
 {
 	struct mmc_queue *mq;
-	struct mmc_block_test_data *mbtd;
 
-	if (!tios || !tios->req_q)
+	if (!td || !td->req_q)
 		goto exit;
 
-	mbtd = tios->blk_dev_test_data;
-	mq = (struct mmc_queue *)tios->req_q->queuedata;
+	mq = (struct mmc_queue *)td->req_q->queuedata;
 
 	if (!mq || !mq->card)
 		goto exit;
@@ -2069,12 +2022,11 @@ exit:
  * check_new_req_result() - Print out the number of completed
  * requests. Assigned to the check_test_result_fn pointer,
  * therefore the name.
- * @test_iosched		The test_data for the new_req test that has
+ * @td		The test_data for the new_req test that has
  *		ended.
  */
-static int check_new_req_result(struct test_iosched *tios)
+static int check_new_req_result(struct test_data *td)
 {
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 	pr_info("%s: Test results: Completed %d requests",
 			__func__, mbtd->completed_req_count);
 	return 0;
@@ -2091,27 +2043,25 @@ static void new_req_free_end_io_fn(struct request *rq, int err)
 {
 	struct test_request *test_rq =
 		(struct test_request *)rq->elv.priv[0];
-	struct test_iosched *tios = rq->q->elevator->elevator_data;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
+	struct test_data *ptd = test_get_test_data();
 
 	BUG_ON(!test_rq);
 
-	spin_lock_irq(&tios->lock);
+	spin_lock_irq(&ptd->lock);
 	list_del_init(&test_rq->queuelist);
-	tios->dispatched_count--;
-	spin_unlock_irq(&tios->lock);
+	ptd->dispatched_count--;
+	spin_unlock_irq(&ptd->lock);
 
-	__blk_put_request(tios->req_q, test_rq->rq);
-	test_iosched_free_test_req_data_buffer(test_rq);
+	__blk_put_request(ptd->req_q, test_rq->rq);
+	kfree(test_rq->bios_buffer);
 	kfree(test_rq);
 	mbtd->completed_req_count++;
 }
 
-static int prepare_new_req(struct test_iosched *tios)
+static int prepare_new_req(struct test_data *td)
 {
-	struct request_queue *q = tios->req_q;
+	struct request_queue *q = td->req_q;
 	struct mmc_queue *mq = (struct mmc_queue *)q->queuedata;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 
 	mmc_blk_init_packed_statistics(mq->card);
 	mbtd->completed_req_count = 0;
@@ -2119,28 +2069,27 @@ static int prepare_new_req(struct test_iosched *tios)
 	return 0;
 }
 
-static int run_new_req(struct test_iosched *tios)
+static int run_new_req(struct test_data *ptd)
 {
 	int ret = 0;
 	int i;
 	unsigned int requests_count = 2;
 	unsigned int bio_num;
 	struct test_request *test_rq = NULL;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 
 	while (1) {
 		for (i = 0; i < requests_count; i++) {
 			bio_num =  TEST_MAX_BIOS_PER_REQ;
-			test_rq = test_iosched_create_test_req(tios, 0,
-				READ, tios->start_sector, bio_num,
-				TEST_PATTERN_5A, new_req_free_end_io_fn);
+			test_rq = test_iosched_create_test_req(0, READ,
+					ptd->start_sector,
+					bio_num, TEST_PATTERN_5A,
+					new_req_free_end_io_fn);
 			if (test_rq) {
-				spin_lock_irq(tios->req_q->queue_lock);
+				spin_lock_irq(ptd->req_q->queue_lock);
 				list_add_tail(&test_rq->queuelist,
-					      &tios->test_queue);
-				tios->test_count++;
-				spin_unlock_irq(
-					tios->req_q->queue_lock);
+					      &ptd->test_queue);
+				ptd->test_count++;
+				spin_unlock_irq(ptd->req_q->queue_lock);
 			} else {
 				pr_err("%s: failed to create read request",
 					     __func__);
@@ -2149,14 +2098,14 @@ static int run_new_req(struct test_iosched *tios)
 			}
 		}
 
-		__blk_run_queue(tios->req_q);
+		__blk_run_queue(ptd->req_q);
 		/* wait while a mmc layer will send all requests in test_queue*/
-		while (!list_empty(&tios->test_queue))
+		while (!list_empty(&ptd->test_queue))
 			msleep(NEW_REQ_TEST_SLEEP_TIME);
 
 		/* test finish criteria */
 		if (mbtd->completed_req_count > 1000) {
-			if (tios->dispatched_count)
+			if (ptd->dispatched_count)
 				continue;
 			else
 				break;
@@ -2164,16 +2113,16 @@ static int run_new_req(struct test_iosched *tios)
 
 		for (i = 0; i < requests_count; i++) {
 			bio_num =  NEW_REQ_TEST_NUM_BIOS;
-			test_rq = test_iosched_create_test_req(tios, 0,
-				READ, tios->start_sector, bio_num,
-				TEST_PATTERN_5A, new_req_free_end_io_fn);
+			test_rq = test_iosched_create_test_req(0, READ,
+					ptd->start_sector,
+					bio_num, TEST_PATTERN_5A,
+					new_req_free_end_io_fn);
 			if (test_rq) {
-				spin_lock_irq(tios->req_q->queue_lock);
+				spin_lock_irq(ptd->req_q->queue_lock);
 				list_add_tail(&test_rq->queuelist,
-					      &tios->test_queue);
-				tios->test_count++;
-				spin_unlock_irq(
-					tios->req_q->queue_lock);
+					      &ptd->test_queue);
+				ptd->test_count++;
+				spin_unlock_irq(ptd->req_q->queue_lock);
 			} else {
 				pr_err("%s: failed to create read request",
 					     __func__);
@@ -2181,10 +2130,10 @@ static int run_new_req(struct test_iosched *tios)
 				break;
 			}
 		}
-		__blk_run_queue(tios->req_q);
+		__blk_run_queue(ptd->req_q);
 	}
 
-	test_iosched_mark_test_completion(tios);
+	test_iosched_mark_test_completion();
 	pr_info("%s: EXIT: %d code", __func__, ret);
 
 	return ret;
@@ -2204,8 +2153,6 @@ static ssize_t send_write_packing_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
-
 	int ret = 0;
 	int i = 0;
 	int number = -1;
@@ -2221,7 +2168,7 @@ static ssize_t send_write_packing_test_write(struct file *file,
 
 	mbtd->test_group = TEST_SEND_WRITE_PACKING_GROUP;
 
-	if (validate_packed_commands_settings(mbtd))
+	if (validate_packed_commands_settings())
 		return count;
 
 	if (mbtd->random_test_seed > 0)
@@ -2245,16 +2192,14 @@ static ssize_t send_write_packing_test_write(struct file *file,
 		      j <= SEND_WRITE_PACKING_MAX_TESTCASE; j++) {
 
 			mbtd->is_random = RANDOM_TEST;
-			ret = test_iosched_start_test(mbtd->test_iosched,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret)
 				break;
 			/* Allow FS requests to be dispatched */
 			msleep(1000);
 			mbtd->test_info.testcase = j;
 			mbtd->is_random = NON_RANDOM_TEST;
-			ret = test_iosched_start_test(mbtd->test_iosched,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret)
 				break;
 			/* Allow FS requests to be dispatched */
@@ -2273,7 +2218,7 @@ static ssize_t send_write_packing_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -2310,7 +2255,6 @@ static ssize_t err_check_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
 	int ret = 0;
 	int i = 0;
 	int number = -1;
@@ -2325,7 +2269,7 @@ static ssize_t err_check_test_write(struct file *file,
 
 	mbtd->test_group = TEST_ERR_CHECK_GROUP;
 
-	if (validate_packed_commands_settings(mbtd))
+	if (validate_packed_commands_settings())
 		return count;
 
 	if (mbtd->random_test_seed > 0)
@@ -2349,16 +2293,14 @@ static ssize_t err_check_test_write(struct file *file,
 					j <= ERR_CHECK_MAX_TESTCASE ; j++) {
 			mbtd->test_info.testcase = j;
 			mbtd->is_random = RANDOM_TEST;
-			ret = test_iosched_start_test(mbtd->test_iosched,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret)
 				break;
 			/* Allow FS requests to be dispatched */
 			msleep(1000);
 			mbtd->test_info.testcase = j;
 			mbtd->is_random = NON_RANDOM_TEST;
-			ret = test_iosched_start_test(mbtd->test_iosched,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret)
 				break;
 			/* Allow FS requests to be dispatched */
@@ -2377,7 +2319,7 @@ static ssize_t err_check_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -2415,7 +2357,6 @@ static ssize_t send_invalid_packed_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
 	int ret = 0;
 	int i = 0;
 	int number = -1;
@@ -2431,7 +2372,7 @@ static ssize_t send_invalid_packed_test_write(struct file *file,
 
 	mbtd->test_group = TEST_SEND_INVALID_GROUP;
 
-	if (validate_packed_commands_settings(mbtd))
+	if (validate_packed_commands_settings())
 		return count;
 
 	if (mbtd->random_test_seed > 0)
@@ -2456,8 +2397,7 @@ static ssize_t send_invalid_packed_test_write(struct file *file,
 
 			mbtd->test_info.testcase = j;
 			mbtd->is_random = RANDOM_TEST;
-			ret = test_iosched_start_test(mbtd->test_iosched,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret)
 				num_of_failures++;
 			/* Allow FS requests to be dispatched */
@@ -2465,8 +2405,7 @@ static ssize_t send_invalid_packed_test_write(struct file *file,
 
 			mbtd->test_info.testcase = j;
 			mbtd->is_random = NON_RANDOM_TEST;
-			ret = test_iosched_start_test(mbtd->test_iosched,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret)
 				num_of_failures++;
 			/* Allow FS requests to be dispatched */
@@ -2477,7 +2416,7 @@ static ssize_t send_invalid_packed_test_write(struct file *file,
 	pr_info("%s: Completed all the test cases.", __func__);
 
 	if (num_of_failures > 0) {
-		test_iosched_set_test_result(mbtd->test_iosched, TEST_FAILED);
+		test_iosched_set_test_result(TEST_FAILED);
 		pr_err(
 			"There were %d failures during the test, TEST FAILED",
 			num_of_failures);
@@ -2491,7 +2430,7 @@ static ssize_t send_invalid_packed_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -2534,32 +2473,15 @@ static ssize_t write_packing_control_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
-	struct test_iosched *tios = mbtd->test_iosched;
 	int ret = 0;
 	int i = 0;
 	int number = -1;
 	int j = 0;
-	struct request_queue *q;
-	struct mmc_queue *mq;
-	int max_num_requests;
+	struct mmc_queue *mq = test_iosched_get_req_queue()->queuedata;
+	int max_num_requests = mq->card->ext_csd.max_packed_writes;
 	int test_successful = 1;
 
 	pr_info("%s: -- write_packing_control TEST --", __func__);
-
-	q = tios->req_q;
-	if (!q) {
-		pr_err("%s: q is NULL", __func__);
-		return -EINVAL;
-	}
-
-	mq = q->queuedata;
-	if (!mq) {
-		pr_err("%s: NULL mq", __func__);
-		return -EINVAL;
-	}
-
-	max_num_requests = mq->card->ext_csd.max_packed_writes;
 
 	sscanf(buf, "%d", &number);
 
@@ -2572,7 +2494,7 @@ static ssize_t write_packing_control_test_write(struct file *file,
 	memset(&mbtd->test_info, 0, sizeof(struct test_info));
 	mbtd->test_group = TEST_PACKING_CONTROL_GROUP;
 
-	if (validate_packed_commands_settings(mbtd))
+	if (validate_packed_commands_settings())
 		return count;
 
 	mbtd->test_info.data = mbtd;
@@ -2591,8 +2513,7 @@ static ssize_t write_packing_control_test_write(struct file *file,
 			test_successful = 1;
 			mbtd->test_info.testcase = j;
 			mbtd->is_random = RANDOM_TEST;
-			ret = test_iosched_start_test(tios,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret) {
 				test_successful = 0;
 				break;
@@ -2602,8 +2523,7 @@ static ssize_t write_packing_control_test_write(struct file *file,
 
 			mbtd->test_info.testcase = j;
 			mbtd->is_random = NON_RANDOM_TEST;
-			ret = test_iosched_start_test(tios,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret) {
 				test_successful = 0;
 				break;
@@ -2627,7 +2547,7 @@ static ssize_t write_packing_control_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -2666,8 +2586,6 @@ static ssize_t bkops_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
-	struct test_iosched *tios = mbtd->test_iosched;
 	int ret = 0;
 	int i = 0, j;
 	int number = -1;
@@ -2697,8 +2615,7 @@ static ssize_t bkops_test_write(struct file *file,
 		for (j = BKOPS_MIN_TESTCASE ;
 				j <= BKOPS_MAX_TESTCASE ; j++) {
 			mbtd->test_info.testcase = j;
-			ret = test_iosched_start_test(tios,
-				&mbtd->test_info);
+			ret = test_iosched_start_test(&mbtd->test_info);
 			if (ret)
 				break;
 		}
@@ -2715,7 +2632,7 @@ static ssize_t bkops_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -2744,16 +2661,10 @@ static ssize_t long_sequential_read_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
-	struct test_iosched *tios = mbtd->test_iosched;
 	int ret = 0;
 	int i = 0;
 	int number = -1;
 	unsigned long mtime, integer, fraction;
-	unsigned long test_size_integer, test_size_fraction;
-
-	test_size_integer = LONG_TEST_SIZE_INTEGER(LONG_READ_NUM_BYTES);
-	test_size_fraction = LONG_TEST_SIZE_FRACTION(LONG_READ_NUM_BYTES);
 
 	pr_info("%s: -- Long Sequential Read TEST --", __func__);
 
@@ -2775,14 +2686,16 @@ static ssize_t long_sequential_read_test_write(struct file *file,
 
 		mbtd->test_info.testcase = TEST_LONG_SEQUENTIAL_READ;
 		mbtd->is_random = NON_RANDOM_TEST;
-		ret = test_iosched_start_test(tios, &mbtd->test_info);
+		ret = test_iosched_start_test(&mbtd->test_info);
 		if (ret)
 			break;
 
 		mtime = ktime_to_ms(mbtd->test_info.test_duration);
 
-		pr_info("%s: time is %lu msec, size is %lu.%lu MiB",
-			__func__, mtime, test_size_integer, test_size_fraction);
+		pr_info("%s: time is %lu msec, size is %u.%u MiB",
+			__func__, mtime,
+			LONG_TEST_SIZE_INTEGER(LONG_READ_NUM_BYTES),
+			LONG_TEST_SIZE_FRACTION(LONG_READ_NUM_BYTES));
 
 		/* we first multiply in order not to lose precision */
 		mtime *= MB_MSEC_RATIO_APPROXIMATION;
@@ -2810,7 +2723,7 @@ static ssize_t long_sequential_read_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -2840,37 +2753,35 @@ static void long_seq_write_free_end_io_fn(struct request *rq, int err)
 {
 	struct test_request *test_rq =
 		(struct test_request *)rq->elv.priv[0];
-	struct test_iosched *tios = rq->q->elevator->elevator_data;
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
+	struct test_data *ptd = test_get_test_data();
 
 	BUG_ON(!test_rq);
 
-	spin_lock_irq(&tios->lock);
+	spin_lock_irq(&ptd->lock);
 	list_del_init(&test_rq->queuelist);
-	tios->dispatched_count--;
-	__blk_put_request(tios->req_q, test_rq->rq);
-	spin_unlock_irq(&tios->lock);
+	ptd->dispatched_count--;
+	__blk_put_request(ptd->req_q, test_rq->rq);
+	spin_unlock_irq(&ptd->lock);
 
-	test_iosched_free_test_req_data_buffer(test_rq);
+	kfree(test_rq->bios_buffer);
 	kfree(test_rq);
 	mbtd->completed_req_count++;
 
-	check_test_completion(tios);
+	check_test_completion();
 }
 
-static int run_long_seq_write(struct test_iosched *tios)
+static int run_long_seq_write(struct test_data *td)
 {
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
 	int ret = 0;
 	int i;
 	int num_requests = TEST_MAX_REQUESTS / 2;
 
-	tios->test_count = 0;
+	td->test_count = 0;
 	mbtd->completed_req_count = 0;
 
 	pr_info("%s: Adding at least %d write requests, first req_id=%d",
 		     __func__, LONG_WRITE_TEST_MIN_NUM_REQS,
-		     tios->wr_rd_next_req_id);
+		     td->wr_rd_next_req_id);
 
 	do {
 		for (i = 0; i < num_requests; i++) {
@@ -2881,13 +2792,13 @@ static int run_long_seq_write(struct test_iosched *tios)
 			 * includes a safety margin) and then call the mmc layer
 			 * to fetch them
 			 */
-			if (tios->test_count > num_requests)
+			if (td->test_count > num_requests)
 				break;
 
-			ret = test_iosched_add_wr_rd_test_req(tios, 0,
-				WRITE, tios->start_sector,
-				TEST_MAX_BIOS_PER_REQ, TEST_PATTERN_5A,
-				long_seq_write_free_end_io_fn);
+			ret = test_iosched_add_wr_rd_test_req(0, WRITE,
+				  td->start_sector, TEST_MAX_BIOS_PER_REQ,
+				  TEST_PATTERN_5A,
+				  long_seq_write_free_end_io_fn);
 			 if (ret) {
 				pr_err("%s: failed to create write request"
 					    , __func__);
@@ -2895,7 +2806,7 @@ static int run_long_seq_write(struct test_iosched *tios)
 			}
 		}
 
-		__blk_run_queue(tios->req_q);
+		__blk_run_queue(td->req_q);
 
 	} while (mbtd->completed_req_count < LONG_WRITE_TEST_MIN_NUM_REQS);
 
@@ -2910,8 +2821,6 @@ static ssize_t long_sequential_write_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
-	struct test_iosched *tios = mbtd->test_iosched;
 	int ret = 0;
 	int i = 0;
 	int number = -1;
@@ -2940,7 +2849,7 @@ static ssize_t long_sequential_write_test_write(struct file *file,
 		mbtd->test_info.test_byte_count = 0;
 		mbtd->test_info.testcase = TEST_LONG_SEQUENTIAL_WRITE;
 		mbtd->is_random = NON_RANDOM_TEST;
-		ret = test_iosched_start_test(tios, &mbtd->test_info);
+		ret = test_iosched_start_test(&mbtd->test_info);
 		if (ret)
 			break;
 
@@ -2977,7 +2886,7 @@ static ssize_t long_sequential_write_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -3008,8 +2917,6 @@ static ssize_t new_req_notification_test_write(struct file *file,
 				size_t count,
 				loff_t *ppos)
 {
-	struct mmc_block_test_data *mbtd = file->private_data;
-	struct test_iosched *tios = mbtd->test_iosched;
 	int ret = 0;
 	int i = 0;
 	int number = -1;
@@ -3039,7 +2946,7 @@ static ssize_t new_req_notification_test_write(struct file *file,
 		pr_info("%s: start test case TEST_NEW_REQ_NOTIFICATION",
 			      __func__);
 		mbtd->test_info.testcase = TEST_NEW_REQ_NOTIFICATION;
-		ret = test_iosched_start_test(tios, &mbtd->test_info);
+		ret = test_iosched_start_test(&mbtd->test_info);
 		if (ret) {
 			pr_info("%s: break from new_req tests loop",
 				      __func__);
@@ -3055,7 +2962,7 @@ static ssize_t new_req_notification_test_read(struct file *file,
 			       loff_t *offset)
 {
 	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
+		return count;
 
 	memset((void *)buffer, 0, count);
 
@@ -3076,7 +2983,7 @@ const struct file_operations new_req_notification_test_ops = {
 	.read = new_req_notification_test_read,
 };
 
-static void mmc_block_test_debugfs_cleanup(struct mmc_block_test_data *mbtd)
+static void mmc_block_test_debugfs_cleanup(void)
 {
 	debugfs_remove(mbtd->debug.random_test_seed);
 	debugfs_remove(mbtd->debug.send_write_packing_test);
@@ -3089,17 +2996,12 @@ static void mmc_block_test_debugfs_cleanup(struct mmc_block_test_data *mbtd)
 	debugfs_remove(mbtd->debug.new_req_notification_test);
 }
 
-static int mmc_block_test_debugfs_init(struct test_iosched *tios)
+static int mmc_block_test_debugfs_init(void)
 {
 	struct dentry *utils_root, *tests_root;
-	struct mmc_block_test_data *mbtd;
 
-	if (!tios)
-		return -EINVAL;
-	mbtd = tios->blk_dev_test_data;
-
-	utils_root = tios->debug.debug_utils_root;
-	tests_root = tios->debug.debug_tests_root;
+	utils_root = test_iosched_get_debugfs_utils_root();
+	tests_root = test_iosched_get_debugfs_tests_root();
 
 	if (!utils_root || !tests_root)
 		return -EINVAL;
@@ -3117,7 +3019,7 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 		debugfs_create_file("send_write_packing_test",
 				    S_IRUGO | S_IWUGO,
 				    tests_root,
-				    mbtd,
+				    NULL,
 				    &send_write_packing_test_ops);
 
 	if (!mbtd->debug.send_write_packing_test)
@@ -3127,7 +3029,7 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 		debugfs_create_file("err_check_test",
 				    S_IRUGO | S_IWUGO,
 				    tests_root,
-				    mbtd,
+				    NULL,
 				    &err_check_test_ops);
 
 	if (!mbtd->debug.err_check_test)
@@ -3137,7 +3039,7 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 		debugfs_create_file("send_invalid_packed_test",
 				    S_IRUGO | S_IWUGO,
 				    tests_root,
-				    mbtd,
+				    NULL,
 				    &send_invalid_packed_test_ops);
 
 	if (!mbtd->debug.send_invalid_packed_test)
@@ -3147,7 +3049,7 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 					"packing_control_test",
 					S_IRUGO | S_IWUGO,
 					tests_root,
-					mbtd,
+					NULL,
 					&write_packing_control_test_ops);
 
 	if (!mbtd->debug.packing_control_test)
@@ -3157,14 +3059,14 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 		debugfs_create_file("bkops_test",
 				    S_IRUGO | S_IWUGO,
 				    tests_root,
-				    mbtd,
+				    NULL,
 				    &bkops_test_ops);
 
 	mbtd->debug.new_req_notification_test =
 		debugfs_create_file("new_req_notification_test",
 				    S_IRUGO | S_IWUGO,
 				    tests_root,
-				    mbtd,
+				    NULL,
 				    &new_req_notification_test_ops);
 
 	if (!mbtd->debug.new_req_notification_test)
@@ -3177,7 +3079,7 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 					"long_sequential_read_test",
 					S_IRUGO | S_IWUGO,
 					tests_root,
-					mbtd,
+					NULL,
 					&long_sequential_read_test_ops);
 
 	if (!mbtd->debug.long_sequential_read_test)
@@ -3187,7 +3089,7 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 					"long_sequential_write_test",
 					S_IRUGO | S_IWUGO,
 					tests_root,
-					mbtd,
+					NULL,
 					&long_sequential_write_test_ops);
 
 	if (!mbtd->debug.long_sequential_write_test)
@@ -3196,101 +3098,63 @@ static int mmc_block_test_debugfs_init(struct test_iosched *tios)
 	return 0;
 
 err_nomem:
-	mmc_block_test_debugfs_cleanup(mbtd);
+	mmc_block_test_debugfs_cleanup();
 	return -ENOMEM;
 }
 
-static int mmc_block_test_probe(struct test_iosched *tios)
+static void mmc_block_test_probe(void)
 {
-	struct request_queue *q;
-	struct mmc_block_test_data *mbtd;
+	struct request_queue *q = test_iosched_get_req_queue();
 	struct mmc_queue *mq;
 	int max_packed_reqs;
-	int ret;
 
-	if (!tios) {
-		pr_err("%s: NULL test_iosched", __func__);
-		return -EINVAL;
-	}
-
-	q = tios->req_q;
 	if (!q) {
 		pr_err("%s: NULL request queue", __func__);
-		return -EINVAL;
+		return;
 	}
 
 	mq = q->queuedata;
 	if (!mq) {
 		pr_err("%s: NULL mq", __func__);
-		return -EINVAL;
+		return;
 	}
-
-	mbtd = kzalloc(sizeof(*mbtd), GFP_KERNEL);
-	if (!mbtd) {
-		pr_err("%s: failed to allocate mmc test data\n", __func__);
-		return -ENOMEM;
-	}
-	init_waitqueue_head(&mbtd->bkops_wait_q);
-	tios->blk_dev_test_data = mbtd;
-	mbtd->test_iosched = tios;
 
 	max_packed_reqs = mq->card->ext_csd.max_packed_writes;
 	mbtd->exp_packed_stats.packing_events =
 			kzalloc((max_packed_reqs + 1) *
 				sizeof(*mbtd->exp_packed_stats.packing_events),
 				GFP_KERNEL);
-	if (!mbtd->exp_packed_stats.packing_events) {
-		pr_err(
-			"%s: failed to allocate packing events (max_packed_reqs=%d)\n",
-			__func__, max_packed_reqs);
-		ret = -ENOMEM;
-		goto free_mbtd;
-	}
 
-	ret = mmc_block_test_debugfs_init(tios);
-	if (ret) {
-		pr_err("%s: failed to init debugfs entries, ret=%d\n",
-			__func__, ret);
-		goto free_packing_events;
-	}
-
-	return 0;
-
-free_packing_events:
-	kfree(mbtd->exp_packed_stats.packing_events);
-free_mbtd:
-	kfree(mbtd);
-	return ret;
+	mmc_block_test_debugfs_init();
 }
 
-static void mmc_block_test_remove(struct test_iosched *tios)
+static void mmc_block_test_remove(void)
 {
-	struct mmc_block_test_data *mbtd = tios->blk_dev_test_data;
-	mmc_block_test_debugfs_cleanup(mbtd);
-	kfree(mbtd->exp_packed_stats.packing_events);
-	kfree(mbtd);
+	mmc_block_test_debugfs_cleanup();
 }
 
 static int __init mmc_block_test_init(void)
 {
-	mmc_bdt = kzalloc(sizeof(*mmc_bdt), GFP_KERNEL);
-	if (!mmc_bdt)
-		return -ENOMEM;
+	mbtd = kzalloc(sizeof(struct mmc_block_test_data), GFP_KERNEL);
+	if (!mbtd) {
+		pr_err("%s: failed to allocate mmc_block_test_data",
+			    __func__);
+		return -ENODEV;
+	}
 
-	mmc_bdt->type_prefix = MMC_TEST_BLK_DEV_TYPE_PREFIX;
-	mmc_bdt->init_fn = mmc_block_test_probe;
-	mmc_bdt->exit_fn = mmc_block_test_remove;
-	INIT_LIST_HEAD(&mmc_bdt->list);
-
-	test_iosched_register(mmc_bdt);
+	init_waitqueue_head(&mbtd->bkops_wait_q);
+	mbtd->bdt.init_fn = mmc_block_test_probe;
+	mbtd->bdt.exit_fn = mmc_block_test_remove;
+	INIT_LIST_HEAD(&mbtd->bdt.list);
+	test_iosched_register(&mbtd->bdt);
 
 	return 0;
 }
 
 static void __exit mmc_block_test_exit(void)
 {
-	test_iosched_unregister(mmc_bdt);
-	kfree(mmc_bdt);
+	test_iosched_unregister(&mbtd->bdt);
+	kfree(mbtd);
 }
 
 module_init(mmc_block_test_init);

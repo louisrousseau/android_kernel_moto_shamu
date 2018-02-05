@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, 2017 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -16,13 +16,8 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include "msm_vidc_internal.h"
-#include "trace/events/msm_vidc.h"
 
-#ifndef VIDC_DBG_LABEL
-#define VIDC_DBG_LABEL "msm_vidc"
-#endif
-
-#define VIDC_DBG_TAG VIDC_DBG_LABEL ": %4s: "
+#define VIDC_DBG_TAG "msm_vidc: %4s: "
 
 /* To enable messages OR these values and
  * echo the result to debugfs file.
@@ -42,6 +37,7 @@ enum vidc_msg_prio {
 
 enum vidc_msg_out {
 	VIDC_OUT_PRINTK = 0,
+	VIDC_OUT_FTRACE,
 };
 
 enum msm_vidc_debugfs_event {
@@ -57,13 +53,8 @@ extern int msm_fw_debug;
 extern int msm_fw_debug_mode;
 extern int msm_fw_low_power_mode;
 extern int msm_vidc_hw_rsp_timeout;
-extern u32 msm_fw_coverage;
 extern int msm_vidc_vpe_csc_601_to_709;
-extern int msm_vidc_dec_dcvs_mode;
-extern int msm_vidc_enc_dcvs_mode;
-extern int msm_vidc_sys_idle_indicator;
-extern u32 msm_vidc_firmware_unload_delay;
-extern int msm_vidc_thermal_mitigation_disabled;
+extern int msm_vidc_dcvs_mode;
 
 #define VIDC_MSG_PRIO2STRING(__level) ({ \
 	char *__str; \
@@ -105,6 +96,10 @@ extern int msm_vidc_thermal_mitigation_disabled;
 				pr_info(VIDC_DBG_TAG __fmt, \
 						VIDC_MSG_PRIO2STRING(__level), \
 						## arg); \
+			} else if (msm_vidc_debug_out == VIDC_OUT_FTRACE) { \
+				trace_printk(KERN_DEBUG VIDC_DBG_TAG __fmt, \
+						VIDC_MSG_PRIO2STRING(__level), \
+						## arg); \
 			} \
 		} \
 	} while (0)
@@ -112,7 +107,6 @@ extern int msm_vidc_thermal_mitigation_disabled;
 
 
 struct dentry *msm_vidc_debugfs_init_drv(void);
-void msm_vidc_debugfs_deinit_drv(void);
 struct dentry *msm_vidc_debugfs_init_core(struct msm_vidc_core *core,
 		struct dentry *parent);
 struct dentry *msm_vidc_debugfs_init_inst(struct msm_vidc_inst *inst,
@@ -155,12 +149,10 @@ static inline void show_stats(struct msm_vidc_inst *i)
 	for (x = 0; x < MAX_PROFILING_POINTS; x++) {
 		if ((i->debug.pdata[x].name[0])  &&
 			(msm_vidc_debug & VIDC_PROF)) {
-			if (i->debug.samples) {
-				dprintk(VIDC_PROF, "%s averaged %d ms/sample\n",
-					i->debug.pdata[x].name,
-					i->debug.pdata[x].cumulative /
+			dprintk(VIDC_PROF, "%s averaged %d ms/sample\n",
+				i->debug.pdata[x].name,
+				i->debug.pdata[x].cumulative /
 					i->debug.samples);
-			}
 			dprintk(VIDC_PROF, "%s Samples: %d\n",
 					i->debug.pdata[x].name,
 					i->debug.samples);

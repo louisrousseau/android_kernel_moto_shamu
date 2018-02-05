@@ -462,7 +462,6 @@ static void __relink_lru(struct dm_buffer *b, int dirty)
 	c->n_buffers[dirty]++;
 	b->list_mode = dirty;
 	list_move(&b->lru_list, &c->lru[dirty]);
-	b->last_accessed = jiffies;
 }
 
 /*----------------------------------------------------------------
@@ -529,19 +528,6 @@ static void use_dmio(struct dm_buffer *b, int rw, sector_t block,
 		end_io(&b->bio, r);
 }
 
-static void inline_endio(struct bio *bio, int error)
-{
-	bio_end_io_t *end_fn = bio->bi_private;
-
-	/*
-	 * Reset the bio to free any attached resources
-	 * (e.g. bio integrity profiles).
-	 */
-	bio_reset(bio);
-
-	end_fn(bio, error);
-}
-
 static void use_inline_bio(struct dm_buffer *b, int rw, sector_t block,
 			   bio_end_io_t *end_io)
 {
@@ -553,12 +539,7 @@ static void use_inline_bio(struct dm_buffer *b, int rw, sector_t block,
 	b->bio.bi_max_vecs = DM_BUFIO_INLINE_VECS;
 	b->bio.bi_sector = block << b->c->sectors_per_block_bits;
 	b->bio.bi_bdev = b->c->bdev;
-	b->bio.bi_end_io = inline_endio;
-	/*
-	 * Use of .bi_private isn't a problem here because
-	 * the dm_buffer's inline bio is local to bufio.
-	 */
-	b->bio.bi_private = end_io;
+	b->bio.bi_end_io = end_io;
 
 	/*
 	 * We assume that if len >= PAGE_SIZE ptr is page-aligned.
@@ -623,9 +604,9 @@ static void write_endio(struct bio *bio, int error)
 
 	BUG_ON(!test_bit(B_WRITING, &b->state));
 
-	smp_mb__before_atomic();
+	smp_mb__before_clear_bit();
 	clear_bit(B_WRITING, &b->state);
-	smp_mb__after_atomic();
+	smp_mb__after_clear_bit();
 
 	wake_up_bit(&b->state, B_WRITING);
 }
@@ -756,8 +737,7 @@ static struct dm_buffer *__alloc_buffer_wait_no_callback(struct dm_bufio_client 
 	 * dm-bufio is resistant to allocation failures (it just keeps
 	 * one buffer reserved in cases all the allocations fail).
 	 * So set flags to not try too hard:
-	 *	GFP_NOWAIT: don't wait; if we need to sleep we'll release our
-	 *		    mutex and wait ourselves.
+	 *	GFP_NOIO: don't recurse into the I/O layer
 	 *	__GFP_NORETRY: don't retry and rather return failure
 	 *	__GFP_NOMEMALLOC: don't use emergency reserves
 	 *	__GFP_NOWARN: don't print a warning in case of failure
@@ -767,7 +747,7 @@ static struct dm_buffer *__alloc_buffer_wait_no_callback(struct dm_bufio_client 
 	 */
 	while (1) {
 		if (dm_bufio_cache_size_latch != 1) {
-			b = alloc_buffer(c, GFP_NOWAIT | __GFP_NORETRY | __GFP_NOMEMALLOC | __GFP_NOWARN);
+			b = alloc_buffer(c, GFP_NOIO | __GFP_NORETRY | __GFP_NOMEMALLOC | __GFP_NOWARN);
 			if (b)
 				return b;
 		}
@@ -993,9 +973,9 @@ static void read_endio(struct bio *bio, int error)
 
 	BUG_ON(!test_bit(B_READING, &b->state));
 
-	smp_mb__before_atomic();
+	smp_mb__before_clear_bit();
 	clear_bit(B_READING, &b->state);
-	smp_mb__after_atomic();
+	smp_mb__after_clear_bit();
 
 	wake_up_bit(&b->state, B_READING);
 }
@@ -1443,19 +1423,19 @@ static int shrink(struct shrinker *shrinker, struct shrink_control *sc)
 	unsigned long r;
 	unsigned long nr_to_scan = sc->nr_to_scan;
 
-	if (nr_to_scan) {
-		if (sc->gfp_mask & __GFP_IO)
-			dm_bufio_lock(c);
-		else if (!dm_bufio_trylock(c))
-			return -1;
+	if (sc->gfp_mask & __GFP_IO)
+		dm_bufio_lock(c);
+	else if (!dm_bufio_trylock(c))
+		return !nr_to_scan ? 0 : -1;
 
+	if (nr_to_scan)
 		__scan(c, nr_to_scan, sc);
-		dm_bufio_unlock(c);
-	}
 
-	r = ACCESS_ONCE(c->n_buffers[LIST_CLEAN]) + ACCESS_ONCE(c->n_buffers[LIST_DIRTY]);
+	r = c->n_buffers[LIST_CLEAN] + c->n_buffers[LIST_DIRTY];
 	if (r > INT_MAX)
 		r = INT_MAX;
+
+	dm_bufio_unlock(c);
 
 	return r;
 }

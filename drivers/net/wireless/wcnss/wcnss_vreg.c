@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,6 +24,8 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
+#include <mach/msm_xo.h>
+#include <mach/msm_iomap.h>
 
 
 static void __iomem *msm_wcnss_base;
@@ -31,9 +33,12 @@ static LIST_HEAD(power_on_lock_list);
 static DEFINE_MUTEX(list_lock);
 static DEFINE_SEMAPHORE(wcnss_power_on_lock);
 static int auto_detect;
-static int is_power_on;
+
+#define MSM_RIVA_PHYS           0x03204000
+#define MSM_PRONTO_PHYS         0xfb21b000
 
 #define RIVA_PMU_OFFSET         0x28
+#define PRONTO_PMU_OFFSET       0x1004
 
 #define RIVA_SPARE_OFFSET       0x0b4
 #define PRONTO_SPARE_OFFSET     0x1088
@@ -41,20 +46,12 @@ static int is_power_on;
 
 #define PRONTO_IRIS_REG_READ_OFFSET       0x1134
 #define PRONTO_IRIS_REG_CHIP_ID           0x04
-/* IRIS card chip ID's */
-#define WCN3660       0x0200
-#define WCN3660A      0x0300
-#define WCN3660B      0x0400
-#define WCN3620       0x5111
-#define WCN3620A      0x5112
-#define WCN3610       0x9101
 
 #define WCNSS_PMU_CFG_IRIS_XO_CFG          BIT(3)
 #define WCNSS_PMU_CFG_IRIS_XO_EN           BIT(4)
+#define WCNSS_PMU_CFG_GC_BUS_MUX_SEL_TOP   BIT(5)
 #define WCNSS_PMU_CFG_IRIS_XO_CFG_STS      BIT(6) /* 1: in progress, 0: done */
 
-#define WCNSS_PMU_CFG_IRIS_RESET           BIT(7)
-#define WCNSS_PMU_CFG_IRIS_RESET_STS       BIT(8) /* 1: in progress, 0: done */
 #define WCNSS_PMU_CFG_IRIS_XO_READ         BIT(9)
 #define WCNSS_PMU_CFG_IRIS_XO_READ_STS     BIT(10)
 
@@ -102,7 +99,7 @@ static struct vregs_info iris_vregs_pronto[] = {
 	{"qcom,iris-vddrfa", VREG_NULL_CONFIG, 1300000, 0,
 		1300000, 100000, NULL},
 	{"qcom,iris-vddpa",  VREG_NULL_CONFIG, 2900000, 0,
-		3350000, 515000, NULL},
+		3000000, 515000, NULL},
 	{"qcom,iris-vdddig", VREG_NULL_CONFIG, 1225000, 0,
 		1800000, 10000,  NULL},
 };
@@ -118,41 +115,6 @@ static struct vregs_info pronto_vregs[] = {
 		1800000, 0,    NULL},
 };
 
-/* IRIS regulators for Pronto v2 hardware */
-static struct vregs_info iris_vregs_pronto_v2[] = {
-	{"qcom,iris-vddxo",  VREG_NULL_CONFIG, 1800000, 0,
-		1800000, 10000,  NULL},
-	{"qcom,iris-vddrfa", VREG_NULL_CONFIG, 1300000, 0,
-		1300000, 100000, NULL},
-	{"qcom,iris-vddpa",  VREG_NULL_CONFIG, 3300000, 0,
-		3300000, 515000, NULL},
-	{"qcom,iris-vdddig", VREG_NULL_CONFIG, 1800000, 0,
-		1800000, 10000,  NULL},
-};
-
-/* WCNSS regulators for Pronto v2 hardware */
-static struct vregs_info pronto_vregs_pronto_v2[] = {
-	{"qcom,pronto-vddmx",  VREG_NULL_CONFIG, 1287500,  0,
-		1287500, 0,    NULL},
-	{"qcom,pronto-vddcx",  VREG_NULL_CONFIG, RPM_REGULATOR_CORNER_NORMAL,
-		RPM_REGULATOR_CORNER_NONE, RPM_REGULATOR_CORNER_SUPER_TURBO,
-		0,             NULL},
-	{"qcom,pronto-vddpx",  VREG_NULL_CONFIG, 1800000, 0,
-		1800000, 0,    NULL},
-};
-
-/* WCNSS regulators for Pronto v3 hardware */
-static struct vregs_info pronto_vregs_pronto_v3[] = {
-	{"qcom,pronto-vddmx",  VREG_NULL_CONFIG, RPM_REGULATOR_CORNER_NORMAL,
-		RPM_REGULATOR_CORNER_NONE, RPM_REGULATOR_CORNER_SUPER_TURBO,
-		0,             NULL},
-	{"qcom,pronto-vddcx",  VREG_NULL_CONFIG, RPM_REGULATOR_CORNER_NORMAL,
-		RPM_REGULATOR_CORNER_NONE, RPM_REGULATOR_CORNER_SUPER_TURBO,
-		0,             NULL},
-	{"qcom,pronto-vddpx",  VREG_NULL_CONFIG, 1800000, 0,
-		1800000, 0,    NULL},
-};
-
 
 struct host_driver {
 	char name[20];
@@ -161,8 +123,7 @@ struct host_driver {
 
 enum {
 	IRIS_3660, /* also 3660A and 3680 */
-	IRIS_3620,
-	IRIS_3610
+	IRIS_3620
 };
 
 
@@ -177,70 +138,32 @@ int xo_auto_detect(u32 reg)
 	case IRIS_3620:
 		return WCNSS_XO_19MHZ;
 
-	case IRIS_3610:
-		return WCNSS_XO_19MHZ;
-
 	default:
 		return WCNSS_XO_INVALID;
 	}
 }
 
-int validate_iris_chip_id(u32 reg)
+static int configure_iris_xo(struct device *dev, bool use_48mhz_xo, int on,
+			int *iris_xo_set)
 {
-	int iris_id;
-	iris_id = reg >> 16;
-
-	switch (iris_id) {
-	case WCN3660:
-	case WCN3660A:
-	case WCN3660B:
-	case WCN3620:
-	case WCN3620A:
-	case WCN3610:
-		return 0;
-	default:
-		return 1;
-	}
-}
-
-void  wcnss_iris_reset(u32 reg, void __iomem *pmu_conf_reg)
-{
-	/* Reset IRIS */
-	reg |= WCNSS_PMU_CFG_IRIS_RESET;
-	writel_relaxed(reg, pmu_conf_reg);
-
-	/* Wait for PMU_CFG.iris_reg_reset_sts */
-	while (readl_relaxed(pmu_conf_reg) &
-			WCNSS_PMU_CFG_IRIS_RESET_STS)
-		cpu_relax();
-
-	/* Reset iris reset bit */
-	reg &= ~WCNSS_PMU_CFG_IRIS_RESET;
-	writel_relaxed(reg, pmu_conf_reg);
-}
-
-static int
-configure_iris_xo(struct device *dev,
-			struct wcnss_wlan_config *cfg,
-			int on, int *iris_xo_set)
-{
-	u32 reg = 0, i = 0;
+	u32 reg = 0;
 	u32 iris_reg = WCNSS_INVALID_IRIS_REG;
 	int rc = 0;
+	int size = 0;
 	int pmu_offset = 0;
 	int spare_offset = 0;
+	unsigned long wcnss_phys_addr;
 	void __iomem *pmu_conf_reg;
 	void __iomem *spare_reg;
 	void __iomem *iris_read_reg;
 	struct clk *clk;
 	struct clk *clk_rf = NULL;
-	bool use_48mhz_xo;
-
-	use_48mhz_xo = cfg->use_48mhz_xo;
 
 	if (wcnss_hardware_type() == WCNSS_PRONTO_HW) {
+		wcnss_phys_addr = MSM_PRONTO_PHYS;
 		pmu_offset = PRONTO_PMU_OFFSET;
 		spare_offset = PRONTO_SPARE_OFFSET;
+		size = 0x3000;
 
 		clk = clk_get(dev, "xo");
 		if (IS_ERR(clk)) {
@@ -249,8 +172,10 @@ configure_iris_xo(struct device *dev,
 		}
 
 	} else {
+		wcnss_phys_addr = MSM_RIVA_PHYS;
 		pmu_offset = RIVA_PMU_OFFSET;
 		spare_offset = RIVA_SPARE_OFFSET;
+		size = SZ_256;
 
 		clk = clk_get(dev, "cxo");
 		if (IS_ERR(clk)) {
@@ -260,7 +185,7 @@ configure_iris_xo(struct device *dev,
 	}
 
 	if (on) {
-		msm_wcnss_base = cfg->msm_wcnss_base;
+		msm_wcnss_base = ioremap(wcnss_phys_addr, size);
 		if (!msm_wcnss_base) {
 			pr_err("ioremap wcnss physical failed\n");
 			goto fail;
@@ -295,44 +220,22 @@ configure_iris_xo(struct device *dev,
 			iris_reg = readl_relaxed(iris_read_reg);
 		}
 
-		wcnss_iris_reset(reg, pmu_conf_reg);
-
 		if (iris_reg != WCNSS_INVALID_IRIS_REG) {
 			iris_reg &= 0xffff;
 			iris_reg |= PRONTO_IRIS_REG_CHIP_ID;
 			writel_relaxed(iris_reg, iris_read_reg);
-			do {
-				/* Iris read */
-				reg = readl_relaxed(pmu_conf_reg);
-				reg |= WCNSS_PMU_CFG_IRIS_XO_READ;
-				writel_relaxed(reg, pmu_conf_reg);
 
-				/* Wait for PMU_CFG.iris_reg_read_sts */
-				while (readl_relaxed(pmu_conf_reg) &
-						WCNSS_PMU_CFG_IRIS_XO_READ_STS)
-					cpu_relax();
+			/* Iris read */
+			reg = readl_relaxed(pmu_conf_reg);
+			reg |= WCNSS_PMU_CFG_IRIS_XO_READ;
+			writel_relaxed(reg, pmu_conf_reg);
 
-				iris_reg = readl_relaxed(iris_read_reg);
-				pr_info("wcnss: IRIS Reg: %08x\n", iris_reg);
+			/* Wait for PMU_CFG.iris_reg_read_sts */
+			while (readl_relaxed(pmu_conf_reg) &
+					WCNSS_PMU_CFG_IRIS_XO_READ_STS)
+				cpu_relax();
 
-				if (validate_iris_chip_id(iris_reg) && i >= 4) {
-					pr_info("wcnss: IRIS Card absent/invalid\n");
-					auto_detect = WCNSS_XO_INVALID;
-					/* Reset iris read bit */
-					reg &= ~WCNSS_PMU_CFG_IRIS_XO_READ;
-					/* Clear XO_MODE[b2:b1] bits.
-					 * Clear implies 19.2 MHz TCXO
-					 */
-					reg &= ~(WCNSS_PMU_CFG_IRIS_XO_MODE);
-					goto xo_configure;
-				} else if (!validate_iris_chip_id(iris_reg)) {
-					pr_debug("wcnss: IRIS Card is present\n");
-					break;
-				}
-				reg &= ~WCNSS_PMU_CFG_IRIS_XO_READ;
-				writel_relaxed(reg, pmu_conf_reg);
-				wcnss_iris_reset(reg, pmu_conf_reg);
-			} while (i++ < 5);
+			iris_reg = readl_relaxed(iris_read_reg);
 			auto_detect = xo_auto_detect(iris_reg);
 
 			/* Reset iris read bit */
@@ -355,10 +258,7 @@ configure_iris_xo(struct device *dev,
 				*iris_xo_set = WCNSS_XO_48MHZ;
 		}
 
-xo_configure:
 		writel_relaxed(reg, pmu_conf_reg);
-
-		wcnss_iris_reset(reg, pmu_conf_reg);
 
 		/* Start IRIS XO configuration */
 		reg |= WCNSS_PMU_CFG_IRIS_XO_CFG;
@@ -522,21 +422,15 @@ fail:
 
 }
 
-static void wcnss_iris_vregs_off(enum wcnss_hw_type hw_type,
-					struct wcnss_wlan_config *cfg)
+static void wcnss_iris_vregs_off(enum wcnss_hw_type hw_type)
 {
 	switch (hw_type) {
 	case WCNSS_RIVA_HW:
 		wcnss_vregs_off(iris_vregs_riva, ARRAY_SIZE(iris_vregs_riva));
 		break;
 	case WCNSS_PRONTO_HW:
-		if (cfg->is_pronto_vt || cfg->is_pronto_v3) {
-			wcnss_vregs_off(iris_vregs_pronto_v2,
-				ARRAY_SIZE(iris_vregs_pronto_v2));
-		} else {
-			wcnss_vregs_off(iris_vregs_pronto,
+		wcnss_vregs_off(iris_vregs_pronto,
 				ARRAY_SIZE(iris_vregs_pronto));
-		}
 		break;
 	default:
 		pr_err("%s invalid hardware %d\n", __func__, hw_type);
@@ -544,9 +438,7 @@ static void wcnss_iris_vregs_off(enum wcnss_hw_type hw_type,
 	}
 }
 
-static int wcnss_iris_vregs_on(struct device *dev,
-				enum wcnss_hw_type hw_type,
-				struct wcnss_wlan_config *cfg)
+static int wcnss_iris_vregs_on(struct device *dev, enum wcnss_hw_type hw_type)
 {
 	int ret = -1;
 
@@ -556,13 +448,8 @@ static int wcnss_iris_vregs_on(struct device *dev,
 				ARRAY_SIZE(iris_vregs_riva));
 		break;
 	case WCNSS_PRONTO_HW:
-		if (cfg->is_pronto_vt || cfg->is_pronto_v3) {
-			ret = wcnss_vregs_on(dev, iris_vregs_pronto_v2,
-					ARRAY_SIZE(iris_vregs_pronto_v2));
-		} else {
-			ret = wcnss_vregs_on(dev, iris_vregs_pronto,
-					ARRAY_SIZE(iris_vregs_pronto));
-		}
+		ret = wcnss_vregs_on(dev, iris_vregs_pronto,
+				ARRAY_SIZE(iris_vregs_pronto));
 		break;
 	default:
 		pr_err("%s invalid hardware %d\n", __func__, hw_type);
@@ -570,24 +457,14 @@ static int wcnss_iris_vregs_on(struct device *dev,
 	return ret;
 }
 
-static void wcnss_core_vregs_off(enum wcnss_hw_type hw_type,
-					struct wcnss_wlan_config *cfg)
+static void wcnss_core_vregs_off(enum wcnss_hw_type hw_type)
 {
 	switch (hw_type) {
 	case WCNSS_RIVA_HW:
 		wcnss_vregs_off(riva_vregs, ARRAY_SIZE(riva_vregs));
 		break;
 	case WCNSS_PRONTO_HW:
-		if (cfg->is_pronto_vt) {
-			wcnss_vregs_off(pronto_vregs_pronto_v2,
-				ARRAY_SIZE(pronto_vregs_pronto_v2));
-		} else if (cfg->is_pronto_v3) {
-			wcnss_vregs_off(pronto_vregs_pronto_v3,
-				ARRAY_SIZE(pronto_vregs_pronto_v3));
-		} else {
-			wcnss_vregs_off(pronto_vregs,
-				ARRAY_SIZE(pronto_vregs));
-		}
+		wcnss_vregs_off(pronto_vregs, ARRAY_SIZE(pronto_vregs));
 		break;
 	default:
 		pr_err("%s invalid hardware %d\n", __func__, hw_type);
@@ -595,9 +472,7 @@ static void wcnss_core_vregs_off(enum wcnss_hw_type hw_type,
 
 }
 
-static int wcnss_core_vregs_on(struct device *dev,
-				enum wcnss_hw_type hw_type,
-				struct wcnss_wlan_config *cfg)
+static int wcnss_core_vregs_on(struct device *dev, enum wcnss_hw_type hw_type)
 {
 	int ret = -1;
 
@@ -606,16 +481,8 @@ static int wcnss_core_vregs_on(struct device *dev,
 		ret = wcnss_vregs_on(dev, riva_vregs, ARRAY_SIZE(riva_vregs));
 		break;
 	case WCNSS_PRONTO_HW:
-		if (cfg->is_pronto_vt) {
-			ret = wcnss_vregs_on(dev, pronto_vregs_pronto_v2,
-					ARRAY_SIZE(pronto_vregs_pronto_v2));
-		} else if (cfg->is_pronto_v3) {
-			ret = wcnss_vregs_on(dev, pronto_vregs_pronto_v3,
-					ARRAY_SIZE(pronto_vregs_pronto_v3));
-		} else {
-			ret = wcnss_vregs_on(dev, pronto_vregs,
-					ARRAY_SIZE(pronto_vregs));
-		}
+		ret = wcnss_vregs_on(dev, pronto_vregs,
+				ARRAY_SIZE(pronto_vregs));
 		break;
 	default:
 		pr_err("%s invalid hardware %d\n", __func__, hw_type);
@@ -632,44 +499,39 @@ int wcnss_wlan_power(struct device *dev,
 	int rc = 0;
 	enum wcnss_hw_type hw_type = wcnss_hardware_type();
 
-	down(&wcnss_power_on_lock);
 	if (on) {
+		down(&wcnss_power_on_lock);
 		/* RIVA regulator settings */
-		rc = wcnss_core_vregs_on(dev, hw_type,
-			cfg);
+		rc = wcnss_core_vregs_on(dev, hw_type);
 		if (rc)
 			goto fail_wcnss_on;
 
 		/* IRIS regulator settings */
-		rc = wcnss_iris_vregs_on(dev, hw_type,
-			cfg);
+		rc = wcnss_iris_vregs_on(dev, hw_type);
 		if (rc)
 			goto fail_iris_on;
 
 		/* Configure IRIS XO */
-		rc = configure_iris_xo(dev, cfg,
+		rc = configure_iris_xo(dev, cfg->use_48mhz_xo,
 				WCNSS_WLAN_SWITCH_ON, iris_xo_set);
 		if (rc)
 			goto fail_iris_xo;
+		up(&wcnss_power_on_lock);
 
-		is_power_on = true;
-
-	}  else if (is_power_on) {
-		is_power_on = false;
-		configure_iris_xo(dev, cfg,
+	} else {
+		configure_iris_xo(dev, cfg->use_48mhz_xo,
 				WCNSS_WLAN_SWITCH_OFF, NULL);
-		wcnss_iris_vregs_off(hw_type, cfg);
-		wcnss_core_vregs_off(hw_type, cfg);
+		wcnss_iris_vregs_off(hw_type);
+		wcnss_core_vregs_off(hw_type);
 	}
 
-	up(&wcnss_power_on_lock);
 	return rc;
 
 fail_iris_xo:
-	wcnss_iris_vregs_off(hw_type, cfg);
+	wcnss_iris_vregs_off(hw_type);
 
 fail_iris_on:
-	wcnss_core_vregs_off(hw_type, cfg);
+	wcnss_core_vregs_off(hw_type);
 
 fail_wcnss_on:
 	up(&wcnss_power_on_lock);

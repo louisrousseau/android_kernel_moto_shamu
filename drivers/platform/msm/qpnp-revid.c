@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,11 +36,6 @@ static const char *const pmic_names[] = {
 	"PMA8084",
 	"PMI8962",
 	"PMD9635",
-	"PM8994",
-	"PMI8994",
-	"PM8916",
-	"PM8004",
-	"PM8909",
 };
 
 struct revid_chip {
@@ -208,7 +203,7 @@ static void __exit qpnp_revid_exit(void)
 	return spmi_driver_unregister(&qpnp_revid_driver);
 }
 
-subsys_initcall(qpnp_revid_init);
+module_init(qpnp_revid_init);
 module_exit(qpnp_revid_exit);
 
 MODULE_DESCRIPTION("QPNP REVID DRIVER");

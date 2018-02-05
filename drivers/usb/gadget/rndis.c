@@ -544,11 +544,24 @@ static int gen_ndis_set_resp(u8 configNr, u32 OID, u8 *buf, u32 buf_len,
 		 */
 		retval = 0;
 		if (*params->filter) {
-			pr_debug("%s(): disable flow control\n", __func__);
-			rndis_flow_control(configNr, false);
+			if (!is_rndis_ipa_supported()) {
+				netif_carrier_on(params->dev);
+				if (netif_running(params->dev))
+					netif_wake_queue(params->dev);
+			} else {
+				if (params->state != RNDIS_DATA_INITIALIZED)
+					u_bam_data_start_rndis_ipa();
+			}
+			params->state = RNDIS_DATA_INITIALIZED;
 		} else {
-			pr_debug("%s(): enable flow control\n", __func__);
-			rndis_flow_control(configNr, true);
+			if (!is_rndis_ipa_supported()) {
+				netif_carrier_off(params->dev);
+				netif_stop_queue(params->dev);
+			} else {
+				if (params->state == RNDIS_DATA_INITIALIZED)
+					u_bam_data_stop_rndis_ipa();
+			}
+			params->state = RNDIS_INITIALIZED;
 		}
 		break;
 
@@ -602,7 +615,6 @@ static int rndis_init_response(int configNr, rndis_init_msg_type *buf)
 	resp->AFListOffset = cpu_to_le32(0);
 	resp->AFListSize = cpu_to_le32(0);
 
-	params->ul_max_xfer_size = le32_to_cpu(resp->MaxTransferSize);
 	params->resp_avail(params->v);
 	return 0;
 }
@@ -808,7 +820,7 @@ void rndis_set_host_mac(int configNr, const u8 *addr)
  */
 int rndis_msg_parser(u8 configNr, u8 *buf)
 {
-	u32 MsgType, MsgLength, major, minor, max_transfer_size;
+	u32 MsgType, MsgLength;
 	__le32 *tmp;
 	struct rndis_params *params;
 
@@ -833,19 +845,6 @@ int rndis_msg_parser(u8 configNr, u8 *buf)
 	case RNDIS_MSG_INIT:
 		pr_debug("%s: RNDIS_MSG_INIT\n",
 			__func__);
-		tmp++; /* to get RequestID */
-		major = get_unaligned_le32(tmp++);
-		minor = get_unaligned_le32(tmp++);
-		max_transfer_size = get_unaligned_le32(tmp++);
-
-		params->host_rndis_major_ver = major;
-		params->host_rndis_minor_ver = minor;
-		params->dl_max_xfer_size = max_transfer_size;
-
-		pr_debug("%s(): RNDIS Host Major:%d Minor:%d version\n",
-					__func__, major, minor);
-		pr_debug("%s(): UL Max Transfer size:%x\n", __func__,
-					max_transfer_size);
 		params->state = RNDIS_INITIALIZED;
 		return rndis_init_response(configNr,
 					(rndis_init_msg_type *)buf);
@@ -853,17 +852,11 @@ int rndis_msg_parser(u8 configNr, u8 *buf)
 	case RNDIS_MSG_HALT:
 		pr_debug("%s: RNDIS_MSG_HALT\n",
 			__func__);
-
-		if (!is_rndis_ipa_supported()) {
-			if (params->dev) {
-				netif_carrier_off(params->dev);
-				netif_stop_queue(params->dev);
-			}
-		} else {
-			if (params->state == RNDIS_DATA_INITIALIZED)
-				u_bam_data_stop_rndis_ipa();
-		}
 		params->state = RNDIS_UNINITIALIZED;
+		if (params->dev) {
+			netif_carrier_off(params->dev);
+			netif_stop_queue(params->dev);
+		}
 		return 0;
 
 	case RNDIS_MSG_QUERY:
@@ -974,17 +967,6 @@ int rndis_set_param_medium(u8 configNr, u32 medium, u32 speed)
 
 	return 0;
 }
-u32 rndis_get_dl_max_xfer_size(u8 configNr)
-{
-	pr_debug("%s:\n", __func__);
-	return rndis_per_dev_params[configNr].dl_max_xfer_size;
-}
-
-u32 rndis_get_ul_max_xfer_size(u8 configNr)
-{
-	pr_debug("%s:\n", __func__);
-	return rndis_per_dev_params[configNr].ul_max_xfer_size;
-}
 
 void rndis_set_max_pkt_xfer(u8 configNr, u8 max_pkt_per_xfer)
 {
@@ -999,41 +981,6 @@ void rndis_set_pkt_alignment_factor(u8 configNr, u8 pkt_alignment_factor)
 
 	rndis_per_dev_params[configNr].pkt_alignment_factor =
 					pkt_alignment_factor;
-}
-/**
- * rndis_flow_control: enable/disable flow control with USB RNDIS interface
- * confignr - RNDIS network interface number
- * enable_flow_control - true: perform flow control, false: disable flow control
- *
- * In BAM2BAM IPA mode, this function triggers functionality to start/stop
- * endless transfers, otherwise it enables/disables RNDIS network interface.
- */
-void rndis_flow_control(u8 confignr, bool enable_flow_control)
-{
-	struct rndis_params *params;
-
-	params = &rndis_per_dev_params[confignr];
-	pr_debug("%s(): params->state:%x\n", __func__, params->state);
-	if (enable_flow_control) {
-		if (is_rndis_ipa_supported()) {
-			if (params->state == RNDIS_DATA_INITIALIZED)
-				u_bam_data_stop_rndis_ipa();
-		} else {
-			netif_carrier_off(params->dev);
-			netif_stop_queue(params->dev);
-		}
-		params->state = RNDIS_INITIALIZED;
-	} else {
-		if (is_rndis_ipa_supported()) {
-			if (params->state != RNDIS_DATA_INITIALIZED)
-				u_bam_data_start_rndis_ipa();
-		} else {
-			netif_carrier_on(params->dev);
-			if (netif_running(params->dev))
-				netif_wake_queue(params->dev);
-		}
-		params->state = RNDIS_DATA_INITIALIZED;
-	}
 }
 
 void rndis_add_hdr(struct sk_buff *skb)
@@ -1054,9 +1001,7 @@ void rndis_free_response(int configNr, u8 *buf)
 {
 	rndis_resp_t *r;
 	struct list_head *act, *tmp;
-	unsigned long flags;
 
-	spin_lock_irqsave(&rndis_per_dev_params[configNr].lock, flags);
 	list_for_each_safe(act, tmp,
 			&(rndis_per_dev_params[configNr].resp_queue))
 	{
@@ -1069,18 +1014,15 @@ void rndis_free_response(int configNr, u8 *buf)
 			kfree(r);
 		}
 	}
-	spin_unlock_irqrestore(&rndis_per_dev_params[configNr].lock, flags);
 }
 
 u8 *rndis_get_next_response(int configNr, u32 *length)
 {
 	rndis_resp_t *r;
 	struct list_head *act, *tmp;
-	unsigned long flags;
 
 	if (!length) return NULL;
 
-	spin_lock_irqsave(&rndis_per_dev_params[configNr].lock, flags);
 	list_for_each_safe(act, tmp,
 			&(rndis_per_dev_params[configNr].resp_queue))
 	{
@@ -1088,12 +1030,9 @@ u8 *rndis_get_next_response(int configNr, u32 *length)
 		if (!r->send) {
 			r->send = 1;
 			*length = r->length;
-			spin_unlock_irqrestore(
-				&rndis_per_dev_params[configNr].lock, flags);
 			return r->buf;
 		}
 	}
-	spin_unlock_irqrestore(&rndis_per_dev_params[configNr].lock, flags);
 
 	return NULL;
 }
@@ -1101,7 +1040,6 @@ u8 *rndis_get_next_response(int configNr, u32 *length)
 static rndis_resp_t *rndis_add_response(int configNr, u32 length)
 {
 	rndis_resp_t *r;
-	unsigned long flags;
 
 	/* NOTE: this gets copied into ether.c USB_BUFSIZ bytes ... */
 	r = kmalloc(sizeof(rndis_resp_t) + length, GFP_ATOMIC);
@@ -1111,10 +1049,8 @@ static rndis_resp_t *rndis_add_response(int configNr, u32 length)
 	r->length = length;
 	r->send = 0;
 
-	spin_lock_irqsave(&rndis_per_dev_params[configNr].lock, flags);
 	list_add_tail(&r->list,
 		&(rndis_per_dev_params[configNr].resp_queue));
-	spin_unlock_irqrestore(&rndis_per_dev_params[configNr].lock, flags);
 	return r;
 }
 
@@ -1133,7 +1069,7 @@ int rndis_rm_hdr(struct gether *port,
 		u32		msg_len, data_offset, data_len;
 
 		if (skb->len < sizeof *hdr) {
-			pr_err("invalid rndis pkt: skblen:%u hdr_len:%zu",
+			pr_err("invalid rndis pkt: skblen:%u hdr_len:%u",
 					skb->len, sizeof *hdr);
 			dev_kfree_skb_any(skb);
 			return -EINVAL;
@@ -1206,7 +1142,7 @@ static int rndis_proc_show(struct seq_file *m, void *v)
 			 "cable     : %s\n"
 			 "vendor ID : 0x%08X\n"
 			 "vendor    : %s\n"
-			 "ul-max-xfer-size:%zu max-xfer-size-rcvd: %d\n"
+			 "ul-max-xfer-size:%d max-xfer-size-rcvd: %d\n"
 			 "ul-max-pkts-per-xfer:%d max-pkts-per-xfer-rcvd:%d\n"
 			"pkt_alignment_factor:%d\n",
 			 param->confignr, (param->used) ? "y" : "n",
@@ -1325,7 +1261,6 @@ int rndis_init(void)
 			return -EIO;
 		}
 #endif
-		spin_lock_init(&(rndis_per_dev_params[i].lock));
 		rndis_per_dev_params[i].confignr = i;
 		rndis_per_dev_params[i].used = 0;
 		rndis_per_dev_params[i].state = RNDIS_UNINITIALIZED;

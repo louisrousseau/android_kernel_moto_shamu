@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,7 +18,6 @@
 #define IPA_FLT_TABLE_INDEX_NOT_FOUND		(-1)
 #define IPA_FLT_STATUS_OF_ADD_FAILED		(-1)
 #define IPA_FLT_STATUS_OF_DEL_FAILED		(-1)
-#define IPA_FLT_STATUS_OF_MDFY_FAILED		(-1)
 
 static int ipa_generate_hw_rule_from_eq(
 		const struct ipa_ipfltri_rule_eq *attrib, u8 **buf)
@@ -131,9 +130,9 @@ static int ipa_generate_hw_rule_from_eq(
 	}
 
 	if (num_ihl_offset_meq_32) {
-		*buf = ipa_write_8(attrib->ihl_offset_meq_32[1].offset, *buf);
-		*buf = ipa_write_32(attrib->ihl_offset_meq_32[1].mask, *buf);
-		*buf = ipa_write_32(attrib->ihl_offset_meq_32[1].value, *buf);
+		*buf = ipa_write_8(attrib->ihl_offset_meq_32[0].offset, *buf);
+		*buf = ipa_write_32(attrib->ihl_offset_meq_32[0].mask, *buf);
+		*buf = ipa_write_32(attrib->ihl_offset_meq_32[0].value, *buf);
 		*buf = ipa_pad_to_32(*buf);
 		num_ihl_offset_meq_32--;
 	}
@@ -235,7 +234,7 @@ static int ipa_generate_flt_hw_rule(enum ipa_ip_type ip,
  * @ip: the ip address family type
  * @hdr_sz: header size
  *
- * Returns:	size on success, negative on failure
+ * Returns:	0 on success, negative on failure
  *
  * caller needs to hold any needed locks to ensure integrity
  *
@@ -324,10 +323,10 @@ static int ipa_generate_flt_hw_tbl_common(enum ipa_ip_type ip, u8 *base,
 #define IPA_WRITE_FLT_HDR(idx, val) {			\
 	if (idx <= 5) {					\
 		*((u32 *)hdr + 1 + idx) = val;		\
-	} else if (idx >= 6 && idx <= 10) {		\
+	} else if (idx >= 6 && idx <= 9) {		\
 		WARN_ON(1);				\
-	} else if (idx >= 11 && idx <= 19) {		\
-		*((u32 *)hdr2 + idx - 11) = val;	\
+	} else if (idx >= 10 && idx <= 19) {		\
+		*((u32 *)hdr2 + idx - 10) = val;	\
 	} else {					\
 		WARN_ON(1);				\
 	}						\
@@ -373,12 +372,7 @@ static int ipa_generate_flt_hw_tbl_common(enum ipa_ip_type ip, u8 *base,
 					((long)body &
 					IPA_FLT_ENTRY_MEMORY_ALLIGNMENT));
 		} else {
-			if (tbl->sz == 0) {
-				IPAERR("tbl size is 0\n");
-				WARN_ON(1);
-				goto proc_err;
-			}
-
+			WARN_ON(tbl->sz == 0);
 			/* allocate memory for the flt tbl */
 			flt_tbl_mem.size = tbl->sz;
 			flt_tbl_mem.base =
@@ -465,12 +459,7 @@ static int ipa_generate_flt_hw_tbl_common(enum ipa_ip_type ip, u8 *base,
 						((long)body &
 					IPA_FLT_ENTRY_MEMORY_ALLIGNMENT));
 			} else {
-				if (tbl->sz == 0) {
-					IPAERR("tbl size is 0\n");
-					WARN_ON(1);
-					goto proc_err;
-				}
-
+				WARN_ON(tbl->sz == 0);
 				/* allocate memory for the flt tbl */
 				flt_tbl_mem.size = tbl->sz;
 				flt_tbl_mem.base =
@@ -536,7 +525,7 @@ proc_err:
  *
  * Returns:	0 on success, negative on failure
  */
-static int ipa_generate_flt_hw_tbl_v1_1(enum ipa_ip_type ip,
+static int ipa_generate_flt_hw_tbl_v1(enum ipa_ip_type ip,
 		struct ipa_mem_buffer *mem)
 {
 	u32 hdr_top = 0;
@@ -544,15 +533,8 @@ static int ipa_generate_flt_hw_tbl_v1_1(enum ipa_ip_type ip,
 	u8 *hdr;
 	u8 *body;
 	u8 *base;
-	int res;
 
-	res = ipa_get_flt_hw_tbl_size(ip, &hdr_sz);
-	if (res < 0) {
-		IPAERR("ipa_get_flt_hw_tbl_size failed %d\n", res);
-		return res;
-	}
-
-	mem->size = res;
+	mem->size = ipa_get_flt_hw_tbl_size(ip, &hdr_sz);
 	mem->size = IPA_HW_TABLE_ALIGNMENT(mem->size);
 
 	if (mem->size == 0) {
@@ -642,7 +624,7 @@ static void __ipa_reap_sys_flt_tbls(enum ipa_ip_type ip)
 	}
 }
 
-int __ipa_commit_flt_v1_1(enum ipa_ip_type ip)
+int __ipa_commit_flt_v1(enum ipa_ip_type ip)
 {
 	struct ipa_desc desc = { 0 };
 	struct ipa_mem_buffer *mem;
@@ -659,12 +641,12 @@ int __ipa_commit_flt_v1_1(enum ipa_ip_type ip)
 	}
 
 	if (ip == IPA_IP_v4) {
-		avail = ipa_ctx->ip4_flt_tbl_lcl ? IPA_MEM_v1_RAM_V4_FLT_SIZE :
-			IPA_MEM_PART(v4_flt_size_ddr);
+		avail = ipa_ctx->ip4_flt_tbl_lcl ? IPA_v1_RAM_V4_FLT_SIZE :
+			IPA_RAM_V4_FLT_SIZE_DDR;
 		size = sizeof(struct ipa_ip_v4_filter_init);
 	} else {
-		avail = ipa_ctx->ip6_flt_tbl_lcl ? IPA_MEM_v1_RAM_V6_FLT_SIZE :
-			IPA_MEM_PART(v6_flt_size_ddr);
+		avail = ipa_ctx->ip6_flt_tbl_lcl ? IPA_v1_RAM_V6_FLT_SIZE :
+			IPA_RAM_V6_FLT_SIZE_DDR;
 		size = sizeof(struct ipa_ip_v6_filter_init);
 	}
 	cmd = kmalloc(size, GFP_KERNEL);
@@ -673,7 +655,7 @@ int __ipa_commit_flt_v1_1(enum ipa_ip_type ip)
 		goto fail_alloc_cmd;
 	}
 
-	if (ipa_generate_flt_hw_tbl_v1_1(ip, mem)) {
+	if (ipa_generate_flt_hw_tbl_v1(ip, mem)) {
 		IPAERR("fail to generate FLT HW TBL ip %d\n", ip);
 		goto fail_hw_tbl_gen;
 	}
@@ -688,13 +670,13 @@ int __ipa_commit_flt_v1_1(enum ipa_ip_type ip)
 		desc.opcode = IPA_IP_V4_FILTER_INIT;
 		v4->ipv4_rules_addr = mem->phys_base;
 		v4->size_ipv4_rules = mem->size;
-		v4->ipv4_addr = IPA_MEM_v1_RAM_V4_FLT_OFST;
+		v4->ipv4_addr = IPA_v1_RAM_V4_FLT_OFST;
 	} else {
 		v6 = (struct ipa_ip_v6_filter_init *)cmd;
 		desc.opcode = IPA_IP_V6_FILTER_INIT;
 		v6->ipv6_rules_addr = mem->phys_base;
 		v6->size_ipv6_rules = mem->size;
-		v6->ipv6_addr = IPA_MEM_v1_RAM_V6_FLT_OFST;
+		v6->ipv6_addr = IPA_v1_RAM_V6_FLT_OFST;
 	}
 
 	desc.pyld = cmd;
@@ -737,14 +719,13 @@ static int ipa_generate_flt_hw_tbl_v2(enum ipa_ip_type ip,
 	u32 *entr;
 	u32 body_start_offset;
 	u32 hdr_top;
-	int res;
 
 	if (ip == IPA_IP_v4)
-		body_start_offset = IPA_MEM_PART(apps_v4_flt_ofst) -
-			IPA_MEM_PART(v4_flt_ofst);
+		body_start_offset = IPA_v2_RAM_APPS_V4_FLT_OFST -
+			IPA_v2_RAM_V4_FLT_OFST;
 	else
-		body_start_offset = IPA_MEM_PART(apps_v6_flt_ofst) -
-			IPA_MEM_PART(v6_flt_ofst);
+		body_start_offset = IPA_v2_RAM_APPS_V6_FLT_OFST -
+			IPA_v2_RAM_V6_FLT_OFST;
 
 	num_words = 7;
 	head1->size = num_words * 4;
@@ -760,7 +741,7 @@ static int ipa_generate_flt_hw_tbl_v2(enum ipa_ip_type ip,
 		entr++;
 	}
 
-	num_words = 9;
+	num_words = 10;
 	head2->size = num_words * 4;
 	head2->base = dma_alloc_coherent(ipa_ctx->pdev, head2->size,
 			&head2->phys_base, GFP_KERNEL);
@@ -774,13 +755,7 @@ static int ipa_generate_flt_hw_tbl_v2(enum ipa_ip_type ip,
 		entr++;
 	}
 
-	res = ipa_get_flt_hw_tbl_size(ip, &hdr_sz);
-	if (res < 0) {
-		IPAERR("ipa_get_flt_hw_tbl_size failed %d\n", res);
-		goto body_err;
-	}
-
-	mem->size = res;
+	mem->size = ipa_get_flt_hw_tbl_size(ip, &hdr_sz);
 	mem->size -= hdr_sz;
 	mem->size = IPA_HW_TABLE_ALIGNMENT(mem->size);
 
@@ -828,50 +803,41 @@ err:
 
 int __ipa_commit_flt_v2(enum ipa_ip_type ip)
 {
-	struct ipa_desc *desc;
-	struct ipa_hw_imm_cmd_dma_shared_mem *cmd;
+	struct ipa_desc desc[3];
 	struct ipa_mem_buffer body;
 	struct ipa_mem_buffer head1;
 	struct ipa_mem_buffer head2;
-	int rc = 0;
-	u32 local_addrb;
-	u32 local_addrh;
-	bool lcl;
-	int num_desc = 0;
-	int i;
+	struct ipa_hw_imm_cmd_dma_shared_mem cmd1 = {0};
+	struct ipa_hw_imm_cmd_dma_shared_mem cmd2 = {0};
+	struct ipa_hw_imm_cmd_dma_shared_mem cmd3 = {0};
 	u16 avail;
+	int rc = 0;
+	u32 local_addr1;
+	u32 local_addr2;
+	u32 local_addr3;
+	bool lcl;
 
-	desc = kzalloc(16 * sizeof(*desc), GFP_ATOMIC);
-	if (desc == NULL) {
-		IPAERR("fail to alloc desc blob ip %d\n", ip);
-		rc = -ENOMEM;
-		goto fail_desc;
-	}
-
-	cmd = kzalloc(16 * sizeof(*cmd), GFP_ATOMIC);
-	if (cmd == NULL) {
-		IPAERR("fail to alloc cmd blob ip %d\n", ip);
-		rc = -ENOMEM;
-		goto fail_imm;
-	}
+	memset(desc, 0, 3 * sizeof(struct ipa_desc));
 
 	if (ip == IPA_IP_v4) {
-		avail = ipa_ctx->ip4_flt_tbl_lcl ?
-			IPA_MEM_PART(apps_v4_flt_size) :
-			IPA_MEM_PART(v4_flt_size_ddr);
-		local_addrh = ipa_ctx->smem_restricted_bytes +
-			IPA_MEM_PART(v4_flt_ofst) + 4;
-		local_addrb = ipa_ctx->smem_restricted_bytes +
-			IPA_MEM_PART(apps_v4_flt_ofst);
+		avail = ipa_ctx->ip4_flt_tbl_lcl ? IPA_v2_RAM_APPS_V4_FLT_SIZE :
+			IPA_RAM_V4_FLT_SIZE_DDR;
+		local_addr1 = ipa_ctx->smem_restricted_bytes +
+			IPA_v2_RAM_V4_FLT_OFST + 4;
+		local_addr2 = ipa_ctx->smem_restricted_bytes +
+			IPA_v2_RAM_V4_FLT_OFST + 12 * 4;
+		local_addr3 = ipa_ctx->smem_restricted_bytes +
+			IPA_v2_RAM_APPS_V4_FLT_OFST;
 		lcl = ipa_ctx->ip4_flt_tbl_lcl;
 	} else {
-		avail = ipa_ctx->ip6_flt_tbl_lcl ?
-			IPA_MEM_PART(apps_v6_flt_size) :
-			IPA_MEM_PART(v6_flt_size_ddr);
-		local_addrh = ipa_ctx->smem_restricted_bytes +
-			IPA_MEM_PART(v6_flt_ofst) + 4;
-		local_addrb = ipa_ctx->smem_restricted_bytes +
-			IPA_MEM_PART(apps_v6_flt_ofst);
+		avail = ipa_ctx->ip6_flt_tbl_lcl ? IPA_v2_RAM_APPS_V6_FLT_SIZE :
+			IPA_RAM_V6_FLT_SIZE_DDR;
+		local_addr1 = ipa_ctx->smem_restricted_bytes +
+			IPA_v2_RAM_V6_FLT_OFST + 4;
+		local_addr2 = ipa_ctx->smem_restricted_bytes +
+			IPA_v2_RAM_V6_FLT_OFST + 12 * 4;
+		local_addr3 = ipa_ctx->smem_restricted_bytes +
+			IPA_v2_RAM_APPS_V6_FLT_OFST;
 		lcl = ipa_ctx->ip6_flt_tbl_lcl;
 	}
 
@@ -886,92 +852,41 @@ int __ipa_commit_flt_v2(enum ipa_ip_type ip)
 		goto fail_send_cmd;
 	}
 
-	cmd[num_desc].size = 4;
-	cmd[num_desc].system_addr = head1.phys_base;
-	cmd[num_desc].local_addr = local_addrh;
+	cmd1.size = head1.size;
+	cmd1.system_addr = head1.phys_base;
+	cmd1.local_addr = local_addr1;
 
-	desc[num_desc].opcode = IPA_DMA_SHARED_MEM;
-	desc[num_desc].pyld = &cmd[num_desc];
-	desc[num_desc].len = sizeof(struct ipa_hw_imm_cmd_dma_shared_mem);
-	desc[num_desc++].type = IPA_IMM_CMD_DESC;
+	desc[0].opcode = IPA_DMA_SHARED_MEM;
+	desc[0].pyld = &cmd1;
+	desc[0].len = sizeof(struct ipa_hw_imm_cmd_dma_shared_mem);
+	desc[0].type = IPA_IMM_CMD_DESC;
 
-	for (i = 0; i < 6; i++) {
-		if (ipa_ctx->skip_ep_cfg_shadow[i]) {
-			IPADBG("skip %d\n", i);
-			continue;
-		}
+	cmd2.size = head2.size;
+	cmd2.system_addr = head2.phys_base;
+	cmd2.local_addr = local_addr2;
 
-		if (ipa_get_ep_mapping(IPA_CLIENT_APPS_WAN_CONS) == i ||
-			ipa_get_ep_mapping(IPA_CLIENT_APPS_LAN_CONS) == i ||
-			ipa_get_ep_mapping(IPA_CLIENT_APPS_CMD_PROD) == i) {
-			IPADBG("skip %d\n", i);
-			continue;
-		}
-
-		if (ip == IPA_IP_v4) {
-			local_addrh = ipa_ctx->smem_restricted_bytes +
-				IPA_MEM_PART(v4_flt_ofst) +
-				8 + i * 4;
-		} else {
-			local_addrh = ipa_ctx->smem_restricted_bytes +
-				IPA_MEM_PART(v6_flt_ofst) +
-				8 + i * 4;
-		}
-		cmd[num_desc].size = 4;
-		cmd[num_desc].system_addr = head1.phys_base + 4 + i * 4;
-		cmd[num_desc].local_addr = local_addrh;
-
-		desc[num_desc].opcode = IPA_DMA_SHARED_MEM;
-		desc[num_desc].pyld = &cmd[num_desc];
-		desc[num_desc].len =
-			sizeof(struct ipa_hw_imm_cmd_dma_shared_mem);
-		desc[num_desc++].type = IPA_IMM_CMD_DESC;
-	}
-
-	for (i = 11; i < IPA_NUM_PIPES; i++) {
-		if (ipa_ctx->skip_ep_cfg_shadow[i]) {
-			IPADBG("skip %d\n", i);
-			continue;
-		}
-
-		if (ip == IPA_IP_v4) {
-			local_addrh = ipa_ctx->smem_restricted_bytes +
-				IPA_MEM_PART(v4_flt_ofst) +
-				13 * 4 + (i - 11) * 4;
-		} else {
-			local_addrh = ipa_ctx->smem_restricted_bytes +
-				IPA_MEM_PART(v6_flt_ofst) +
-				13 * 4 + (i - 11) * 4;
-		}
-		cmd[num_desc].size = 4;
-		cmd[num_desc].system_addr = head2.phys_base + (i - 11) * 4;
-		cmd[num_desc].local_addr = local_addrh;
-
-		desc[num_desc].opcode = IPA_DMA_SHARED_MEM;
-		desc[num_desc].pyld = &cmd[num_desc];
-		desc[num_desc].len =
-			sizeof(struct ipa_hw_imm_cmd_dma_shared_mem);
-		desc[num_desc++].type = IPA_IMM_CMD_DESC;
-	}
+	desc[1].opcode = IPA_DMA_SHARED_MEM;
+	desc[1].pyld = &cmd2;
+	desc[1].len = sizeof(struct ipa_hw_imm_cmd_dma_shared_mem);
+	desc[1].type = IPA_IMM_CMD_DESC;
 
 	if (lcl) {
-		cmd[num_desc].size = body.size;
-		cmd[num_desc].system_addr = body.phys_base;
-		cmd[num_desc].local_addr = local_addrb;
+		cmd3.size = body.size;
+		cmd3.system_addr = body.phys_base;
+		cmd3.local_addr = local_addr3;
 
-		desc[num_desc].opcode = IPA_DMA_SHARED_MEM;
-		desc[num_desc].pyld = &cmd[num_desc];
-		desc[num_desc].len =
-			sizeof(struct ipa_hw_imm_cmd_dma_shared_mem);
-		desc[num_desc++].type = IPA_IMM_CMD_DESC;
+		desc[2].opcode = IPA_DMA_SHARED_MEM;
+		desc[2].pyld = &cmd3;
+		desc[2].len = sizeof(struct ipa_hw_imm_cmd_dma_shared_mem);
+		desc[2].type = IPA_IMM_CMD_DESC;
 
-		if (ipa_send_cmd(num_desc, desc)) {
+		if (ipa_send_cmd(3, desc)) {
 			IPAERR("fail to send immediate command\n");
 			rc = -EFAULT;
 			goto fail_send_cmd;
 		}
 	} else {
-		if (ipa_send_cmd(num_desc, desc)) {
+		if (ipa_send_cmd(2, desc)) {
 			IPAERR("fail to send immediate command\n");
 			rc = -EFAULT;
 			goto fail_send_cmd;
@@ -979,7 +894,6 @@ int __ipa_commit_flt_v2(enum ipa_ip_type ip)
 	}
 
 	__ipa_reap_sys_flt_tbls(ip);
-
 fail_send_cmd:
 	if (body.size)
 		dma_free_coherent(ipa_ctx->pdev, body.size, body.base,
@@ -989,10 +903,6 @@ fail_send_cmd:
 	dma_free_coherent(ipa_ctx->pdev, head2.size, head2.base,
 			head2.phys_base);
 fail_gen:
-	kfree(cmd);
-fail_imm:
-	kfree(desc);
-fail_desc:
 	return rc;
 }
 
@@ -1023,8 +933,8 @@ static int __ipa_add_flt_rule(struct ipa_flt_tbl *tbl, enum ipa_ip_type ip,
 			}
 		} else {
 			if (rule->rt_tbl_idx > ((ip == IPA_IP_v4) ?
-				IPA_MEM_PART(v4_modem_rt_index_hi) :
-				IPA_MEM_PART(v6_modem_rt_index_hi))) {
+					IPA_v2_V4_MODEM_RT_INDEX_HI :
+					IPA_v2_V6_MODEM_RT_INDEX_HI)) {
 				IPAERR("invalid RT tbl\n");
 				goto error;
 			}
@@ -1097,65 +1007,6 @@ static int __ipa_del_flt_rule(u32 rule_hdl)
 	ipa_id_remove(id);
 
 	return 0;
-}
-
-static int __ipa_mdfy_flt_rule(struct ipa_flt_rule_mdfy *frule,
-		enum ipa_ip_type ip)
-{
-	struct ipa_flt_entry *entry;
-	struct ipa_rt_tbl *rt_tbl = NULL;
-
-	entry = ipa_id_find(frule->rule_hdl);
-	if (entry == NULL) {
-		IPAERR("lookup failed\n");
-		goto error;
-	}
-
-	if (entry->cookie != IPA_COOKIE) {
-		IPAERR("bad params\n");
-		goto error;
-	}
-
-	if (entry->rt_tbl)
-		entry->rt_tbl->ref_cnt--;
-
-	if (frule->rule.action != IPA_PASS_TO_EXCEPTION) {
-		if (!frule->rule.eq_attrib_type) {
-			if (!frule->rule.rt_tbl_hdl) {
-				IPAERR("invalid RT tbl\n");
-				goto error;
-			}
-
-			rt_tbl = ipa_id_find(frule->rule.rt_tbl_hdl);
-			if (rt_tbl == NULL) {
-				IPAERR("RT tbl not found\n");
-				goto error;
-			}
-
-			if (rt_tbl->cookie != IPA_COOKIE) {
-				IPAERR("RT table cookie is invalid\n");
-				goto error;
-			}
-		} else {
-			if (frule->rule.rt_tbl_idx > ((ip == IPA_IP_v4) ?
-				IPA_MEM_PART(v4_modem_rt_index_hi) :
-				IPA_MEM_PART(v6_modem_rt_index_hi))) {
-				IPAERR("invalid RT tbl\n");
-				goto error;
-			}
-		}
-	}
-
-	entry->rule = frule->rule;
-	entry->rt_tbl = rt_tbl;
-	if (entry->rt_tbl)
-		entry->rt_tbl->ref_cnt++;
-	entry->hw_len = 0;
-
-	return 0;
-
-error:
-	return -EPERM;
 }
 
 static int __ipa_add_global_flt_rule(enum ipa_ip_type ip,
@@ -1285,6 +1136,7 @@ int ipa_del_flt_rule(struct ipa_ioc_del_flt_rule *hdls)
 
 	if (hdls->commit)
 		if (ipa_ctx->ctrl->ipa_commit_flt(hdls->ip)) {
+			mutex_unlock(&ipa_ctx->lock);
 			result = -EPERM;
 			goto bail;
 		}
@@ -1295,48 +1147,6 @@ bail:
 	return result;
 }
 EXPORT_SYMBOL(ipa_del_flt_rule);
-
-/**
- * ipa_mdfy_flt_rule() - Modify the specified filtering rules in SW and optionally
- * commit to IPA HW
- *
- * Returns:	0 on success, negative on failure
- *
- * Note:	Should not be called from atomic context
- */
-int ipa_mdfy_flt_rule(struct ipa_ioc_mdfy_flt_rule *hdls)
-{
-	int i;
-	int result;
-
-	if (hdls == NULL || hdls->num_rules == 0 || hdls->ip >= IPA_IP_MAX) {
-		IPAERR("bad parm\n");
-		return -EINVAL;
-	}
-
-	mutex_lock(&ipa_ctx->lock);
-	for (i = 0; i < hdls->num_rules; i++) {
-		if (__ipa_mdfy_flt_rule(&hdls->rules[i], hdls->ip)) {
-			IPAERR("failed to mdfy rt rule %i\n", i);
-			hdls->rules[i].status = IPA_FLT_STATUS_OF_MDFY_FAILED;
-		} else {
-			hdls->rules[i].status = 0;
-		}
-	}
-
-	if (hdls->commit)
-		if (ipa_ctx->ctrl->ipa_commit_flt(hdls->ip)) {
-			result = -EPERM;
-			goto bail;
-		}
-	result = 0;
-bail:
-	mutex_unlock(&ipa_ctx->lock);
-
-	return result;
-}
-EXPORT_SYMBOL(ipa_mdfy_flt_rule);
-
 
 /**
  * ipa_commit_flt() - Commit the current SW filtering table of specified type to

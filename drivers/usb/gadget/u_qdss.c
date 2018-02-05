@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -13,16 +13,14 @@
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/usb/msm_hsusb.h>
-#include <linux/usb_bam.h>
-
+#include <mach/usb_bam.h>
 #include "gadget_chips.h"
 
 struct  usb_qdss_bam_connect_info {
 	u32 usb_bam_pipe_idx;
 	u32 peer_pipe_idx;
-	unsigned long usb_bam_handle;
+	u32 usb_bam_handle;
 	struct sps_mem_buffer *data_fifo;
-	enum usb_pipe_mem_type mem_type;
 };
 
 static struct usb_qdss_bam_connect_info bam_info;
@@ -44,10 +42,8 @@ int send_sps_req(struct usb_ep *data_ep)
 
 	if (gadget_is_dwc3(gadget)) {
 		req->length = 32*1024;
-		sps_params = MSM_SPS_MODE | MSM_DISABLE_WB |
+		sps_params = MSM_SPS_MODE | MSM_DISABLE_WB | MSM_INTERNAL_MEM |
 			bam_info.usb_bam_pipe_idx;
-		if (bam_info.mem_type == USB_PRIVATE_MEM)
-			sps_params |= MSM_INTERNAL_MEM;
 	} else {
 		/* non DWC3 BAM requires req->length to be 0 */
 		req->length = 0;
@@ -91,7 +87,7 @@ static int set_qdss_data_connection(struct usb_gadget *gadget,
 		get_bam2bam_connection_info(idx,
 			&bam_info.usb_bam_handle,
 			&bam_info.usb_bam_pipe_idx, &bam_info.peer_pipe_idx,
-			NULL, bam_info.data_fifo, &bam_info.mem_type);
+			NULL, bam_info.data_fifo);
 
 		if (gadget_is_dwc3(gadget))
 			msm_data_fifo_config(data_ep,

@@ -26,7 +26,9 @@
 #include <linux/bluetooth-power.h>
 #include <linux/slab.h>
 #include <linux/regulator/consumer.h>
+#ifdef CONFIG_CNSS
 #include <net/cnss.h>
+#endif
 
 #define BT_PWR_DBG(fmt, arg...)  pr_debug("%s: " fmt "\n" , __func__ , ## arg)
 #define BT_PWR_INFO(fmt, arg...) pr_info("%s: " fmt "\n" , __func__ , ## arg)
@@ -197,13 +199,6 @@ static int bluetooth_power(int on)
 				goto out;
 			}
 		}
-		if (bt_power_pdata->bt_vdd_xtal) {
-			rc = bt_configure_vreg(bt_power_pdata->bt_vdd_xtal);
-			if (rc < 0) {
-				BT_PWR_ERR("bt_power vddxtal config failed");
-				goto vdd_xtal_fail;
-			}
-		}
 		if (bt_power_pdata->bt_vdd_pa) {
 			rc = bt_configure_vreg(bt_power_pdata->bt_vdd_pa);
 			if (rc < 0) {
@@ -239,14 +234,13 @@ gpio_fail:
 			gpio_free(bt_power_pdata->bt_gpio_sys_rst);
 		bt_vreg_disable(bt_power_pdata->bt_chip_pwd);
 chip_pwd_fail:
-		bt_vreg_disable(bt_power_pdata->bt_vdd_ldo);
-vdd_ldo_fail:
 		bt_vreg_disable(bt_power_pdata->bt_vdd_pa);
 vdd_pa_fail:
-		bt_vreg_disable(bt_power_pdata->bt_vdd_xtal);
-vdd_xtal_fail:
+		bt_vreg_disable(bt_power_pdata->bt_vdd_ldo);
+vdd_ldo_fail:
 		bt_vreg_disable(bt_power_pdata->bt_vdd_io);
 	}
+
 out:
 	return rc;
 }
@@ -270,7 +264,7 @@ static const struct rfkill_ops bluetooth_power_rfkill_ops = {
 	.set_block = bluetooth_toggle_radio,
 };
 
-#ifdef CONFIG_CNSS_PCI
+#ifdef CONFIG_CNSS
 static ssize_t enable_extldo(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
@@ -411,12 +405,6 @@ static int bt_power_populate_dt_pinfo(struct platform_device *pdev)
 		rc = bt_dt_parse_vreg_info(&pdev->dev,
 					&bt_power_pdata->bt_vdd_io,
 					"qca,bt-vdd-io");
-		if (rc < 0)
-			return rc;
-
-		rc = bt_dt_parse_vreg_info(&pdev->dev,
-					&bt_power_pdata->bt_vdd_xtal,
-					"qca,bt-vdd-xtal");
 		if (rc < 0)
 			return rc;
 

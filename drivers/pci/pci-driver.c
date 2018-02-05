@@ -20,7 +20,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/suspend.h>
 #include <linux/kexec.h>
-#include <linux/wakeup_reason.h>
 #include "pci.h"
 
 struct pci_dynid {
@@ -1002,8 +1001,6 @@ static int pci_pm_runtime_suspend(struct device *dev)
 	pci_dev->no_d3cold = false;
 	error = pm->runtime_suspend(dev);
 	suspend_report_result(pm->runtime_suspend, error);
-	log_suspend_abort_reason("%s(): %pF returns %d\n", __func__,
-				 pm->runtime_suspend, error);
 	if (error)
 		return error;
 	if (!pci_dev->d3cold_allowed)
@@ -1270,7 +1267,7 @@ static int pci_uevent(struct device *dev, struct kobj_uevent_env *env)
 	if (add_uevent_var(env, "PCI_SLOT_NAME=%s", pci_name(pdev)))
 		return -ENOMEM;
 
-	if (add_uevent_var(env, "MODALIAS=pci:v%08Xd%08Xsv%08Xsd%08Xbc%02Xsc%02Xi%02X",
+	if (add_uevent_var(env, "MODALIAS=pci:v%08Xd%08Xsv%08Xsd%08Xbc%02Xsc%02Xi%02x",
 			   pdev->vendor, pdev->device,
 			   pdev->subsystem_vendor, pdev->subsystem_device,
 			   (u8)(pdev->class >> 16), (u8)(pdev->class >> 8),

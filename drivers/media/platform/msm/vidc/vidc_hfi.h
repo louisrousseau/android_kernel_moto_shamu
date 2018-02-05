@@ -27,7 +27,7 @@
 #define HFI_EVENT_DATA_SEQUENCE_CHANGED_INSUFFICIENT_BUFFER_RESOURCES	\
 	(HFI_OX_BASE + 0x2)
 
-#define HFI_BUFFERFLAG_EOS			0x00000001
+#define HFI_BUFFERFLAG_EOS				0x00000001
 #define HFI_BUFFERFLAG_STARTTIME		0x00000002
 #define HFI_BUFFERFLAG_DECODEONLY		0x00000004
 #define HFI_BUFFERFLAG_DATACORRUPT		0x00000008
@@ -35,16 +35,13 @@
 #define HFI_BUFFERFLAG_SYNCFRAME		0x00000020
 #define HFI_BUFFERFLAG_EXTRADATA		0x00000040
 #define HFI_BUFFERFLAG_CODECCONFIG		0x00000080
-#define HFI_BUFFERFLAG_TIMESTAMPINVALID		0x00000100
+#define HFI_BUFFERFLAG_TIMESTAMPINVALID	0x00000100
 #define HFI_BUFFERFLAG_READONLY			0x00000200
-#define HFI_BUFFERFLAG_ENDOFSUBFRAME		0x00000400
+#define HFI_BUFFERFLAG_ENDOFSUBFRAME	0x00000400
 #define HFI_BUFFERFLAG_EOSEQ			0x00200000
-#define HFI_BUFFER_FLAG_MBAFF			0x08000000
-#define HFI_BUFFERFLAG_VPE_YUV_601_709_CSC_CLAMP \
-						0x10000000
+#define HFI_BUFFERFLAG_DISCONTINUITY	0x80000000
+#define HFI_BUFFERFLAG_TEI				0x40000000
 #define HFI_BUFFERFLAG_DROP_FRAME               0x20000000
-#define HFI_BUFFERFLAG_TEI			0x40000000
-#define HFI_BUFFERFLAG_DISCONTINUITY		0x80000000
 
 
 #define HFI_ERR_SESSION_EMPTY_BUFFER_DONE_OUTPUT_PENDING	\
@@ -397,7 +394,6 @@ struct hfi_uncompressed_plane_actual_constraints_info {
 #define VIDC_IFACEQ_MIN_PKT_SIZE                        8
 #define VIDC_IFACEQ_VAR_SMALL_PKT_SIZE          100
 #define VIDC_IFACEQ_VAR_LARGE_PKT_SIZE          512
-#define VIDC_IFACEQ_VAR_HUGE_PKT_SIZE          (1024*12)
 
 
 struct hfi_cmd_sys_session_abort_packet {
@@ -443,8 +439,8 @@ struct hfi_cmd_session_empty_buffer_compressed_packet {
 	u32 alloc_len;
 	u32 filled_len;
 	u32 input_tag;
-	u32 packet_buffer;
-	u32 extra_data_buffer;
+	u8 *packet_buffer;
+	u8 *extra_data_buffer;
 	u32 rgData[1];
 };
 
@@ -462,8 +458,8 @@ struct hfi_cmd_session_empty_buffer_uncompressed_plane0_packet {
 	u32 filled_len;
 	u32 offset;
 	u32 input_tag;
-	u32 packet_buffer;
-	u32 extra_data_buffer;
+	u8 *packet_buffer;
+	u8 *extra_data_buffer;
 	u32 rgData[1];
 };
 
@@ -472,7 +468,7 @@ struct hfi_cmd_session_empty_buffer_uncompressed_plane1_packet {
 	u32 alloc_len;
 	u32 filled_len;
 	u32 offset;
-	u32 packet_buffer2;
+	u8 *packet_buffer2;
 	u32 rgData[1];
 };
 
@@ -481,7 +477,7 @@ struct hfi_cmd_session_empty_buffer_uncompressed_plane2_packet {
 	u32 alloc_len;
 	u32 filled_len;
 	u32 offset;
-	u32 packet_buffer3;
+	u8 *packet_buffer3;
 	u32 rgData[1];
 };
 
@@ -494,8 +490,8 @@ struct hfi_cmd_session_fill_buffer_packet {
 	u32 alloc_len;
 	u32 filled_len;
 	u32 output_tag;
-	u32 packet_buffer;
-	u32 extra_data_buffer;
+	u8 *packet_buffer;
+	u8 *extra_data_buffer;
 	u32 rgData[1];
 };
 
@@ -549,7 +545,7 @@ struct hfi_cmd_session_parse_sequence_header_packet {
 	u32 packet_type;
 	u32 session_id;
 	u32 header_len;
-	u32 packet_buffer;
+	u8 *packet_buffer;
 };
 
 struct hfi_msg_sys_session_abort_done_packet {
@@ -628,8 +624,8 @@ struct hfi_msg_session_empty_buffer_done_packet {
 	u32 offset;
 	u32 filled_len;
 	u32 input_tag;
-	u32 packet_buffer;
-	u32 extra_data_buffer;
+	u8 *packet_buffer;
+	u8 *extra_data_buffer;
 	u32 rgData[0];
 };
 
@@ -650,8 +646,8 @@ struct hfi_msg_session_fill_buffer_done_compressed_packet {
 	u32 input_tag;
 	u32 output_tag;
 	u32 picture_type;
-	u32 packet_buffer;
-	u32 extra_data_buffer;
+	u8 *packet_buffer;
+	u8 *extra_data_buffer;
 	u32 rgData[0];
 };
 
@@ -679,8 +675,8 @@ struct hfi_msg_session_fbd_uncompressed_plane0_packet {
 	u32 input_tag2;
 	u32 output_tag;
 	u32 picture_type;
-	u32 packet_buffer;
-	u32 extra_data_buffer;
+	u8 *packet_buffer;
+	u8 *extra_data_buffer;
 	u32 rgData[0];
 };
 
@@ -689,7 +685,7 @@ struct hfi_msg_session_fill_buffer_done_uncompressed_plane1_packet {
 	u32 alloc_len;
 	u32 filled_len;
 	u32 offset;
-	u32 packet_buffer2;
+	u8 *packet_buffer2;
 	u32 rgData[0];
 };
 
@@ -698,7 +694,7 @@ struct hfi_msg_session_fill_buffer_done_uncompressed_plane2_packet {
 	u32 alloc_len;
 	u32 filled_len;
 	u32 offset;
-	u32 packet_buffer3;
+	u8 *packet_buffer3;
 	u32 rgData[0];
 };
 
@@ -853,7 +849,7 @@ struct hfi_extradata_recovery_point_sei_payload {
 
 struct hal_session {
 	struct list_head list;
-	void *session_id;
+	u32 session_id;
 	u32 is_decoder;
 	void *device;
 };
@@ -870,8 +866,5 @@ struct msm_vidc_fw {
 u32 hfi_process_msg_packet(msm_vidc_callback callback,
 		u32 device_id, struct vidc_hal_msg_pkt_hdr *msg_hdr,
 		struct list_head *sessions, struct mutex *session_lock);
-
-struct hal_session *hfi_process_get_session(
-		struct list_head *sessions, u32 session_id);
 #endif
 

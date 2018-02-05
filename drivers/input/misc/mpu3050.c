@@ -45,8 +45,7 @@
 #include <linux/input/mpu3050.h>
 #include <linux/regulator/consumer.h>
 #include <linux/of_gpio.h>
-
-#define	MPU3050_DEV_NAME_GYRO	"gyroscope"
+#include <mach/gpiomux.h>
 
 #define MPU3050_AUTO_DELAY	1000
 
@@ -554,9 +553,9 @@ static void mpu3050_input_work_fn(struct work_struct *work)
 
 	mpu3050_read_xyz(sensor->client, &axis);
 
-	input_report_abs(sensor->idev, ABS_RX, axis.x);
-	input_report_abs(sensor->idev, ABS_RY, axis.y);
-	input_report_abs(sensor->idev, ABS_RZ, axis.z);
+	input_report_abs(sensor->idev, ABS_X, axis.x);
+	input_report_abs(sensor->idev, ABS_Y, axis.y);
+	input_report_abs(sensor->idev, ABS_Z, axis.z);
 	input_sync(sensor->idev);
 
 	if (sensor->use_poll)
@@ -665,7 +664,7 @@ static int mpu3050_probe(struct i2c_client *client,
 	u32 i;
 
 	sensor = kzalloc(sizeof(struct mpu3050_sensor), GFP_KERNEL);
-	idev = devm_input_allocate_device(&client->dev);
+	idev = input_allocate_device();
 	if (!sensor || !idev) {
 		dev_err(&client->dev, "failed to allocate driver data\n");
 		error = -ENOMEM;
@@ -746,15 +745,15 @@ static int mpu3050_probe(struct i2c_client *client,
 		goto err_class_sysfs;
 	}
 
-	idev->name = MPU3050_DEV_NAME_GYRO;
+	idev->name = "MPU3050";
 	idev->id.bustype = BUS_I2C;
 
 	input_set_capability(idev, EV_ABS, ABS_MISC);
-	input_set_abs_params(idev, ABS_RX,
+	input_set_abs_params(idev, ABS_X,
 			     MPU3050_MIN_VALUE, MPU3050_MAX_VALUE, 0, 0);
-	input_set_abs_params(idev, ABS_RY,
+	input_set_abs_params(idev, ABS_Y,
 			     MPU3050_MIN_VALUE, MPU3050_MAX_VALUE, 0, 0);
-	input_set_abs_params(idev, ABS_RZ,
+	input_set_abs_params(idev, ABS_Z,
 			     MPU3050_MIN_VALUE, MPU3050_MAX_VALUE, 0, 0);
 
 	input_set_drvdata(idev, sensor);
@@ -821,7 +820,7 @@ static int mpu3050_probe(struct i2c_client *client,
 	error = create_sysfs_interfaces(&idev->dev);
 	if (error < 0) {
 		dev_err(&client->dev, "failed to create sysfs\n");
-		goto err_free_irq;
+		goto err_input_cleanup;
 	}
 
 	pm_runtime_enable(&client->dev);
@@ -829,6 +828,8 @@ static int mpu3050_probe(struct i2c_client *client,
 
 	return 0;
 
+err_input_cleanup:
+	input_unregister_device(idev);
 err_free_irq:
 	if (client->irq > 0)
 		free_irq(client->irq, sensor);
@@ -841,6 +842,7 @@ err_pm_set_suspended:
 err_class_sysfs:
 	sensors_classdev_unregister(&sensor->cdev);
 err_free_mem:
+	input_free_device(idev);
 	kfree(sensor);
 	return error;
 }
@@ -864,6 +866,7 @@ static int mpu3050_remove(struct i2c_client *client)
 	remove_sysfs_interfaces(&client->dev);
 	if (gpio_is_valid(sensor->enable_gpio))
 		gpio_free(sensor->enable_gpio);
+	input_unregister_device(sensor->idev);
 
 	kfree(sensor);
 

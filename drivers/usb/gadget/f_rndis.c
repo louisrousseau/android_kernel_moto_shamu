@@ -96,7 +96,7 @@ struct f_rndis {
 static struct f_rndis *__rndis;
 
 int
-rndis_rx_trigger(bool write)
+rndis_rx_trigger(void)
 {
 	struct f_rndis *rndis = __rndis;
 
@@ -104,8 +104,6 @@ rndis_rx_trigger(bool write)
 		pr_err("can't set rx trigger\n");
 		return -EINVAL;
 	}
-	if (!write)
-		return rndis->port.rx_triggered;
 
 	if (rndis->port.rx_triggered)
 		return 0;
@@ -450,8 +448,6 @@ static void rndis_response_available(void *_rndis)
 	if (atomic_inc_return(&rndis->notify_count) != 1)
 		return;
 
-	if (!rndis->notify->driver_data)
-		return;
 	/* Send RNDIS RESPONSE_AVAILABLE notification; a
 	 * USB_CDC_NOTIFY_RESPONSE_AVAILABLE "should" work too
 	 *
@@ -543,7 +539,7 @@ static void rndis_command_complete(struct usb_ep *ep, struct usb_request *req)
 			 * together too quickly. However, module param
 			 * is not honored.
 			 */
-			rndis->port.dl_max_pkts_per_xfer = 3;
+			rndis->port.dl_max_pkts_per_xfer = 5;
 
 			gether_update_dl_max_pkts_per_xfer(&rndis->port,
 					 rndis->port.dl_max_pkts_per_xfer);
@@ -699,8 +695,7 @@ static int rndis_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 		 */
 		rndis->port.cdc_filter = 0;
 
-		DBG(cdev, "RNDIS RX/TX early activation ...\n");
-		gether_enable_sg(&rndis->port, true);
+		DBG(cdev, "RNDIS RX/TX early activation ... \n");
 		net = gether_connect(&rndis->port);
 		if (IS_ERR(net))
 			return PTR_ERR(net);

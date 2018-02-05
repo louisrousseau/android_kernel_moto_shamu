@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -33,7 +33,7 @@
 #include "emac_hw.h"
 #include "emac_ptp.h"
 
-#define DRV_VERSION "1.1.0.0"
+#define DRV_VERSION "1.0.0.0"
 
 char emac_drv_name[] = "msm_emac";
 const char emac_drv_description[] = "Qualcomm EMAC Ethernet Driver";
@@ -45,32 +45,12 @@ const char emac_drv_version[] = DRV_VERSION;
 		NETIF_MSG_INTR | NETIF_MSG_TX_DONE | NETIF_MSG_RX_STATUS |    \
 		NETIF_MSG_PKTDATA | NETIF_MSG_HW | NETIF_MSG_WOL)
 
-/* Error bits that will result in a received frame being discarded */
-#define EMAC_RRDES_ERROR (EMAC_RRDES_IPF | EMAC_RRDES_CRC | EMAC_RRDES_FAE | \
-			EMAC_RRDES_TRN | EMAC_RRDES_RNT | EMAC_RRDES_INC | \
-			EMAC_RRDES_FOV | EMAC_RRDES_LEN)
-#define EMAC_RRDES_STATS_DW_IDX 3
-
 #define EMAC_RRDESC_SIZE      4
 #define EMAC_TS_RRDESC_SIZE   6
 #define EMAC_TPDESC_SIZE      4
 #define EMAC_RFDESC_SIZE      2
 
 #define EMAC_RSS_IDT_SIZE     256
-
-#define EMAC_SKB_CB(skb) ((struct emac_skb_cb *)(skb)->cb)
-
-struct emac_skb_cb {
-	u32           tpd_idx;
-	unsigned long jiffies;
-};
-
-#define EMAC_HWTXTSTAMP_CB(skb) ((struct emac_hwtxtstamp_cb *)(skb)->cb)
-
-struct emac_hwtxtstamp_cb {
-	u32 sec;
-	u32 ns;
-};
 
 static int msm_emac_msglvl = -1;
 module_param_named(msglvl, msm_emac_msglvl, int, S_IRUGO | S_IWUSR | S_IWGRP);
@@ -79,65 +59,73 @@ static int msm_emac_intr_ext;
 module_param_named(intr_ext, msm_emac_intr_ext, int,
 		   S_IRUGO | S_IWUSR | S_IWGRP);
 
-static irqreturn_t emac_isr(int irq, void *data);
-static irqreturn_t emac_sgmii_isr(int irq, void *data);
-static irqreturn_t emac_wol_isr(int irq, void *data);
+static irqreturn_t emac_interrupt(int irq, void *data);
+static irqreturn_t emac_sgmii_interrupt(int irq, void *data);
+static irqreturn_t emac_wol_interrupt(int irq, void *data);
 
-/* EMAC HW has an issue with interrupt assignment because of which receive queue
- * 1 is disabled and following receive rss queue to interrupt mapping is used:
- * rss-queue   intr
- *    0        core0
- *    1        core3 (disabled)
- *    2        core1
- *    3        core2
- */
-const struct emac_irq_common emac_irq_cmn_tbl[EMAC_IRQ_CNT] = {
-	{ "emac_core0_irq", emac_isr, EMAC_INT_STATUS,  EMAC_INT_MASK,
-		RX_PKT_INT0,	0},
-	{ "emac_core3_irq", emac_isr, EMAC_INT3_STATUS, EMAC_INT3_MASK,
-		0,		0},
-	{ "emac_core1_irq", emac_isr, EMAC_INT1_STATUS, EMAC_INT1_MASK,
-		RX_PKT_INT2,	0},
-	{ "emac_core2_irq", emac_isr, EMAC_INT2_STATUS, EMAC_INT2_MASK,
-		RX_PKT_INT3,	0},
-	{ "emac_wol_irq"  , emac_wol_isr,            0,              0,
-		0,		0},
-	{ "emac_sgmii_irq", emac_sgmii_isr, 0, EMAC_SGMII_PHY_INTERRUPT_MASK,
-		SGMII_ISR_MASK, IRQF_TRIGGER_RISING},
+/* EMAC HW has an issue with interrupt assignment because of which
+   receive queue 1 is disabled and following receive rss queue to
+   interrupt mapping is used.
+   rss-queue   intr
+      0        core0
+      1        core3 (disabled)
+      2        core1
+      3        core2
+*/
+static struct emac_irq_info emac_irq[EMAC_NUM_IRQ] = {
+	{ 0, "emac_core0_irq", emac_interrupt, EMAC_INT_STATUS,
+	  EMAC_INT_MASK, RX_PKT_INT0, NULL, NULL },
+	{ 0, "emac_core3_irq", emac_interrupt, EMAC_INT3_STATUS,
+	  EMAC_INT3_MASK, 0, NULL, NULL },
+	{ 0, "emac_core1_irq", emac_interrupt, EMAC_INT1_STATUS,
+	  EMAC_INT1_MASK, RX_PKT_INT2, NULL, NULL },
+	{ 0, "emac_core2_irq", emac_interrupt, EMAC_INT2_STATUS,
+	  EMAC_INT2_MASK, RX_PKT_INT3, NULL, NULL },
+	{ 0, "emac_wol_irq", emac_wol_interrupt, 0,
+	  0, 0, NULL, NULL },
+	{ 0, "emac_sgmii_irq", emac_sgmii_interrupt, 0,
+	  EMAC_SGMII_PHY_INTERRUPT_MASK, SGMII_ISR_MASK, NULL, NULL },
 };
 
-static const char * const emac_gpio_name[] = {
-	"qcom,emac-gpio-mdc", "qcom,emac-gpio-mdio"
+static struct emac_gpio_info emac_gpio[EMAC_NUM_GPIO] = {
+	{ 0, "qcom,emac-gpio-mdc" },
+	{ 0, "qcom,emac-gpio-mdio" },
 };
 
-static const char * const emac_clk_name[] = {
-	"axi_clk", "cfg_ahb_clk", "125m_clk", "25m_clk", "tx_clk", "rx_clk",
-	"sys_clk"
+static struct emac_clk_info emac_clk[EMAC_NUM_CLK] = {
+	{ NULL, "axi_clk", 0, NULL },
+	{ NULL, "cfg_ahb_clk", 0, NULL },
+	{ NULL, "125m_clk", 0, NULL },
+	{ NULL, "25m_clk", 0, NULL },
+	{ NULL, "tx_clk", 0, NULL },
+	{ NULL, "rx_clk", 0, NULL },
+	{ NULL, "sys_clk", 0, NULL },
 };
 
-static int emac_clk_prepare_enable(struct emac_adapter *adpt,
-				   enum emac_clk_id id)
+static int emac_clk_prepare_enable(struct emac_clk_info *clk_info)
 {
-	struct emac_clk *clk = &adpt->clk[id];
-	int ret = clk_prepare_enable(clk->clk);
-	if (ret)
-		emac_err(adpt, "error:%d on clk_prepare_enable(%s)\n", ret,
-			 emac_clk_name[id]);
-	else
-		clk->enabled = true;
+	int retval;
 
-	return ret;
+	retval = clk_prepare_enable(clk_info->clk);
+	if (retval)
+		emac_err(clk_info->adpt, "can't enable clk %s\n",
+			 clk_info->name);
+	else
+		clk_info->enabled = true;
+
+	return retval;
 }
 
-static int emac_clk_set_rate(struct emac_adapter *adpt, enum emac_clk_id id,
-			     enum emac_clk_rate rate)
+static int emac_clk_set_rate(struct emac_clk_info *clk_info, unsigned long rate)
 {
-	int ret = clk_set_rate(adpt->clk[id].clk, rate);
-	if (ret)
-		emac_err(adpt, "error:%d on clk_set_rate(%s)\n", ret,
-			 emac_clk_name[id]);
+	int retval;
 
-	return ret;
+	retval = clk_set_rate(clk_info->clk, rate);
+	if (retval)
+		emac_err(clk_info->adpt, "can't set rate for clk %s\n",
+			 clk_info->name);
+
+	return retval;
 }
 
 /* reinitialize */
@@ -145,40 +133,40 @@ void emac_reinit_locked(struct emac_adapter *adpt)
 {
 	WARN_ON(in_interrupt());
 
-	while (TEST_N_SET_FLAG(adpt, ADPT_STATE_RESETTING))
+	while (CHK_AND_SET_ADPT_FLAG(STATE_RESETTING))
 		msleep(20); /* Reset might take few 10s of ms */
 
-	if (TEST_FLAG(adpt, ADPT_STATE_DOWN)) {
-		CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+	if (CHK_ADPT_FLAG(STATE_DOWN)) {
+		CLI_ADPT_FLAG(STATE_RESETTING);
 		return;
 	}
 
 	emac_down(adpt, EMAC_HW_CTRL_RESET_MAC);
 	if (adpt->phy_mode == PHY_INTERFACE_MODE_SGMII) {
-		emac_clk_set_rate(adpt, EMAC_CLK_125M, EMC_CLK_RATE_19_2MHz);
+		emac_clk_set_rate(&adpt->clk_info[EMAC_125M_CLK], 19200000);
 		emac_hw_reset_sgmii(&adpt->hw);
-		emac_clk_set_rate(adpt, EMAC_CLK_125M, EMC_CLK_RATE_125MHz);
+		emac_clk_set_rate(&adpt->clk_info[EMAC_125M_CLK], 125000000);
 	}
 	emac_up(adpt);
 
-	CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+	CLI_ADPT_FLAG(STATE_RESETTING);
 }
 
 static void emac_task_schedule(struct emac_adapter *adpt)
 {
-	if (!TEST_FLAG(adpt, ADPT_STATE_DOWN) &&
-	    !TEST_FLAG(adpt, ADPT_STATE_WATCH_DOG)) {
-		SET_FLAG(adpt, ADPT_STATE_WATCH_DOG);
+	if (!CHK_ADPT_FLAG(STATE_DOWN) &&
+	    !CHK_ADPT_FLAG(STATE_WATCH_DOG)) {
+		SET_ADPT_FLAG(STATE_WATCH_DOG);
 		schedule_work(&adpt->emac_task);
 	}
 }
 
 static void emac_check_lsc(struct emac_adapter *adpt)
 {
-	SET_FLAG(adpt, ADPT_TASK_LSC_REQ);
+	SET_ADPT_FLAG(TASK_LSC_REQ);
 	adpt->link_jiffies = jiffies + EMAC_TRY_LINK_TIMEOUT;
 
-	if (!TEST_FLAG(adpt, ADPT_STATE_DOWN))
+	if (!CHK_ADPT_FLAG(STATE_DOWN))
 		emac_task_schedule(adpt);
 }
 
@@ -187,8 +175,8 @@ static void emac_tx_timeout(struct net_device *netdev)
 {
 	struct emac_adapter *adpt = netdev_priv(netdev);
 
-	if (!TEST_FLAG(adpt, ADPT_STATE_DOWN)) {
-		SET_FLAG(adpt, ADPT_TASK_REINIT_REQ);
+	if (!CHK_ADPT_FLAG(STATE_DOWN)) {
+		SET_ADPT_FLAG(TASK_REINIT_REQ);
 		emac_task_schedule(adpt);
 	}
 }
@@ -202,13 +190,13 @@ static void emac_set_rx_mode(struct net_device *netdev)
 
 	/* Check for Promiscuous and All Multicast modes */
 	if (netdev->flags & IFF_PROMISC) {
-		SET_FLAG(hw, HW_PROMISC_EN);
+		SET_HW_FLAG(PROMISC_EN);
 	} else if (netdev->flags & IFF_ALLMULTI) {
-		SET_FLAG(hw, HW_MULTIALL_EN);
-		CLR_FLAG(hw, HW_PROMISC_EN);
+		SET_HW_FLAG(MULTIALL_EN);
+		CLI_HW_FLAG(PROMISC_EN);
 	} else {
-		CLR_FLAG(hw, HW_MULTIALL_EN);
-		CLR_FLAG(hw, HW_PROMISC_EN);
+		CLI_HW_FLAG(MULTIALL_EN);
+		CLI_HW_FLAG(PROMISC_EN);
 	}
 	emac_hw_config_mac_ctrl(hw);
 
@@ -456,122 +444,40 @@ static void emac_clean_rfdesc(struct emac_rx_queue *rxque,
 	rxque->rfd.process_idx = consume_idx;
 }
 
-static inline bool emac_skb_cb_expired(struct sk_buff *skb)
+static void emac_read_tx_tstamp_fifo(struct emac_hw *hw,
+				     struct emac_tx_queue *txque)
 {
-	if (time_is_after_jiffies(EMAC_SKB_CB(skb)->jiffies +
-				  msecs_to_jiffies(100)))
-		return false;
-	return true;
-}
-
-/* proper lock must be acquired before polling */
-static void emac_poll_hwtxtstamp(struct emac_adapter *adpt)
-{
-	struct sk_buff_head *pending_q = &adpt->hwtxtstamp_pending_queue;
-	struct sk_buff_head *q = &adpt->hwtxtstamp_ready_queue;
-	struct sk_buff *skb, *skb_tmp;
-	struct emac_hwtxtstamp hwtxtstamp;
-
-	while (emac_hw_read_tx_tstamp(&adpt->hw, &hwtxtstamp)) {
-		bool found = false;
-
-		adpt->hwtxtstamp_stats.rx++;
-
-		skb_queue_walk_safe(pending_q, skb, skb_tmp) {
-			if (EMAC_SKB_CB(skb)->tpd_idx == hwtxtstamp.ts_idx) {
-				struct sk_buff *pskb;
-
-				EMAC_HWTXTSTAMP_CB(skb)->sec = hwtxtstamp.sec;
-				EMAC_HWTXTSTAMP_CB(skb)->ns = hwtxtstamp.ns;
-				/* the tx timestamps for all the pending
-				   packets before this one are lost
-				 */
-				while ((pskb = __skb_dequeue(pending_q))
-				       != skb) {
-					EMAC_HWTXTSTAMP_CB(pskb)->sec = 0;
-					EMAC_HWTXTSTAMP_CB(pskb)->ns = 0;
-					__skb_queue_tail(q, pskb);
-					adpt->hwtxtstamp_stats.lost++;
-				}
-				__skb_queue_tail(q, skb);
-				found = true;
-				break;
-			}
-		}
-
-		if (!found) {
-			emac_dbg(adpt, tx_done,
-				 "no entry(tpd=%d) found, drop tx timestamp\n",
-				 hwtxtstamp.ts_idx);
-			adpt->hwtxtstamp_stats.drop++;
-		}
-	}
-
-	skb_queue_walk_safe(pending_q, skb, skb_tmp) {
-		/* No packet after this one expires */
-		if (!emac_skb_cb_expired(skb))
-			break;
-		adpt->hwtxtstamp_stats.timeout++;
-		emac_dbg(adpt, tx_done,
-			 "tx timestamp timeout: tpd_idx=%d\n",
-			 EMAC_SKB_CB(skb)->tpd_idx);
-
-		__skb_unlink(skb, pending_q);
-		EMAC_HWTXTSTAMP_CB(skb)->sec = 0;
-		EMAC_HWTXTSTAMP_CB(skb)->ns = 0;
-		__skb_queue_tail(q, skb);
-	}
-}
-
-static void emac_schedule_hwtxtstamp_task(struct emac_adapter *adpt)
-{
-	if (TEST_FLAG(adpt, ADPT_STATE_DOWN))
-		return;
-
-	if (schedule_work(&adpt->hwtxtstamp_task))
-		adpt->hwtxtstamp_stats.sched++;
-}
-
-static void emac_hwtxtstamp_task_routine(struct work_struct *work)
-{
-	struct emac_adapter *adpt = container_of(work, struct emac_adapter,
-						 hwtxtstamp_task);
-	struct sk_buff *skb;
-	struct sk_buff_head q;
-	unsigned long flags;
-
-	adpt->hwtxtstamp_stats.poll++;
-
-	__skb_queue_head_init(&q);
+	struct emac_buffer *tpbuf;
+	u32 ts_idx = 0;
+	u32 sec, ns;
 
 	while (1) {
-		spin_lock_irqsave(&adpt->hwtxtstamp_lock, flags);
-		if (adpt->hwtxtstamp_pending_queue.qlen)
-			emac_poll_hwtxtstamp(adpt);
-		skb_queue_splice_tail_init(&adpt->hwtxtstamp_ready_queue, &q);
-		spin_unlock_irqrestore(&adpt->hwtxtstamp_lock, flags);
-
-		if (!q.qlen)
+		ts_idx = emac_reg_r32(hw, EMAC_CSR,
+				      EMAC_EMAC_WRAPPER_TX_TS_INX);
+		if (ts_idx & EMAC_WRAPPER_TX_TS_EMPTY)
 			break;
 
-		while ((skb = __skb_dequeue(&q))) {
-			struct emac_hwtxtstamp_cb *cb = EMAC_HWTXTSTAMP_CB(skb);
+		ns = emac_reg_r32(hw, EMAC_CSR, EMAC_EMAC_WRAPPER_TX_TS_LO);
+		sec = emac_reg_r32(hw, EMAC_CSR, EMAC_EMAC_WRAPPER_TX_TS_HI);
 
-			if (cb->sec || cb->ns) {
-				struct skb_shared_hwtstamps ts;
+		ts_idx &= EMAC_WRAPPER_TX_TS_INX_BMSK;
+		if ((ts_idx < txque->tpd.consume_idx) ||
+		    (ts_idx > txque->tpd.last_produce_idx)) {
+			emac_warn(hw->adpt, tx_done,
+				  "zombie timestamp desc idx %d\n", ts_idx);
+			continue;
+		}
 
-				ts.hwtstamp = ktime_set(cb->sec, cb->ns);
-				ts.syststamp = ktime_add_ns(
-					ts.hwtstamp, adpt->hw.tstamp_tx_offset);
-				skb_tstamp_tx(skb, &ts);
-				adpt->hwtxtstamp_stats.deliver++;
-			}
-			dev_kfree_skb_any(skb);
+		tpbuf  = GET_TPD_BUFFER(txque, ts_idx);
+
+		if (tpbuf->skb &&
+		    (skb_shinfo(tpbuf->skb)->tx_flags & SKBTX_HW_TSTAMP)) {
+			struct skb_shared_hwtstamps ts;
+
+			ts.hwtstamp = ktime_set(sec, ns);
+			skb_tstamp_tx(tpbuf->skb, &ts);
 		}
 	}
-
-	if (adpt->hwtxtstamp_pending_queue.qlen)
-		emac_schedule_hwtxtstamp_task(adpt);
 }
 
 /* Process receive event */
@@ -620,17 +526,9 @@ static void emac_handle_rx(struct emac_adapter *adpt,
 		num_consume_pkts--;
 		count++;
 
-		/* Due to a HW issue in L4 check sum detection (UDP/TCP frags
-		 * with DF set are marked as error), drop packets based on the
-		 * error mask rather than the summary bit (ignoring L4F errors)
-		 */
-		if (srrd.dfmt.dw[EMAC_RRDES_STATS_DW_IDX] & EMAC_RRDES_ERROR) {
-			emac_dbg(adpt, rx_status,
-				"Drop error packet[RRD: 0x%x:0x%x:0x%x:0x%x]\n",
-				 srrd.dfmt.dw[0], srrd.dfmt.dw[1],
-				 srrd.dfmt.dw[2], srrd.dfmt.dw[3]);
-
-			dev_kfree_skb(skb);
+		if (srrd.genr.res || srrd.genr.lene) {
+			dev_kfree_skb(rfbuf->skb);
+			emac_warn(adpt, rx_err, "received packet has errors\n");
 			continue;
 		}
 
@@ -638,18 +536,15 @@ static void emac_handle_rx(struct emac_adapter *adpt,
 		skb->dev = netdev;
 		skb->protocol = eth_type_trans(skb, skb->dev);
 		if (netdev->features & NETIF_F_RXCSUM)
-			skb->ip_summed = ((srrd.genr.l4f) ?
-					  CHECKSUM_NONE : CHECKSUM_UNNECESSARY);
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
 		else
 			skb_checksum_none_assert(skb);
 
-		if (TEST_FLAG(hw, HW_TS_RX_EN)) {
+		if (CHK_HW_FLAG(TS_RX_EN)) {
 			struct skb_shared_hwtstamps *hwts = skb_hwtstamps(skb);
 
 			hwts->hwtstamp = ktime_set(srrd.genr.ts_high,
 						   srrd.genr.ts_low);
-			hwts->syststamp = ktime_sub_ns(hwts->hwtstamp,
-						       hw->tstamp_rx_offset);
 		}
 
 		emac_receive_skb(rxque, skb, (u16)srrd.genr.cvlan_tag,
@@ -693,7 +588,6 @@ static void emac_handle_tx(struct emac_adapter *adpt,
 	struct emac_hw *hw = &adpt->hw;
 	struct emac_buffer *tpbuf;
 	u32 hw_consume_idx;
-	u32 pkts_compl = 0, bytes_compl = 0;
 
 	hw_consume_idx = emac_reg_field_r32(hw, EMAC, txque->consume_reg,
 					    txque->consume_mask,
@@ -702,6 +596,7 @@ static void emac_handle_tx(struct emac_adapter *adpt,
 		 txque->que_idx, hw_consume_idx);
 
 	while (txque->tpd.consume_idx != hw_consume_idx) {
+		emac_read_tx_tstamp_fifo(hw, txque);
 		tpbuf = GET_TPD_BUFFER(txque, txque->tpd.consume_idx);
 		if (tpbuf->dma) {
 			dma_unmap_single(txque->dev, tpbuf->dma, tpbuf->length,
@@ -710,8 +605,6 @@ static void emac_handle_tx(struct emac_adapter *adpt,
 		}
 
 		if (tpbuf->skb) {
-			pkts_compl++;
-			bytes_compl += tpbuf->skb->len;
 			dev_kfree_skb_irq(tpbuf->skb);
 			tpbuf->skb = NULL;
 		}
@@ -720,8 +613,10 @@ static void emac_handle_tx(struct emac_adapter *adpt,
 			txque->tpd.consume_idx = 0;
 	}
 
-	if (pkts_compl || bytes_compl)
-		netdev_completed_queue(adpt->netdev, pkts_compl, bytes_compl);
+	if (netif_queue_stopped(adpt->netdev) &&
+	    netif_carrier_ok(adpt->netdev) &&
+	    (emac_get_num_free_tpdescs(txque) >= (txque->tpd.count / 8)))
+		netif_wake_queue(adpt->netdev);
 }
 
 /* NAPI */
@@ -730,7 +625,7 @@ static int emac_napi_rtx(struct napi_struct *napi, int budget)
 	struct emac_rx_queue *rxque = container_of(napi, struct emac_rx_queue,
 						   napi);
 	struct emac_adapter *adpt = netdev_priv(rxque->netdev);
-	struct emac_irq_per_dev *irq = rxque->irq;
+	struct emac_irq_info *irq_info = rxque->irq_info;
 	struct emac_hw *hw = &adpt->hw;
 	int work_done = 0;
 
@@ -744,9 +639,8 @@ static int emac_napi_rtx(struct napi_struct *napi, int budget)
 quit_polling:
 		napi_complete(napi);
 
-		irq->mask |= rxque->intr;
-		emac_reg_w32(hw, EMAC, emac_irq_cmn_tbl[irq->idx].mask_reg,
-			     irq->mask);
+		irq_info->mask |= rxque->intr;
+		emac_reg_w32(hw, EMAC, irq_info->mask_reg, irq_info->mask);
 		wmb();
 	}
 
@@ -922,31 +816,10 @@ static void emac_tx_map(struct emac_adapter *adpt,
 	/* The last tpd */
 	emac_set_tpdesc_lastfrag(txque);
 
-	if (TEST_FLAG(hw, HW_TS_TX_EN) &&
+	if (CHK_HW_FLAG(TS_TX_EN) &&
 	    (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP)) {
-		struct sk_buff *skb_ts = skb_clone(skb, GFP_ATOMIC);
-
-		if (likely(skb_ts)) {
-			unsigned long flags;
-
-			emac_set_tpdesc_tstamp_sav(txque);
-			skb_ts->sk = skb->sk;
-			EMAC_SKB_CB(skb_ts)->tpd_idx =
-				txque->tpd.last_produce_idx;
-			EMAC_SKB_CB(skb_ts)->jiffies = get_jiffies_64();
-			skb_shinfo(skb_ts)->tx_flags |= SKBTX_IN_PROGRESS;
-			spin_lock_irqsave(&adpt->hwtxtstamp_lock, flags);
-			if (adpt->hwtxtstamp_pending_queue.qlen >=
-			    EMAC_TX_POLL_HWTXTSTAMP_THRESHOLD) {
-				emac_poll_hwtxtstamp(adpt);
-				adpt->hwtxtstamp_stats.tx_poll++;
-			}
-			__skb_queue_tail(&adpt->hwtxtstamp_pending_queue,
-					 skb_ts);
-			spin_unlock_irqrestore(&adpt->hwtxtstamp_lock, flags);
-			adpt->hwtxtstamp_stats.tx++;
-			emac_schedule_hwtxtstamp_task(adpt);
-		}
+		emac_set_tpdesc_tstamp_sav(txque);
+		skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
 	}
 
 	/* The last buffer info contain the skb address,
@@ -964,7 +837,7 @@ static int emac_start_xmit_frame(struct emac_adapter *adpt,
 	union emac_sw_tpdesc stpd;
 	u32 prod_idx;
 
-	if (TEST_FLAG(adpt, ADPT_STATE_DOWN)) {
+	if (CHK_ADPT_FLAG(STATE_DOWN)) {
 		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
@@ -995,8 +868,6 @@ static int emac_start_xmit_frame(struct emac_adapter *adpt,
 
 	emac_tx_map(adpt, txque, skb, &stpd);
 
-	netdev_sent_queue(adpt->netdev, skb->len);
-
 	/* update produce idx */
 	prod_idx = (txque->tpd.produce_idx << txque->produce_shft) &
 			txque->produce_mask;
@@ -1022,49 +893,53 @@ static int emac_start_xmit(struct sk_buff *skb,
 }
 
 /* ISR */
-static irqreturn_t emac_wol_isr(int irq, void *data)
+static irqreturn_t emac_wol_interrupt(int irq, void *data)
 {
-	emac_dbg(emac_irq_get_adpt(data), wol, "EMAC wol interrupt received\n");
+	struct emac_irq_info *irq_info = data;
+	struct emac_adapter *adpt = irq_info->adpt;
+
+	emac_dbg(adpt, wol, "EMAC wol interrupt received\n");
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t emac_isr(int _irq, void *data)
+static irqreturn_t emac_interrupt(int irq, void *data)
 {
-	struct emac_irq_per_dev *irq = data;
-	const struct emac_irq_common *irq_cmn = &emac_irq_cmn_tbl[irq->idx];
-	struct emac_adapter *adpt = emac_irq_get_adpt(data);
-	struct emac_rx_queue *rxque = &adpt->rx_queue[irq->idx];
+	struct emac_irq_info *irq_info = data;
+	struct emac_adapter *adpt = irq_info->adpt;
 	struct emac_hw *hw = &adpt->hw;
-	int max_ints = 1;
+	int max_ints = EMAC_MAX_HANDLED_INTRS;
 	u32 isr, status;
 
-	emac_dbg(emac_irq_get_adpt(data), wol, "EMAC wol interrupt received\n");
 	/* disable the interrupt */
-	emac_reg_w32(hw, EMAC, irq_cmn->mask_reg, 0);
+	emac_reg_w32(hw, EMAC, irq_info->mask_reg, 0);
 	wmb();
 
 	do {
-		isr = emac_reg_r32(hw, EMAC, irq_cmn->status_reg);
-		status = isr & irq->mask;
+		isr = emac_reg_r32(hw, EMAC, irq_info->status_reg);
+		status = isr & irq_info->mask;
 
 		if (status == 0)
 			break;
+
+		/* ack PHY interrupt */
+		if (status & ISR_GPHY_LINK)
+			emac_hw_ack_phy_intr(hw);
 
 		if (status & ISR_ERROR) {
 			emac_warn(adpt, intr, "isr error status 0x%x\n",
 				  status & ISR_ERROR);
 			/* reset MAC */
-			SET_FLAG(adpt, ADPT_TASK_REINIT_REQ);
+			SET_ADPT_FLAG(TASK_REINIT_REQ);
 			emac_task_schedule(adpt);
 		}
 
 		/* Schedule the napi for receive queue with interrupt
 		 * status bit set
 		 */
-		if ((status & rxque->intr)) {
-			if (napi_schedule_prep(&rxque->napi)) {
-				irq->mask &= ~rxque->intr;
-				__napi_schedule(&rxque->napi);
+		if ((status & irq_info->rxque->intr)) {
+			if (napi_schedule_prep(&irq_info->rxque->napi)) {
+				irq_info->mask &= ~irq_info->rxque->intr;
+				__napi_schedule(&irq_info->rxque->napi);
 			}
 		}
 
@@ -1089,20 +964,18 @@ static irqreturn_t emac_isr(int _irq, void *data)
 			break;
 		}
 
-		if (status & PTP_INT)
-			emac_ptp_intr(hw);
 	} while (--max_ints > 0);
 
 	/* enable the interrupt */
-	emac_reg_w32(hw, EMAC, irq_cmn->mask_reg, irq->mask);
+	emac_reg_w32(hw, EMAC, irq_info->mask_reg, irq_info->mask);
 	wmb();
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t emac_sgmii_isr(int _irq, void *data)
+static irqreturn_t emac_sgmii_interrupt(int irq, void *data)
 {
-	struct emac_irq_per_dev *irq = data;
-	struct emac_adapter *adpt = emac_irq_get_adpt(data);
+	struct emac_irq_info *irq_info = data;
+	struct emac_adapter *adpt = irq_info->adpt;
 	struct emac_hw *hw = &adpt->hw;
 	u32 status;
 
@@ -1111,13 +984,13 @@ static irqreturn_t emac_sgmii_isr(int _irq, void *data)
 	do {
 		status = emac_reg_r32(hw, EMAC_SGMII_PHY,
 				      EMAC_SGMII_PHY_INTERRUPT_STATUS);
-		status &= irq->mask;
+		status &= irq_info->mask;
 		if (!status)
 			break;
 
 		if (status & SGMII_PHY_INTERRUPT_ERR) {
-			SET_FLAG(adpt, ADPT_TASK_CHK_SGMII_REQ);
-			if (!TEST_FLAG(adpt, ADPT_STATE_DOWN))
+			SET_ADPT_FLAG(TASK_CHK_SGMII_REQ);
+			if (!CHK_ADPT_FLAG(STATE_DOWN))
 				emac_task_schedule(adpt);
 		}
 
@@ -1129,7 +1002,7 @@ static irqreturn_t emac_sgmii_isr(int _irq, void *data)
 				  "failed to clear sgmii intr, status=0x%x\n",
 				  status);
 			/* reset */
-			SET_FLAG(adpt, ADPT_TASK_REINIT_REQ);
+			SET_ADPT_FLAG(TASK_REINIT_REQ);
 			emac_task_schedule(adpt);
 			break;
 		}
@@ -1154,10 +1027,10 @@ static inline void emac_disable_intr(struct emac_adapter *adpt)
 
 	emac_hw_disable_intr(hw);
 	for (i = 0; i < EMAC_NUM_CORE_IRQ; i++)
-		synchronize_irq(adpt->irq[i].irq);
+		synchronize_irq(adpt->irq_info[i].irq);
 
 	/* SGMII IRQ */
-	synchronize_irq(adpt->irq[EMAC_SGMII_PHY_IRQ].irq);
+	synchronize_irq(adpt->irq_info[EMAC_SGMII_PHY_IRQ].irq);
 }
 
 /* Configure VLAN tag strip/insert feature */
@@ -1173,9 +1046,9 @@ static int emac_set_features(struct net_device *netdev,
 
 	netdev->features = features;
 	if (netdev->features & NETIF_F_HW_VLAN_CTAG_RX)
-		SET_FLAG(hw, HW_VLANSTRIP_EN);
+		SET_HW_FLAG(VLANSTRIP_EN);
 	else
-		CLR_FLAG(hw, HW_VLANSTRIP_EN);
+		CLI_HW_FLAG(VLANSTRIP_EN);
 
 	if (netif_running(netdev))
 		emac_reinit_locked(adpt);
@@ -1240,7 +1113,6 @@ static void emac_clean_all_tx_queues(struct emac_adapter *adpt)
 
 	for (i = 0; i < adpt->num_txques; i++)
 		emac_clean_tx_queue(&adpt->tx_queue[i]);
-	netdev_reset_queue(adpt->netdev);
 }
 
 /* Free all descriptors of given receive queue */
@@ -1623,35 +1495,34 @@ int emac_up(struct emac_adapter *adpt)
 	emac_hw_config_mac(hw);
 	emac_config_rss(adpt);
 
-	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_GPIO_CNT; i++) {
-		retval = gpio_request(adpt->gpio[i], emac_gpio_name[i]);
+	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_NUM_GPIO; i++) {
+		struct emac_gpio_info *gpio_info = &adpt->gpio_info[i];
+		retval = gpio_request(gpio_info->gpio, gpio_info->name);
 		if (retval) {
-			emac_err(adpt, "error:%d on gpio_request(%d:%s)\n",
-				 retval, adpt->gpio[i], emac_gpio_name[i]);
+			emac_err(adpt, "failed to request gpio %s: %d\n",
+				 gpio_info->name, retval);
 			while (--i >= 0)
-				gpio_free(adpt->gpio[i]);
+				gpio_free(adpt->gpio_info[i].gpio);
 			goto err_request_gpio;
 		}
 	}
 
-	for (i = 0; i < EMAC_IRQ_CNT; i++) {
-		struct emac_irq_per_dev *irq = &adpt->irq[i];
-		const struct emac_irq_common *irq_cmn = &emac_irq_cmn_tbl[i];
+	for (i = 0; i < EMAC_NUM_IRQ; i++) {
+		struct emac_irq_info *irq_info = &adpt->irq_info[i];
+		u32 flag = (i == EMAC_SGMII_PHY_IRQ) ? IRQF_TRIGGER_RISING : 0;
 
-		if (!irq->irq)
+		if (irq_info->irq == 0)
 			continue;
 
-		retval = request_irq(irq->irq, irq_cmn->handler,
-				     irq_cmn->irqflags, irq_cmn->name, irq);
+		retval = request_irq(irq_info->irq, irq_info->handler, flag,
+				     irq_info->name, irq_info);
 		if (retval) {
-			emac_err(adpt,
-				 "error:%d on request_irq(%d:%s flags:0x%lx)\n",
-				 retval, irq->irq, irq_cmn->name,
-				 irq_cmn->irqflags);
+			emac_err(adpt, "Unable to allocate interrupt %d: %d\n",
+				 irq_info->irq, retval);
 			while (--i >= 0)
-				if (adpt->irq[i].irq)
-					free_irq(adpt->irq[i].irq,
-						 &adpt->irq[i]);
+				if (adpt->irq_info[i].irq)
+					free_irq(adpt->irq_info[i].irq,
+						 &adpt->irq_info[i]);
 			goto err_request_irq;
 		}
 	}
@@ -1663,18 +1534,18 @@ int emac_up(struct emac_adapter *adpt)
 	emac_enable_intr(adpt);
 
 	netif_start_queue(netdev);
-	CLR_FLAG(adpt, ADPT_STATE_DOWN);
+	CLI_ADPT_FLAG(STATE_DOWN);
 
 	/* check link status */
-	SET_FLAG(adpt, ADPT_TASK_LSC_REQ);
+	SET_ADPT_FLAG(TASK_LSC_REQ);
 	adpt->link_jiffies = jiffies + EMAC_TRY_LINK_TIMEOUT;
 	mod_timer(&adpt->emac_timer, jiffies);
 
 	return retval;
 
 err_request_irq:
-	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_GPIO_CNT; i++)
-		gpio_free(adpt->gpio[i]);
+	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_NUM_GPIO; i++)
+		gpio_free(adpt->gpio_info[i].gpio);
 err_request_gpio:
 	return retval;
 }
@@ -1684,10 +1555,9 @@ void emac_down(struct emac_adapter *adpt, u32 ctrl)
 {
 	struct net_device *netdev = adpt->netdev;
 	struct emac_hw *hw = &adpt->hw;
-	unsigned long flags;
 	int i;
 
-	SET_FLAG(adpt, ADPT_STATE_DOWN);
+	SET_ADPT_FLAG(STATE_DOWN);
 	netif_stop_queue(netdev);
 
 	netif_carrier_off(netdev);
@@ -1695,23 +1565,17 @@ void emac_down(struct emac_adapter *adpt, u32 ctrl)
 	emac_disable_intr(adpt);
 	emac_napi_disable_all(adpt);
 
-	for (i = 0; i < EMAC_IRQ_CNT; i++)
-		if (adpt->irq[i].irq)
-			free_irq(adpt->irq[i].irq, &adpt->irq[i]);
+	for (i = 0; i < EMAC_NUM_IRQ; i++)
+		if (adpt->irq_info[i].irq)
+			free_irq(adpt->irq_info[i].irq, &adpt->irq_info[i]);
 
-	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_GPIO_CNT; i++)
-		gpio_free(adpt->gpio[i]);
+	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_NUM_GPIO; i++)
+		gpio_free(adpt->gpio_info[i].gpio);
 
-	CLR_FLAG(adpt, ADPT_TASK_LSC_REQ);
-	CLR_FLAG(adpt, ADPT_TASK_REINIT_REQ);
-	CLR_FLAG(adpt, ADPT_TASK_CHK_SGMII_REQ);
+	CLI_ADPT_FLAG(TASK_LSC_REQ);
+	CLI_ADPT_FLAG(TASK_REINIT_REQ);
+	CLI_ADPT_FLAG(TASK_CHK_SGMII_REQ);
 	del_timer_sync(&adpt->emac_timer);
-
-	cancel_work_sync(&adpt->hwtxtstamp_task);
-	spin_lock_irqsave(&adpt->hwtxtstamp_lock, flags);
-	__skb_queue_purge(&adpt->hwtxtstamp_pending_queue);
-	__skb_queue_purge(&adpt->hwtxtstamp_ready_queue);
-	spin_unlock_irqrestore(&adpt->hwtxtstamp_lock, flags);
 
 	if (ctrl & EMAC_HW_CTRL_RESET_MAC)
 		emac_hw_reset_mac(hw);
@@ -1759,21 +1623,21 @@ static int emac_close(struct net_device *netdev)
 	struct emac_hw *hw = &adpt->hw;
 
 	/* ensure no task is running and no reset is in progress */
-	while (TEST_N_SET_FLAG(adpt, ADPT_STATE_RESETTING))
+	while (CHK_AND_SET_ADPT_FLAG(STATE_RESETTING))
 		msleep(20); /* Reset might take few 10s of ms */
 
 	pm_runtime_disable(netdev->dev.parent);
-	if (!TEST_FLAG(adpt, ADPT_STATE_DOWN))
+	if (!CHK_ADPT_FLAG(STATE_DOWN))
 		emac_down(adpt, EMAC_HW_CTRL_RESET_MAC);
 	else
 		emac_hw_reset_mac(hw);
 
-	if (TEST_FLAG(hw, HW_PTP_CAP))
+	if (CHK_HW_FLAG(PTP_CAP))
 		emac_ptp_stop(hw);
 
 	emac_free_all_rtx_descriptor(adpt);
 
-	CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+	CLI_ADPT_FLAG(STATE_RESETTING);
 	return 0;
 }
 
@@ -1867,7 +1731,7 @@ static int emac_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 	case SIOCSMIIREG:
 		return emac_mii_ioctl(netdev, ifr, cmd);
 	case SIOCSHWTSTAMP:
-		if (TEST_FLAG(hw, HW_PTP_CAP))
+		if (CHK_HW_FLAG(PTP_CAP))
 			return emac_tstamp_ioctl(netdev, ifr, cmd);
 	default:
 		return -EOPNOTSUPP;
@@ -1967,12 +1831,11 @@ static const struct net_device_ops emac_netdev_ops = {
 /* Reinitialize the interface/HW if required */
 static void emac_reinit_task_routine(struct emac_adapter *adpt)
 {
-	if (!TEST_FLAG(adpt, ADPT_TASK_REINIT_REQ))
+	if (!CHK_ADPT_FLAG(TASK_REINIT_REQ))
 		return;
-	CLR_FLAG(adpt, ADPT_TASK_REINIT_REQ);
+	CLI_ADPT_FLAG(TASK_REINIT_REQ);
 
-	if (TEST_FLAG(adpt, ADPT_STATE_DOWN) ||
-	    TEST_FLAG(adpt, ADPT_STATE_RESETTING))
+	if (CHK_ADPT_FLAG(STATE_DOWN) || CHK_ADPT_FLAG(STATE_RESETTING))
 		return;
 
 	emac_reinit_locked(adpt);
@@ -2002,15 +1865,15 @@ static void emac_link_task_routine(struct emac_adapter *adpt)
 	struct emac_hw *hw = &adpt->hw;
 	char *link_desc;
 
-	if (!TEST_FLAG(adpt, ADPT_TASK_LSC_REQ))
+	if (!CHK_ADPT_FLAG(TASK_LSC_REQ))
 		return;
-	CLR_FLAG(adpt, ADPT_TASK_LSC_REQ);
+	CLI_ADPT_FLAG(TASK_LSC_REQ);
 
 	/* ensure that no reset is in progess while link task is running */
-	while (TEST_N_SET_FLAG(adpt, ADPT_STATE_RESETTING))
+	while (CHK_AND_SET_ADPT_FLAG(STATE_RESETTING))
 		msleep(20); /* Reset might take few 10s of ms */
 
-	if (TEST_FLAG(adpt, ADPT_STATE_DOWN))
+	if (CHK_ADPT_FLAG(STATE_DOWN))
 		goto link_task_done;
 
 	emac_check_phy_link(hw, &hw->link_speed, &hw->link_up);
@@ -2027,18 +1890,18 @@ static void emac_link_task_routine(struct emac_adapter *adpt)
 		if (adpt->phy_mode == PHY_INTERFACE_MODE_RGMII) {
 			switch (hw->link_speed) {
 			case EMAC_LINK_SPEED_1GB_FULL:
-				clk_set_rate(adpt->clk[EMAC_CLK_TX].clk,
-					     EMC_CLK_RATE_125MHz);
+				clk_set_rate(adpt->clk_info[EMAC_TX_CLK].clk,
+					     125000000);
 				break;
 			case EMAC_LINK_SPEED_100_FULL:
 			case EMAC_LINK_SPEED_100_HALF:
-				clk_set_rate(adpt->clk[EMAC_CLK_TX].clk,
-					     EMC_CLK_RATE_25MHz);
+				clk_set_rate(adpt->clk_info[EMAC_TX_CLK].clk,
+					     25000000);
 				break;
 			case EMAC_LINK_SPEED_10_FULL:
 			case EMAC_LINK_SPEED_10_HALF:
-				clk_set_rate(adpt->clk[EMAC_CLK_TX].clk,
-					     EMC_CLK_RATE_2_5MHz);
+				clk_set_rate(adpt->clk_info[EMAC_TX_CLK].clk,
+					     2500000);
 				break;
 			}
 		}
@@ -2048,7 +1911,7 @@ static void emac_link_task_routine(struct emac_adapter *adpt)
 		netif_wake_queue(netdev);
 	} else {
 		if (time_after(adpt->link_jiffies, jiffies))
-			SET_FLAG(adpt, ADPT_TASK_LSC_REQ);
+			SET_ADPT_FLAG(TASK_LSC_REQ);
 
 		/* only continue if link was up previously */
 		if (!netif_carrier_ok(netdev))
@@ -2067,7 +1930,7 @@ static void emac_link_task_routine(struct emac_adapter *adpt)
 	mod_timer(&adpt->emac_timer, jiffies);
 
 link_task_done:
-	CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+	CLI_ADPT_FLAG(STATE_RESETTING);
 }
 
 /* Check SGMII for error */
@@ -2075,15 +1938,15 @@ static void emac_sgmii_task_routine(struct emac_adapter *adpt)
 {
 	struct emac_hw *hw = &adpt->hw;
 
-	if (!TEST_FLAG(adpt, ADPT_TASK_CHK_SGMII_REQ))
+	if (!CHK_ADPT_FLAG(TASK_CHK_SGMII_REQ))
 		return;
-	CLR_FLAG(adpt, ADPT_TASK_CHK_SGMII_REQ);
+	CLI_ADPT_FLAG(TASK_CHK_SGMII_REQ);
 
 	/* ensure that no reset is in progess while link task is running */
-	while (TEST_N_SET_FLAG(adpt, ADPT_STATE_RESETTING))
+	while (CHK_AND_SET_ADPT_FLAG(STATE_RESETTING))
 		msleep(20); /* Reset might take few 10s of ms */
 
-	if (TEST_FLAG(adpt, ADPT_STATE_DOWN))
+	if (CHK_ADPT_FLAG(STATE_DOWN))
 		goto sgmii_task_done;
 
 	if (emac_reg_r32(hw, EMAC_SGMII_PHY, EMAC_SGMII_PHY_RX_CHK_STATUS)
@@ -2093,7 +1956,7 @@ static void emac_sgmii_task_routine(struct emac_adapter *adpt)
 	emac_err(adpt, "SGMII CDR not locked\n");
 
 sgmii_task_done:
-	CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+	CLI_ADPT_FLAG(STATE_RESETTING);
 }
 
 /* Watchdog task routine */
@@ -2102,7 +1965,7 @@ static void emac_task_routine(struct work_struct *work)
 	struct emac_adapter *adpt = container_of(work, struct emac_adapter,
 						 emac_task);
 
-	if (!TEST_FLAG(adpt, ADPT_STATE_WATCH_DOG))
+	if (!CHK_ADPT_FLAG(STATE_WATCH_DOG))
 		emac_warn(adpt, timer, "flag STATE_WATCH_DOG doesn't set\n");
 
 	emac_reinit_task_routine(adpt);
@@ -2111,7 +1974,7 @@ static void emac_task_routine(struct work_struct *work)
 
 	emac_sgmii_task_routine(adpt);
 
-	CLR_FLAG(adpt, ADPT_STATE_WATCH_DOG);
+	CLI_ADPT_FLAG(STATE_WATCH_DOG);
 }
 
 /* Timer routine */
@@ -2124,7 +1987,7 @@ static void emac_timer_routine(unsigned long data)
 		return;
 
 	/* poll faster when waiting for link */
-	if (TEST_FLAG(adpt, ADPT_TASK_LSC_REQ))
+	if (CHK_ADPT_FLAG(TASK_LSC_REQ))
 		delay = HZ / 10;
 	else
 		delay = 2 * HZ;
@@ -2174,8 +2037,8 @@ static void emac_init_rtx_queues(struct platform_device *pdev,
 		adpt->rx_queue[3].consume_mask = RFD3_CONS_IDX_BMSK;
 		adpt->rx_queue[3].consume_shft = RFD3_CONS_IDX_SHFT;
 
-		adpt->rx_queue[3].irq = &adpt->irq[3];
-		adpt->rx_queue[3].intr = adpt->irq[3].mask & ISR_RX_PKT;
+		adpt->rx_queue[3].irq_info = &adpt->irq_info[3];
+		adpt->rx_queue[3].intr = adpt->irq_info[3].mask & ISR_RX_PKT;
 	case 3:
 		adpt->rx_queue[2].produce_reg = EMAC_MAILBOX_6;
 		adpt->rx_queue[2].produce_mask = RFD2_PROD_IDX_BMSK;
@@ -2189,8 +2052,8 @@ static void emac_init_rtx_queues(struct platform_device *pdev,
 		adpt->rx_queue[2].consume_mask = RFD2_CONS_IDX_BMSK;
 		adpt->rx_queue[2].consume_shft = RFD2_CONS_IDX_SHFT;
 
-		adpt->rx_queue[2].irq = &adpt->irq[2];
-		adpt->rx_queue[2].intr = adpt->irq[2].mask & ISR_RX_PKT;
+		adpt->rx_queue[2].irq_info = &adpt->irq_info[2];
+		adpt->rx_queue[2].intr = adpt->irq_info[2].mask & ISR_RX_PKT;
 	case 2:
 		adpt->rx_queue[1].produce_reg = EMAC_MAILBOX_5;
 		adpt->rx_queue[1].produce_mask = RFD1_PROD_IDX_BMSK;
@@ -2204,8 +2067,8 @@ static void emac_init_rtx_queues(struct platform_device *pdev,
 		adpt->rx_queue[1].consume_mask = RFD1_CONS_IDX_BMSK;
 		adpt->rx_queue[1].consume_shft = RFD1_CONS_IDX_SHFT;
 
-		adpt->rx_queue[1].irq = &adpt->irq[1];
-		adpt->rx_queue[1].intr = adpt->irq[1].mask & ISR_RX_PKT;
+		adpt->rx_queue[1].irq_info = &adpt->irq_info[1];
+		adpt->rx_queue[1].intr = adpt->irq_info[1].mask & ISR_RX_PKT;
 	case 1:
 		adpt->rx_queue[0].produce_reg = EMAC_MAILBOX_0;
 		adpt->rx_queue[0].produce_mask = RFD0_PROD_IDX_BMSK;
@@ -2219,8 +2082,8 @@ static void emac_init_rtx_queues(struct platform_device *pdev,
 		adpt->rx_queue[0].consume_mask = RFD0_CONS_IDX_BMSK;
 		adpt->rx_queue[0].consume_shft = RFD0_CONS_IDX_SHFT;
 
-		adpt->rx_queue[0].irq = &adpt->irq[0];
-		adpt->rx_queue[0].intr = adpt->irq[0].mask & ISR_RX_PKT;
+		adpt->rx_queue[0].irq_info = &adpt->irq_info[0];
+		adpt->rx_queue[0].intr = adpt->irq_info[0].mask & ISR_RX_PKT;
 		break;
 	}
 
@@ -2328,6 +2191,9 @@ static int emac_runtime_suspend(struct device *device)
 	struct emac_hw *hw = &adpt->hw;
 	u32 wufc = adpt->wol;
 
+	/* clear phy interrupt */
+	emac_hw_ack_phy_intr(hw);
+
 	emac_hw_config_pow_save(hw, adpt->hw.link_speed, !!wufc,
 				!!(wufc & EMAC_WOL_MAGIC));
 	return 0;
@@ -2361,18 +2227,18 @@ static int emac_suspend(struct device *device)
 	int retval = 0;
 
 	/* cannot suspend if WOL is disabled */
-	if (!adpt->irq[EMAC_WOL_IRQ].irq)
+	if (!adpt->irq_info[EMAC_WOL_IRQ].irq)
 		return -EPERM;
 
 	netif_device_detach(netdev);
 	if (netif_running(netdev)) {
 		/* ensure no task is running and no reset is in progress */
-		while (TEST_N_SET_FLAG(adpt, ADPT_STATE_RESETTING))
+		while (CHK_AND_SET_ADPT_FLAG(STATE_RESETTING))
 			msleep(20); /* Reset might take few 10s of ms */
 
 		emac_down(adpt, 0);
 
-		CLR_FLAG(adpt, ADPT_STATE_RESETTING);
+		CLI_ADPT_FLAG(STATE_RESETTING);
 	}
 
 	emac_check_phy_link(hw, &speed, &link_up);
@@ -2402,6 +2268,11 @@ static int emac_suspend(struct device *device)
 
 	hw->link_speed = speed;
 	hw->link_up = link_up;
+
+	/* clear phy interrupt */
+	retval = emac_hw_ack_phy_intr(hw);
+	if (retval)
+		return retval;
 
 	emac_hw_config_wol(hw, wufc);
 	emac_hw_config_pow_save(hw, adpt->hw.link_speed, !!wufc,
@@ -2439,26 +2310,27 @@ static int emac_resume(struct device *device)
 static int emac_get_clk(struct platform_device *pdev,
 			struct emac_adapter *adpt)
 {
+	struct emac_clk_info *clk_info;
 	struct clk *clk;
+	int retval = 0;
 	u8 i;
 
-	for (i = 0; i < EMAC_CLK_CNT; i++) {
-		clk = clk_get(&pdev->dev, emac_clk_name[i]);
-
+	for (i = 0; i < EMAC_NUM_CLK; i++) {
+		clk_info = &adpt->clk_info[i];
+		clk = clk_get(&pdev->dev, clk_info->name);
 		if (IS_ERR(clk)) {
-			emac_err(adpt, "error:%ld on clk_get(%s)\n",
-				 PTR_ERR(clk), emac_clk_name[i]);
-
-			while (--i >= 0)
-				if (adpt->clk[i].clk)
-					clk_put(adpt->clk[i].clk);
-			return PTR_ERR(clk);
+			emac_err(adpt, "can't get clk %s\n", clk_info->name);
+			retval = PTR_ERR(clk);
+			while (--i >= 0) {
+				if (adpt->clk_info[i].clk)
+					clk_put(adpt->clk_info[i].clk);
+			}
+			break;
 		}
-
-		adpt->clk[i].clk = clk;
+		clk_info->clk = clk;
 	}
 
-	return 0;
+	return retval;
 }
 
 /* Initialize clocks */
@@ -2466,19 +2338,19 @@ static int emac_init_clks(struct emac_adapter *adpt)
 {
 	int retval;
 
-	retval = emac_clk_prepare_enable(adpt, EMAC_CLK_AXI);
+	retval = emac_clk_prepare_enable(&adpt->clk_info[EMAC_AXI_CLK]);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_prepare_enable(adpt, EMAC_CLK_CFG_AHB);
+	retval = emac_clk_prepare_enable(&adpt->clk_info[EMAC_CFG_AHB_CLK]);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_set_rate(adpt, EMAC_CLK_125M, EMC_CLK_RATE_19_2MHz);
+	retval = emac_clk_set_rate(&adpt->clk_info[EMAC_125M_CLK], 19200000);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_prepare_enable(adpt, EMAC_CLK_125M);
+	retval = emac_clk_prepare_enable(&adpt->clk_info[EMAC_125M_CLK]);
 
 	return retval;
 }
@@ -2488,31 +2360,31 @@ static int emac_enable_clks(struct emac_adapter *adpt)
 {
 	int retval;
 
-	retval = emac_clk_set_rate(adpt, EMAC_CLK_TX, EMC_CLK_RATE_125MHz);
+	retval = emac_clk_set_rate(&adpt->clk_info[EMAC_TX_CLK], 125000000);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_prepare_enable(adpt, EMAC_CLK_TX);
+	retval = emac_clk_prepare_enable(&adpt->clk_info[EMAC_TX_CLK]);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_set_rate(adpt, EMAC_CLK_125M, EMC_CLK_RATE_125MHz);
+	retval = emac_clk_set_rate(&adpt->clk_info[EMAC_125M_CLK], 125000000);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_set_rate(adpt, EMAC_CLK_SYS_25M, EMC_CLK_RATE_25MHz);
+	retval = emac_clk_set_rate(&adpt->clk_info[EMAC_SYS_25M_CLK], 25000000);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_prepare_enable(adpt, EMAC_CLK_SYS_25M);
+	retval = emac_clk_prepare_enable(&adpt->clk_info[EMAC_SYS_25M_CLK]);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_prepare_enable(adpt, EMAC_CLK_RX);
+	retval = emac_clk_prepare_enable(&adpt->clk_info[EMAC_RX_CLK]);
 	if (retval)
 		return retval;
 
-	retval = emac_clk_prepare_enable(adpt, EMAC_CLK_SYS);
+	retval = emac_clk_prepare_enable(&adpt->clk_info[EMAC_SYS_CLK]);
 
 	return retval;
 }
@@ -2520,13 +2392,14 @@ static int emac_enable_clks(struct emac_adapter *adpt)
 /* Disable clocks */
 static void emac_disable_clks(struct emac_adapter *adpt)
 {
+	struct emac_clk_info *clk_info;
 	u8 i;
 
-	for (i = 0; i < EMAC_CLK_CNT; i++) {
-		struct emac_clk *clk = &adpt->clk[i];
-		if (clk->enabled) {
-			clk_disable_unprepare(clk->clk);
-			clk->enabled = false;
+	for (i = 0; i < EMAC_NUM_CLK; i++) {
+		clk_info = &adpt->clk_info[i];
+		if (clk_info->enabled) {
+			clk_disable_unprepare(clk_info->clk);
+			clk_info->enabled = false;
 		}
 	}
 }
@@ -2539,6 +2412,8 @@ static int emac_get_resources(struct platform_device *pdev,
 	u8 i;
 	struct resource *res;
 	struct net_device *netdev = adpt->netdev;
+	struct emac_irq_info *irq_info;
+	struct emac_gpio_info *gpio_info;
 	struct device_node *node = pdev->dev.of_node;
 	char *res_name[NUM_EMAC_REG_BASES] = {"emac", "emac_csr", "emac_1588",
 					      "emac_qserdes", "emac_sgmii_phy"};
@@ -2578,12 +2453,13 @@ static int emac_get_resources(struct platform_device *pdev,
 		adpt->no_mdio_gpio = true;
 
 	/* get gpios */
-	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_GPIO_CNT; i++) {
-		retval = of_get_named_gpio(node, emac_gpio_name[i], 0);
+	for (i = 0; (!adpt->no_mdio_gpio) && i < EMAC_NUM_GPIO; i++) {
+		gpio_info = &adpt->gpio_info[i];
+		retval = of_get_named_gpio(node, gpio_info->name, 0);
 		if (retval < 0)
 			return retval;
 
-		adpt->gpio[i] = retval;
+		gpio_info->gpio = retval;
 	}
 
 	/* get mac address */
@@ -2594,14 +2470,14 @@ static int emac_get_resources(struct platform_device *pdev,
 	memcpy(adpt->hw.mac_perm_addr, maddr, netdev->addr_len);
 
 	/* get irqs */
-	for (i = 0; i < EMAC_IRQ_CNT; i++) {
+	for (i = 0; i < EMAC_NUM_IRQ; i++) {
 		/* SGMII_PHY IRQ is only required if phy_mode is "sgmii" */
 		if ((i == EMAC_SGMII_PHY_IRQ) &&
 		    (adpt->phy_mode != PHY_INTERFACE_MODE_SGMII))
 				continue;
 
-		retval = platform_get_irq_byname(pdev,
-						 emac_irq_cmn_tbl[i].name);
+		irq_info = &adpt->irq_info[i];
+		retval = platform_get_irq_byname(pdev, irq_info->name);
 		if (retval < 0) {
 			/* If WOL IRQ is not specified, WOL is disabled */
 			if (i == EMAC_WOL_IRQ)
@@ -2610,7 +2486,7 @@ static int emac_get_resources(struct platform_device *pdev,
 				return retval;
 		}
 
-		adpt->irq[i].irq = retval;
+		irq_info->irq = retval;
 	}
 
 	retval = emac_get_clk(pdev, adpt);
@@ -2656,9 +2532,9 @@ static int emac_get_resources(struct platform_device *pdev,
 	return 0;
 
 err_reg_res:
-	for (i = 0; i < EMAC_CLK_CNT; i++) {
-		if (adpt->clk[i].clk)
-			clk_put(adpt->clk[i].clk);
+	for (i = 0; i < EMAC_NUM_CLK; i++) {
+		if (adpt->clk_info[i].clk)
+			clk_put(adpt->clk_info[i].clk);
 	}
 
 	return retval;
@@ -2674,9 +2550,9 @@ static void emac_release_resources(struct emac_adapter *adpt)
 			iounmap(adpt->hw.reg_addr[i]);
 	}
 
-	for (i = 0; i < EMAC_CLK_CNT; i++) {
-		if (adpt->clk[i].clk)
-			clk_put(adpt->clk[i].clk);
+	for (i = 0; i < EMAC_NUM_CLK; i++) {
+		if (adpt->clk_info[i].clk)
+			clk_put(adpt->clk_info[i].clk);
 	}
 }
 
@@ -2703,6 +2579,7 @@ static int emac_probe(struct platform_device *pdev)
 	adpt = netdev_priv(netdev);
 	adpt->netdev = netdev;
 	hw = &adpt->hw;
+	hw->adpt = adpt;
 	adpt->msg_enable = netif_msg_init(msm_emac_msglvl, EMAC_MSG_DEFAULT);
 
 	adpt->dma_mask = DMA_BIT_MASK(32);
@@ -2713,12 +2590,20 @@ static int emac_probe(struct platform_device *pdev)
 	dma_set_max_seg_size(&pdev->dev, 65536);
 	dma_set_seg_boundary(&pdev->dev, 0xffffffff);
 
+	memcpy(adpt->clk_info, emac_clk, sizeof(emac_clk));
+	for (i = 0; i < EMAC_NUM_CLK; i++)
+		adpt->clk_info[i].adpt = adpt;
+
+	memcpy(adpt->gpio_info, emac_gpio, sizeof(adpt->gpio_info));
+	memcpy(adpt->irq_info, emac_irq, sizeof(adpt->irq_info));
 	for (i = 0; i < EMAC_NUM_CORE_IRQ; i++) {
-		adpt->irq[i].idx  = i;
-		adpt->irq[i].mask = emac_irq_cmn_tbl[i].init_mask;
+		adpt->irq_info[i].adpt = adpt;
+		adpt->irq_info[i].rxque = &adpt->rx_queue[i];
 	}
-	adpt->irq[0].mask |= (msm_emac_intr_ext ? IMR_EXTENDED_MASK :
-			      IMR_NORMAL_MASK);
+	adpt->irq_info[EMAC_WOL_IRQ].adpt = adpt;
+	adpt->irq_info[EMAC_SGMII_PHY_IRQ].adpt = adpt;
+	adpt->irq_info[0].mask |= (msm_emac_intr_ext ? IMR_EXTENDED_MASK :
+				   IMR_NORMAL_MASK);
 
 	retval = emac_get_resources(pdev, adpt);
 	if (retval)
@@ -2732,7 +2617,7 @@ static int emac_probe(struct platform_device *pdev)
 	hw_ver = emac_reg_r32(hw, EMAC, EMAC_CORE_HW_VERSION);
 
 	netdev->watchdog_timeo = EMAC_WATCHDOG_TIME;
-	netdev->irq = adpt->irq[0].irq;
+	netdev->irq = adpt->irq_info[0].irq;
 
 	if (adpt->tstamp_en)
 		adpt->rrdesc_size = EMAC_TS_RRDESC_SIZE;
@@ -2742,8 +2627,10 @@ static int emac_probe(struct platform_device *pdev)
 	adpt->tpdesc_size = EMAC_TPDESC_SIZE;
 	adpt->rfdesc_size = EMAC_RFDESC_SIZE;
 
-	if (adpt->tstamp_en)
-		SET_FLAG(hw, HW_PTP_CAP);
+	if (adpt->tstamp_en) {
+		hw->rtc_ref_clkrate = DEFAULT_RTC_REF_CLKRATE;
+		SET_HW_FLAG(PTP_CAP);
+	}
 
 	/* init netdev */
 	netdev->netdev_ops = &emac_netdev_ops;
@@ -2802,13 +2689,8 @@ static int emac_probe(struct platform_device *pdev)
 		netif_napi_add(netdev, &adpt->rx_queue[i].napi,
 			       emac_napi_rtx, 64);
 
-	spin_lock_init(&adpt->hwtxtstamp_lock);
-	skb_queue_head_init(&adpt->hwtxtstamp_pending_queue);
-	skb_queue_head_init(&adpt->hwtxtstamp_ready_queue);
-	INIT_WORK(&adpt->hwtxtstamp_task, emac_hwtxtstamp_task_routine);
-
-	SET_FLAG(hw, HW_VLANSTRIP_EN);
-	SET_FLAG(adpt, ADPT_STATE_DOWN);
+	SET_HW_FLAG(VLANSTRIP_EN);
+	SET_ADPT_FLAG(STATE_DOWN);
 	strlcpy(netdev->name, "eth%d", sizeof(netdev->name));
 
 	retval = register_netdev(netdev);
@@ -2817,7 +2699,7 @@ static int emac_probe(struct platform_device *pdev)
 		goto err_register_netdev;
 	}
 
-	if (TEST_FLAG(hw, HW_PTP_CAP))
+	if (CHK_HW_FLAG(PTP_CAP))
 		emac_ptp_init(adpt->netdev);
 
 	pr_info("%s - version %s\n", emac_drv_description, emac_drv_version);
@@ -2851,7 +2733,7 @@ static int emac_remove(struct platform_device *pdev)
 	pr_info("exiting %s\n", emac_drv_name);
 
 	unregister_netdev(netdev);
-	if (TEST_FLAG(hw, HW_PTP_CAP))
+	if (CHK_HW_FLAG(PTP_CAP))
 		emac_ptp_remove(netdev);
 
 	emac_disable_clks(adpt);

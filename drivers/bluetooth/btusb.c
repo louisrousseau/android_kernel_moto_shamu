@@ -4,6 +4,7 @@
  *
  *  Copyright (C) 2005-2008  Marcel Holtmann <marcel@holtmann.org>
  *
+ *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
  *  the Free Software Foundation; either version 2 of the License, or
@@ -27,8 +28,6 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
-#include "ath3k.h"
-
 #define VERSION "0.6"
 
 static bool ignore_dga;
@@ -37,8 +36,7 @@ static bool ignore_sniffer;
 static bool disable_scofix;
 static bool force_scofix;
 
-static int sco_conn;
-static int reset = 1;
+static bool reset = 1;
 
 static struct usb_driver btusb_driver;
 
@@ -144,12 +142,10 @@ static struct usb_device_id blacklist_table[] = {
 	{ USB_DEVICE(0x0cf3, 0x3008), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x0cf3, 0x311d), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x0cf3, 0x817a), .driver_info = BTUSB_ATH3012 },
-	{ USB_DEVICE(0x0cf3, 0xe500), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x13d3, 0x3375), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x04ca, 0x3004), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x04ca, 0x3005), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x04ca, 0x3006), .driver_info = BTUSB_ATH3012 },
-	{ USB_DEVICE(0x04ca, 0x3007), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x04ca, 0x3008), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x13d3, 0x3362), .driver_info = BTUSB_ATH3012 },
 	{ USB_DEVICE(0x0cf3, 0xe004), .driver_info = BTUSB_ATH3012 },
@@ -305,9 +301,6 @@ static void btusb_intr_complete(struct urb *urb)
 			BT_ERR("%s corrupted event packet", hdev->name);
 			hdev->stat.err_rx++;
 		}
-	} else if (urb->status == -ENOENT) {
-		/* Avoid suspend failed when usb_kill_urb */
-		return;
 	}
 
 	if (!test_bit(BTUSB_INTR_RUNNING, &data->flags))
@@ -396,9 +389,6 @@ static void btusb_bulk_complete(struct urb *urb)
 			BT_ERR("%s corrupted ACL packet", hdev->name);
 			hdev->stat.err_rx++;
 		}
-	} else if (urb->status == -ENOENT) {
-		/* Avoid suspend failed when usb_kill_urb */
-		return;
 	}
 
 	if (!test_bit(BTUSB_BULK_RUNNING, &data->flags))
@@ -493,9 +483,6 @@ static void btusb_isoc_complete(struct urb *urb)
 				hdev->stat.err_rx++;
 			}
 		}
-	} else if (urb->status == -ENOENT) {
-		/* Avoid suspend failed when usb_kill_urb */
-		return;
 	}
 
 	if (!test_bit(BTUSB_ISOC_RUNNING, &data->flags))
@@ -843,9 +830,8 @@ static void btusb_notify(struct hci_dev *hdev, unsigned int evt)
 
 	BT_DBG("%s evt %d", hdev->name, evt);
 
-	if ((evt == HCI_NOTIFY_SCO_COMPLETE) || (evt == HCI_NOTIFY_CONN_DEL)) {
-		BT_DBG("SCO conn state changed: evt %d", evt);
-		sco_conn = (evt == HCI_NOTIFY_SCO_COMPLETE) ? 1 : 0;
+	if (hdev->conn_hash.sco_num != data->sco_num) {
+		data->sco_num = hdev->conn_hash.sco_num;
 		schedule_work(&data->work);
 	}
 }
@@ -900,7 +886,7 @@ static void btusb_work(struct work_struct *work)
 	int new_alts;
 	int err;
 
-	if (sco_conn) {
+	if (hdev->conn_hash.sco_num > 0) {
 		if (!test_bit(BTUSB_DID_ISO_RESUME, &data->flags)) {
 			err = usb_autopm_get_interface(data->isoc ? data->isoc : data->intf);
 			if (err < 0) {
@@ -1347,7 +1333,6 @@ static int btusb_probe(struct usb_interface *intf,
 	struct btusb_data *data;
 	struct hci_dev *hdev;
 	int i, err;
-	struct ath3k_version version;
 
 	BT_DBG("intf %p id %p", intf, id);
 
@@ -1376,22 +1361,11 @@ static int btusb_probe(struct usb_interface *intf,
 
 	if (id->driver_info & BTUSB_ATH3012) {
 		struct usb_device *udev = interface_to_usbdev(intf);
+
 		/* Old firmware would otherwise let ath3k driver load
 		 * patch and sysconfig files */
-		err = get_rome_version(udev, &version);
-		if (err < 0) {
-			if (le16_to_cpu(udev->descriptor.bcdDevice) <= 0x0001)
-				BT_INFO("FW for ar3k is yet to be downloaded");
-			else
-				BT_ERR("Failed to get ROME USB version");
+		if (le16_to_cpu(udev->descriptor.bcdDevice) <= 0x0001)
 			return -ENODEV;
-		}
-		BT_INFO("Rome Version: 0x%x", version.rom_version);
-		err = rome_download(udev, &version);
-		if (err < 0) {
-			BT_ERR("Failed to download ROME firmware");
-			return -ENODEV;
-		}
 	}
 
 	data = devm_kzalloc(&intf->dev, sizeof(*data), GFP_KERNEL);
@@ -1513,7 +1487,6 @@ static int btusb_probe(struct usb_interface *intf,
 	}
 
 	usb_set_intfdata(intf, data);
-	usb_enable_autosuspend(data->udev);
 
 	return 0;
 }
@@ -1527,12 +1500,6 @@ static void btusb_disconnect(struct usb_interface *intf)
 
 	if (!data)
 		return;
-
-	/* kill all the anchored urbs on USB disconnect */
-	usb_kill_anchored_urbs(&data->intr_anchor);
-	usb_kill_anchored_urbs(&data->bulk_anchor);
-	usb_kill_anchored_urbs(&data->isoc_anchor);
-	usb_kill_anchored_urbs(&data->tx_anchor);
 
 	hdev = data->hdev;
 	usb_set_intfdata(data->intf, NULL);
