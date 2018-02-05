@@ -50,11 +50,10 @@ struct wcd_cpe_lab_hw_params {
 	u16 sample_size;
 	u32 buf_sz;
 	u32 period_count;
-	u16 channels;
 };
 
 struct wcd_cpe_lsm_lab {
-	u32 lab_enable;
+	bool lab_enable;
 	void *slim_handle;
 	void *core_handle;
 	atomic_t in_count;
@@ -68,15 +67,6 @@ struct wcd_cpe_lsm_lab {
 	struct wcd_cpe_lab_hw_params hw_params;
 	struct wcd_cpe_data_pcm_buf *pcm_buf;
 	wait_queue_head_t period_wait;
-	struct completion thread_complete;
-	bool is_lab_enabled;
-};
-
-struct lsm_out_fmt_cfg {
-	u8 format;
-	u8 pack_mode;
-	u8 data_path_events;
-	u8 transfer_mode;
 };
 
 struct cpe_lsm_session {
@@ -92,7 +82,6 @@ struct cpe_lsm_session {
 
 	struct completion cmd_comp;
 	struct wcd_cpe_afe_port_cfg afe_port_cfg;
-	struct wcd_cpe_afe_port_cfg afe_out_port_cfg;
 	struct mutex lsm_lock;
 
 	u32 snd_model_size;
@@ -102,9 +91,6 @@ struct cpe_lsm_session {
 	u8 num_confidence_levels;
 	struct task_struct *lsm_lab_thread;
 	struct wcd_cpe_lsm_lab lab;
-	bool started;
-
-	struct lsm_out_fmt_cfg out_fmt_cfg;
 };
 
 struct wcd_cpe_afe_ops {
@@ -122,9 +108,6 @@ struct wcd_cpe_afe_ops {
 
 	int (*afe_port_resume) (void *core_handle,
 			       struct wcd_cpe_afe_port_cfg *cfg);
-
-	int (*afe_port_cmd_cfg)(void *core_handle,
-				struct wcd_cpe_afe_port_cfg *cfg);
 };
 
 struct wcd_cpe_lsm_ops {
@@ -168,8 +151,7 @@ struct wcd_cpe_lsm_ops {
 			       u32 bufsz, u32 bufcnt,
 			       bool enable);
 
-	int (*lsm_lab_stop)(void *core_handle, struct cpe_lsm_session *session,
-			    bool post_stop);
+	int (*lsm_lab_stop)(void *core_handle, struct cpe_lsm_session *session);
 
 	int (*lsm_lab_data_channel_open)(void *core_handle,
 				       struct cpe_lsm_session *session);
@@ -181,17 +163,6 @@ struct wcd_cpe_lsm_ops {
 				struct cpe_lsm_session *session,
 				phys_addr_t phys, u8 *mem,
 				u32 read_len);
-
-	int (*lsm_set_data) (void *core_handle,
-			struct cpe_lsm_session *session,
-			enum lsm_detection_mode detect_mode,
-			bool detect_failure);
-	int (*lsm_set_fmt_cfg)(void *core_handle,
-			struct cpe_lsm_session *session);
-	int (*lsm_cdc_start_lab)(void *core_handle);
-	int (*lsm_lab_buf_cntl)(void *core_handle,
-			struct cpe_lsm_session *session,
-			bool alloc, u32 bufsz, u32 bufcnt);
 };
 
 int wcd_cpe_get_lsm_ops(struct wcd_cpe_lsm_ops *);

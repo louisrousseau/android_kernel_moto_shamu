@@ -171,15 +171,6 @@
 #define CLK_OF_TABLES()
 #endif
 
-#ifdef CONFIG_OF
-#define CPU_METHOD_OF_TABLES() . = ALIGN(8);				\
-		VMLINUX_SYMBOL(__cpu_method_of_table) = .;		\
-		*(__cpu_method_of_table)				\
-		VMLINUX_SYMBOL(__cpu_method_of_table_end) = .;
-#else
-#define CPU_METHOD_OF_TABLES()
-#endif
-
 #define KERNEL_DTB()							\
 	STRUCT_ALIGN();							\
 	VMLINUX_SYMBOL(__dtb_start) = .;				\
@@ -248,7 +239,6 @@
 	.rodata           : AT(ADDR(.rodata) - LOAD_OFFSET) {		\
 		VMLINUX_SYMBOL(__start_rodata) = .;			\
 		*(.rodata) *(.rodata.*)					\
-		*(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro .data.rel.ro.* .gnu.linkonce.d.rel.ro.*) \
 		*(__vermagic)		/* Kernel version magic */	\
 		. = ALIGN(8);						\
 		VMLINUX_SYMBOL(__start___tracepoints_ptrs) = .;		\
@@ -525,7 +515,6 @@
 	CPU_DISCARD(init.rodata)					\
 	MEM_DISCARD(init.rodata)					\
 	CLK_OF_TABLES()							\
-	CPU_METHOD_OF_TABLES()						\
 	CLKSRC_OF_TABLES()						\
 	KERNEL_DTB()							\
 	IRQCHIP_OF_MATCH_TABLE()

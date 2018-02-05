@@ -99,7 +99,7 @@ struct apr_hdr {
 
 #define APR_NAME_MAX		0x40
 
-#define RESET_EVENTS		0x000130D7
+#define RESET_EVENTS		0xFFFFFFFF
 
 #define LPASS_RESTART_EVENT	0x1000
 #define LPASS_RESTART_READY	0x1001
@@ -174,6 +174,4 @@ enum apr_subsys_state apr_get_q6_state(void);
 int apr_set_q6_state(enum apr_subsys_state state);
 void apr_set_subsys_state(void);
 const char *apr_get_lpass_subsys_name(void);
-bool apr_register_voice_svc(void);
-uint16_t apr_get_reset_domain(uint16_t proc);
 #endif

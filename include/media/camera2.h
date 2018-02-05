@@ -15,10 +15,7 @@
 #define __CAMERA2_H__
 
 #include <media/msm_cam_sensor.h>
-#include <linux/interrupt.h>
-#include <linux/of_platform.h>
-#include <linux/of_device.h>
-#include <linux/of.h>
+#include <mach/board.h>
 
 enum msm_camera_device_type_t {
 	MSM_CAMERA_I2C_DEVICE,
@@ -44,20 +41,12 @@ struct msm_camera_slave_info {
 	uint16_t sensor_slave_addr;
 	uint16_t sensor_id_reg_addr;
 	uint16_t sensor_id;
-	uint16_t sensor_id_mask;
 };
 
 struct msm_cam_clk_info {
 	const char *clk_name;
 	long clk_rate;
 	uint32_t delay;
-};
-
-struct msm_pinctrl_info {
-	struct pinctrl *pinctrl;
-	struct pinctrl_state *gpio_state_active;
-	struct pinctrl_state *gpio_state_suspend;
-	bool use_pinctrl;
 };
 
 struct msm_cam_clk_setting {
@@ -84,8 +73,6 @@ struct msm_camera_power_ctrl_t {
 	int num_vreg;
 	struct msm_camera_i2c_conf *i2c_conf;
 	struct msm_cam_clk_info *clk_info;
-	struct msm_pinctrl_info pinctrl_info;
-	uint8_t cam_pinctrl_status;
 	uint16_t clk_info_size;
 };
 
@@ -93,7 +80,6 @@ struct msm_camera_sensor_board_info {
 	const char *sensor_name;
 	const char *eeprom_name;
 	const char *actuator_name;
-	const char *ois_name;
 	struct msm_camera_slave_info *slave_info;
 	struct msm_camera_csi_lane_params *csi_lane_params;
 	struct msm_camera_sensor_strobe_flash_data *strobe_flash_data;

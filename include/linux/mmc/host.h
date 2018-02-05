@@ -88,7 +88,6 @@ struct mmc_ios {
 /* states to represent load on the host */
 enum mmc_load {
 	MMC_LOAD_HIGH,
-	MMC_LOAD_INIT,
 	MMC_LOAD_LOW,
 };
 
@@ -332,7 +331,8 @@ struct mmc_host {
 #define MMC_CAP2_CORE_PM       (1 << 24)       /* use PM framework */
 #define MMC_CAP2_HS400		(MMC_CAP2_HS400_1_8V | \
 				 MMC_CAP2_HS400_1_2V)
-#define MMC_CAP2_NONHOTPLUG	(1 << 25)	/*Don't support hotplug*/
+#define MMC_CAP2_DRIVER_TYPE_4	(1 << 31)	/* Host supports eMMC Driver Type 4 */
+
 	mmc_pm_flag_t		pm_caps;	/* supported pm features */
 
 	int			clk_requests;	/* internal reference counter */
@@ -460,7 +460,6 @@ struct mmc_host {
 	 * actually disabling the clock from it's source.
 	 */
 	bool			card_clock_off;
-	bool			wakeup_on_idle;
 	unsigned long		private[0] ____cacheline_aligned;
 };
 

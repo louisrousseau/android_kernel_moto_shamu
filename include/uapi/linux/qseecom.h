@@ -5,7 +5,7 @@
 #include <linux/ioctl.h>
 
 #define MAX_ION_FD  4
-#define MAX_APP_NAME_SIZE  64
+#define MAX_APP_NAME_SIZE  32
 #define QSEECOM_HASH_SIZE  32
 /*
  * struct qseecom_register_listener_req -
@@ -18,7 +18,7 @@
 struct qseecom_register_listener_req {
 	uint32_t listener_id; /* in */
 	int32_t ifd_data_fd; /* in */
-	void *virt_sb_base; /* in */
+	uint32_t virt_sb_base; /* in */
 	uint32_t sb_size; /* in */
 };
 
@@ -95,7 +95,7 @@ struct qseecom_load_img_req {
 
 struct qseecom_set_sb_mem_param_req {
 	int32_t ifd_data_fd; /* in */
-	void *virt_sb_base; /* in */
+	uint32_t virt_sb_base; /* in */
 	uint32_t sb_len; /* in */
 };
 
@@ -128,8 +128,6 @@ struct qseecom_send_svc_cmd_req {
 enum qseecom_key_management_usage_type {
 	QSEOS_KM_USAGE_DISK_ENCRYPTION = 0x01,
 	QSEOS_KM_USAGE_FILE_ENCRYPTION = 0x02,
-	QSEOS_KM_USAGE_ICE_DISK_ENCRYPTION = 0x03,
-	QSEOS_KM_USAGE_ICE_FILE_ENCRYPTION = 0x04,
 	QSEOS_KM_USAGE_MAX
 };
 
@@ -189,25 +187,6 @@ struct qseecom_send_modfd_listener_resp {
 	struct qseecom_ion_fd_info ifd_data[MAX_ION_FD]; /* in */
 };
 
-struct qseecom_qteec_req {
-	void    *req_ptr;
-	uint32_t    req_len;
-	void    *resp_ptr;
-	uint32_t    resp_len;
-};
-
-struct qseecom_qteec_modfd_req {
-	void    *req_ptr;
-	uint32_t    req_len;
-	void    *resp_ptr;
-	uint32_t    resp_len;
-	struct qseecom_ion_fd_info ifd_data[MAX_ION_FD];
-};
-
-struct file;
-
-extern long qseecom_ioctl(struct file *file,
-					unsigned cmd, unsigned long arg);
 
 #define QSEECOM_IOC_MAGIC    0x97
 
@@ -281,16 +260,5 @@ extern long qseecom_ioctl(struct file *file,
 #define QSEECOM_IOCTL_UPDATE_KEY_USER_INFO_REQ \
 	_IOWR(QSEECOM_IOC_MAGIC, 24, struct qseecom_update_key_userinfo_req)
 
-#define QSEECOM_QTEEC_IOCTL_OPEN_SESSION_REQ \
-	_IOWR(QSEECOM_IOC_MAGIC, 30, struct qseecom_qteec_modfd_req)
-
-#define QSEECOM_QTEEC_IOCTL_CLOSE_SESSION_REQ \
-	_IOWR(QSEECOM_IOC_MAGIC, 31, struct qseecom_qteec_req)
-
-#define QSEECOM_QTEEC_IOCTL_INVOKE_MODFD_CMD_REQ \
-	_IOWR(QSEECOM_IOC_MAGIC, 32, struct qseecom_qteec_modfd_req)
-
-#define QSEECOM_QTEEC_IOCTL_REQUEST_CANCELLATION_REQ \
-	_IOWR(QSEECOM_IOC_MAGIC, 33, struct qseecom_qteec_modfd_req)
 
 #endif /* _UAPI_QSEECOM_H_ */

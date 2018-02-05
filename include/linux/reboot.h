@@ -13,9 +13,6 @@
 enum reboot_mode {
 	REBOOT_COLD = 0,
 	REBOOT_WARM,
-	REBOOT_HARD,
-	REBOOT_SOFT,
-	REBOOT_GPIO,
 };
 
 extern int register_reboot_notifier(struct notifier_block *);

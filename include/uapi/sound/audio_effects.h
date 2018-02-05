@@ -133,22 +133,7 @@
 #define EQ_BAND_BOOST	5
 #define EQ_BAND_CUT	6
 
-#define SOFT_VOLUME_MODULE		0x00006000
-#define SOFT_VOLUME_ENABLE		0x00006001
-#define SOFT_VOLUME_GAIN_2CH		0x00006002
-#define SOFT_VOLUME_GAIN_MASTER		0x00006003
-#define SOFT_VOLUME_ENABLE_PARAM_LEN		1
-#define SOFT_VOLUME_GAIN_2CH_PARAM_LEN		2
-#define SOFT_VOLUME_GAIN_MASTER_PARAM_LEN	1
 
-#define SOFT_VOLUME2_MODULE		0x00007000
-#define SOFT_VOLUME2_ENABLE		0x00007001
-#define SOFT_VOLUME2_GAIN_2CH		0x00007002
-#define SOFT_VOLUME2_GAIN_MASTER	0x00007003
-#define SOFT_VOLUME2_ENABLE_PARAM_LEN		SOFT_VOLUME_ENABLE_PARAM_LEN
-#define SOFT_VOLUME2_GAIN_2CH_PARAM_LEN		SOFT_VOLUME_GAIN_2CH_PARAM_LEN
-#define SOFT_VOLUME2_GAIN_MASTER_PARAM_LEN	\
-					SOFT_VOLUME_GAIN_MASTER_PARAM_LEN
 
 #define COMMAND_PAYLOAD_LEN	3
 #define COMMAND_PAYLOAD_SZ	(COMMAND_PAYLOAD_LEN * sizeof(uint32_t))
@@ -295,28 +280,32 @@ struct eq_params {
 	uint32_t freq_millihertz;
 };
 
-#define SOFT_VOLUME_ENABLE_PARAM_SZ		\
-			(SOFT_VOLUME_ENABLE_PARAM_LEN*sizeof(uint32_t))
-#define SOFT_VOLUME_GAIN_MASTER_PARAM_SZ	\
-			(SOFT_VOLUME_GAIN_MASTER_PARAM_LEN*sizeof(uint32_t))
-#define SOFT_VOLUME_GAIN_2CH_PARAM_SZ		\
-			(SOFT_VOLUME_GAIN_2CH_PARAM_LEN*sizeof(uint16_t))
-struct soft_volume_params {
+#define MMIFX_EQ_MODULE		0x00005000
+#define MMIFX_EQ_ENABLE			0x00005001
+#define MMIFX_EQ_PRESET			0x00005020
+#define MMIFX_EQ_DEVICE			0x00005300
+
+
+
+#define MMIFX_ENABLE_PARAM_LEN 1
+#define MMIFX_ENABLE_PARAM_SZ	\
+			(MMIFX_ENABLE_PARAM_LEN*sizeof(uint32_t))
+#define MMIFX_PARAM_LEN 1
+#define MMIFX_PRESET_PARAM_SZ	\
+			(MMIFX_PARAM_LEN*sizeof(uint32_t))
+#define MMIFX_PARAM_TABLE_LEN 2000
+#define MMIFX_PARAM_TABLE_SZ	\
+			(MMIFX_PARAM_TABLE_LEN*sizeof(uint16_t))
+#define MMIFX_DEVICE_PARAM_SZ	\
+			(MMIFX_PARAM_LEN*sizeof(uint32_t))
+
+
+struct mmi_eq_params {
 	uint32_t device;
 	uint32_t enable_flag;
-	uint32_t master_gain;
-	uint32_t left_gain;
-	uint32_t right_gain;
+	uint32_t preset;
 };
 
-struct msm_nt_eff_all_config {
-	struct bass_boost_params bass_boost;
-	struct virtualizer_params virtualizer;
-	struct reverb_params reverb;
-	struct eq_params equalizer;
-	struct soft_volume_params saplus_vol;
-	struct soft_volume_params topo_switch_vol;
-};
 
 #endif /*_MSM_AUDIO_EFFECTS_H*/
 

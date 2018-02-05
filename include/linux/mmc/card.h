@@ -99,7 +99,7 @@ struct mmc_ext_csd {
 	bool			hpi;			/* HPI support bit */
 	unsigned int		hpi_cmd;		/* cmd used as HPI */
 	bool			bkops;		/* background support bit */
-	u8			bkops_en;	/* background enable bits */
+	bool			bkops_en;	/* background enable bit */
 	unsigned int            data_sector_size;       /* 512 bytes or 4KB */
 	unsigned int            data_tag_unit_size;     /* DATA TAG UNIT size */
 	unsigned int		boot_ro_lock;		/* ro lock support */
@@ -110,7 +110,7 @@ struct mmc_ext_csd {
 	u8			raw_erased_mem_count;	/* 181 */
 	u8			raw_ext_csd_structure;	/* 194 */
 	u8			raw_card_type;		/* 196 */
-	u8			raw_drive_strength;	/* 197 */
+	u8			raw_driver_strength;	/* 197 */
 	u8			out_of_int_time;	/* 198 */
 	u8			raw_s_a_timeout;		/* 217 */
 	u8			raw_hc_erase_gap_size;	/* 221 */
@@ -425,23 +425,6 @@ struct mmc_card {
 };
 
 /*
- * mmc_csd registers get/set/clr helpers
- */
-#define mmc_card_get_bkops_en_manual(card) ((card->ext_csd.bkops_en) &\
-					EXT_CSD_BKOPS_EN_MANUAL_EN)
-#define mmc_card_set_bkops_en_manual(card) ((card->ext_csd.bkops_en) |= \
-					EXT_CSD_BKOPS_EN_MANUAL_EN)
-#define mmc_card_clr_bkops_en_manual(card) ((card->ext_csd.bkops_en) &= \
-					~EXT_CSD_BKOPS_EN_MANUAL_EN)
-
-#define mmc_card_get_bkops_en_auto(card) ((card->ext_csd.bkops_en) & \
-					EXT_CSD_BKOPS_EN_AUTO_EN)
-#define mmc_card_set_bkops_en_auto(card) ((card->ext_csd.bkops_en) |= \
-					EXT_CSD_BKOPS_EN_AUTO_EN)
-#define mmc_card_clr_bkops_en_auto(card) ((card->ext_csd.bkops_en) &= \
-					~EXT_CSD_BKOPS_EN_AUTO_EN)
-
-/*
  * This function fill contents in mmc_part.
  */
 static inline void mmc_part_add(struct mmc_card *card, unsigned int size,
@@ -495,9 +478,7 @@ struct mmc_fixup {
 #define CID_MANFID_TOSHIBA	0x11
 #define CID_MANFID_MICRON	0x13
 #define CID_MANFID_SAMSUNG	0x15
-#define CID_MANFID_KINGSTON	0x70
 #define CID_MANFID_HYNIX	0x90
-#define CID_MANFID_NUMONYX_MICRON 0xfe
 
 #define END_FIXUP { 0 }
 

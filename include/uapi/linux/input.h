@@ -198,8 +198,6 @@ struct input_keymap_entry {
 #define SYN_CONFIG		1
 #define SYN_MT_REPORT		2
 #define SYN_DROPPED		3
-#define SYN_TIME_SEC		4
-#define SYN_TIME_NSEC		5
 
 /*
  * Keys and buttons
@@ -882,7 +880,6 @@ struct input_keymap_entry {
 #define SW_HPHR_OVERCURRENT	0x0f  /* set = over current on right hph */
 #define SW_UNSUPPORT_INSERT	0x10  /* set = unsupported device inserted */
 #define SW_MICROPHONE2_INSERT   0x11  /* set = inserted */
-#define SW_MUTE_DEVICE		0x12  /* set = device disabled */
 #define SW_MAX			0x20
 #define SW_CNT			(SW_MAX+1)
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -10,113 +10,85 @@
  * GNU General Public License for more details.
  */
 
-#ifndef __MSM_CLOCKS_8994_H
-#define __MSM_CLOCKS_8994_H
+#ifndef __MSM_CLOCKS_PLUTONIUM_H
+#define __MSM_CLOCKS_PLUTONIUM_H
 
 /* clock_rpm controlled clocks */
-#define clk_cxo_clk_src 0x79e95308
+#define clk_xo_clk_src 0x23f5649f
+#define clk_xo_a_clk_src 0x2fdd2c7c
 #define clk_pnoc_clk 0x4325d220
-#define clk_ocmemgx_clk 0xc91618fb
 #define clk_pnoc_a_clk 0x2808c12b
-#define clk_bimc_clk 0x4b80bf00
-#define clk_bimc_a_clk 0x4b25668a
-#define clk_cnoc_clk 0xd5ccb7f4
-#define clk_cnoc_a_clk 0xd8fe2ccc
-#define clk_gfx3d_clk_src 0x917f76ef
-#define clk_ocmemgx_a_clk 0x310204ad
 #define clk_snoc_clk 0x2c341aa0
 #define clk_snoc_a_clk 0x8fcef2af
-#define clk_bb_clk1 0xf5304268
-#define clk_bb_clk1_ao 0xfa113810
-#define clk_bb_clk1_pin 0x6dd0a779
-#define clk_bb_clk1_pin_ao 0x9b637772
-#define clk_bb_clk2 0xfe15cb87
-#define clk_bb_clk2_ao 0x59682706
-#define clk_bb_clk2_pin 0x498938e5
-#define clk_bb_clk2_pin_ao 0x52513787
-#define clk_bimc_msmbus_clk 0xd212feea
-#define clk_bimc_msmbus_a_clk 0x71d1a499
-#define clk_ce1_a_clk 0x44a833fe
-#define clk_ce2_a_clk 0x6a30b14b
-#define clk_ce3_a_clk 0xa67fa700
-#define clk_cnoc_msmbus_clk 0x62228b5d
-#define clk_cnoc_msmbus_a_clk 0x67442955
-#define clk_cxo_clk_src_ao 0x64eb6004
-#define clk_cxo_dwc3_clk 0xf79c19f6
-#define clk_cxo_lpm_clk 0x94adbf3d
-#define clk_cxo_otg_clk 0x4eec0bb9
-#define clk_cxo_pil_lpass_clk 0xe17f0ff6
-#define clk_div_clk1 0xaa1157a6
-#define clk_div_clk1_ao 0x6b943d68
-#define clk_div_clk2 0xd454019f
-#define clk_div_clk2_ao 0x53f9e788
-#define clk_div_clk3 0xa9a55a68
-#define clk_div_clk3_ao 0x3d6725a8
-#define clk_gfx3d_clk_src_ao 0x8b5b92f4
-#define clk_ipa_clk 0xfa685cda
-#define clk_ipa_a_clk 0xeeec2919
-#define clk_ln_bb_clk 0x3ab0b36d
-#define clk_ln_bb_a_clk 0xc7257ea8
-#define clk_mcd_ce1_clk 0xbb615d26
-#define clk_mcd_ce2_clk 0x6ed5c723
-#define clk_mcd_ce3_clk 0x607c2bd3
+#define clk_cnoc_clk 0xd5ccb7f4
+#define clk_cnoc_a_clk 0xd8fe2ccc
 #define clk_mmssnoc_ahb_clk 0xccd4bd4c
 #define clk_mmssnoc_ahb_a_clk 0x3f1a62ce
-#define clk_mss_cfg_ahb_clk 0x4a6d85ae
-#define clk_mss_cfg_ahb_a_clk 0x2a1502ca
-#define clk_ocmemgx_core_clk 0xaad7dbe5
-#define clk_ocmemgx_msmbus_clk 0x3968c738
-#define clk_ocmemgx_msmbus_a_clk 0x66dd774f
-#define clk_oxili_gfx3d_clk_src 0xe0405056
-#define clk_pnoc_keepalive_a_clk 0xf8f91f0b
-#define clk_pnoc_modem_clk 0x822f0471
-#define clk_pnoc_msmbus_clk 0x38b95c77
-#define clk_pnoc_msmbus_a_clk 0x8c9b4e93
-#define clk_pnoc_pm_clk 0xd6f7dfb9
-#define clk_pnoc_sps_clk 0xd482ecc7
-#define clk_qcedev_ce1_clk 0x293f97b0
-#define clk_qcedev_ce2_clk 0x816b3fec
-#define clk_qcedev_ce3_clk 0xbfa406c1
-#define clk_qcrypto_ce1_clk 0xa6ac14df
-#define clk_qcrypto_ce2_clk 0x8728364d
-#define clk_qcrypto_ce3_clk 0x0dce9a93
+#define clk_bimc_clk 0x4b80bf00
+#define clk_bimc_a_clk 0x4b25668a
+#define clk_ocmemgx_clk 0xc91618fb
+#define clk_ocmemgx_a_clk 0x310204ad
+#define clk_gfx3d_clk_src 0x917f76ef
+#define clk_gfx3d_a_clk_src 0x4db5347e
 #define clk_qdss_clk 0x1492202a
 #define clk_qdss_a_clk 0xdd121669
-#define clk_qseecom_ce1_clk 0xaa858373
-#define clk_qseecom_ce2_clk 0x7768a8d3
-#define clk_qseecom_ce3_clk 0xf277bf96
+#define clk_bb_clk1 0xf5304268
+#define clk_bb_clk1_a 0xd9c0f331
+#define clk_bb_clk2 0xfe15cb87
+#define clk_bb_clk2_a 0x8d8fa7cf
 #define clk_rf_clk1 0xaabeea5a
-#define clk_rf_clk1_ao 0x72a10cb8
-#define clk_rf_clk1_pin 0x8f463562
-#define clk_rf_clk1_pin_ao 0x62549ff6
+#define clk_rf_clk1_a 0xcb02c48a
 #define clk_rf_clk2 0x24a30992
-#define clk_rf_clk2_ao 0x944d8bbd
+#define clk_rf_clk2_a 0x9acc13be
+#define clk_rf_clk3 0xb673936b
+#define clk_rf_clk3_a 0xf7975f21
+#define clk_diff_clk1 0xfa471e75
+#define clk_diff_clk1_a 0x150b3ccf
+#define clk_div_clk1 0xaa1157a6
+#define clk_div_clk1_a 0x453d4b70
+#define clk_div_clk2 0xd454019f
+#define clk_div_clk2_a 0x4bd7bfa8
+#define clk_div_clk3 0xa9a55a68
+#define clk_div_clk3_a 0x3b1d7837
+#define clk_bb_clk1_pin 0x6dd0a779
+#define clk_bb_clk1_a_pin 0xc915f398
+#define clk_bb_clk2_pin 0x498938e5
+#define clk_bb_clk2_a_pin 0xb0f3f1bf
+#define clk_rf_clk1_pin 0x8f463562
+#define clk_rf_clk1_a_pin 0x10732334
 #define clk_rf_clk2_pin 0xa7c5602a
-#define clk_rf_clk2_pin_ao 0x2d75eb4d
-#define clk_scm_ce1_clk 0xd8ebcc62
-#define clk_scm_ce2_clk 0x5f97c3fc
-#define clk_scm_ce3_clk 0xc52c879f
+#define clk_rf_clk2_a_pin 0x9ba81e7c
+#define clk_rf_clk3_pin 0x726f53f5
+#define clk_rf_clk3_a_pin 0xf58c096a
+#define clk_pnoc_msmbus_clk 0x38b95c77
 #define clk_snoc_msmbus_clk 0xe6900bb6
+#define clk_cnoc_msmbus_clk 0x62228b5d
+#define clk_pnoc_msmbus_a_clk 0x8c9b4e93
 #define clk_snoc_msmbus_a_clk 0x5d4683bd
-#define clk_ce1_clk 0x42229c55
-#define clk_gcc_ce1_ahb_m_clk 0x2eb28c01
-#define clk_gcc_ce1_axi_m_clk 0xc174dfba
-#define clk_ce2_clk 0x7b80e25b
-#define clk_gcc_ce2_ahb_m_clk 0xe57ce2b1
-#define clk_gcc_ce2_axi_m_clk 0x4feb55e3
-#define clk_ce3_clk 0xb7c009b6
-#define clk_gcc_ce3_ahb_m_clk 0x527880ff
-#define clk_gcc_ce3_axi_m_clk 0xc8e9a915
-#define clk_gcc_bimc_kpss_axi_m_clk 0x1e86d73e
-#define clk_gcc_mmss_bimc_gfx_m_clk 0xcf06f534
-#define clk_rpm_debug_mux 0x25cd1f3a
+#define clk_cnoc_msmbus_a_clk 0x67442955
+#define clk_bimc_msmbus_clk 0xd212feea
+#define clk_bimc_msmbus_a_clk 0x71d1a499
+#define clk_bimc_acpu_a_clk 0x4446311b
+#define clk_oxili_gfx3d_clk_src 0xe0405056
+#define clk_ocmemgx_msmbus_clk 0x3968c738
+#define clk_ocmemgx_msmbus_a_clk 0x66dd774f
+#define clk_ocmemgx_core_clk 0xaad7dbe5
+#define clk_pnoc_keepalive_a_clk 0xf8f91f0b
+#define clk_pnoc_sps_clk 0xd482ecc7
+#define clk_cxo_otg_clk 0x4eec0bb9
+#define clk_cxo_dwc3_clk 0xf79c19f6
+#define clk_cxo_lpm_clk 0x94adbf3d
+#define clk_cxo_pil_lpass_clk 0xe17f0ff6
+#define clk_ipa_clk 0xfa685cda
+#define clk_ipa_a_clk 0xeeec2919
 
 /* clock_gcc controlled clocks */
 #define clk_gcc_xo 0x7503042f
 #define clk_gcc_xo_a_clk 0x344f46f4
+#define clk_debug_mmss_clk 0x977c99b6
 #define clk_gpll0 0x1ebe3bc4
-#define clk_gpll0_ao 0xa1368304
 #define clk_gpll0_out_main 0xe9374de7
+#define clk_gpll0_ao 0xa1368304
 #define clk_gpll4 0xb3b5d85b
 #define clk_gpll4_out_main 0xa9a0ab9d
 #define clk_ufs_axi_clk_src 0x297ca380
@@ -173,16 +145,6 @@
 #define clk_usb30_mock_utmi_clk_src 0xa024a976
 #define clk_usb3_phy_aux_clk_src 0x15eec63c
 #define clk_usb_hs_system_clk_src 0x28385546
-#define clk_gcc_pcie_phy_0_reset 0x6bb4df33
-#define clk_gcc_pcie_phy_1_reset 0x5fc03a70
-#define clk_gcc_qusb2_phy_reset 0x3ce5fa84
-#define clk_gcc_usb3_phy_reset 0x03d559f1
-#define clk_gpll0_out_mmsscc 0x0ded70aa
-#define clk_gpll0_out_msscc 0x7d794829
-#define clk_pcie_0_phy_ldo 0x1d30d092
-#define clk_pcie_1_phy_ldo 0x63474b42
-#define clk_ufs_phy_ldo 0x98111fee
-#define clk_usb_ss_phy_ldo 0x124410f7
 #define clk_gcc_bam_dma_ahb_clk 0xaacf5929
 #define clk_gcc_blsp1_ahb_clk 0x8caa5b4f
 #define clk_gcc_blsp1_qup1_i2c_apps_clk 0xc303fae9
@@ -222,11 +184,11 @@
 #define clk_gcc_blsp2_uart4_apps_clk 0x87a44b42
 #define clk_gcc_blsp2_uart5_apps_clk 0x5cd30649
 #define clk_gcc_blsp2_uart6_apps_clk 0x8feee5ab
-#define clk_gcc_boot_rom_ahb_clk 0xde2adeb1
 #define clk_gcc_gp1_clk 0x057f7b69
 #define clk_gcc_gp2_clk 0x9bf83ffd
 #define clk_gcc_gp3_clk 0xec6539ee
 #define clk_gcc_lpass_q6_axi_clk 0xa9612654
+#define clk_gcc_mss_cfg_ahb_clk 0x111cde81
 #define clk_gcc_mss_q6_bimc_axi_clk 0x67544d62
 #define clk_gcc_pcie_0_aux_clk 0x3d2e3ece
 #define clk_gcc_pcie_0_cfg_ahb_clk 0x4dd325c3
@@ -267,15 +229,12 @@
 #define clk_gcc_usb30_sleep_clk 0xd0b65c92
 #define clk_gcc_usb3_phy_aux_clk 0x0d9a36e0
 #define clk_gcc_usb3_phy_pipe_clk 0xf279aff2
-#define clk_gcc_usb3phy_phy_reset 0xb1a4f885
 #define clk_gcc_usb_hs_ahb_clk 0x72ce8032
 #define clk_gcc_usb_hs_system_clk 0xa11972e5
 #define clk_gcc_usb_phy_cfg_ahb2phy_clk 0xd1231a0e
+#define clk_gcc_debug_mux 0x8121ac15
 
 /* clock_mmss controlled clocks */
-#define clk_mmsscc_xo 0x05e63704
-#define clk_mmsscc_gpll0 0xe900c515
-#define clk_mmsscc_mmssnoc_ahb 0x7b4bd6f7
 #define clk_mmpll0 0xdd83b751
 #define clk_mmpll0_out_main 0x2f996a31
 #define clk_mmpll4 0x22c063c1
@@ -284,6 +243,7 @@
 #define clk_mmpll1_out_main 0xa0d3a7da
 #define clk_mmpll3 0x18c76899
 #define clk_mmpll3_out_main 0x6eb6328f
+#define clk_camss_ahb_clk 0xc4ff91d4
 #define clk_axi_clk_src 0x6617efab
 #define clk_mmpll5 0xa41e1936
 #define clk_mmpll5_out_main 0xcc1897bf
@@ -298,8 +258,6 @@
 #define clk_jpeg1_clk_src 0xee282bdf
 #define clk_jpeg2_clk_src 0x5ad927f3
 #define clk_csi2phytimer_clk_src 0x62ffea9c
-#define clk_pclk0_clk_src 0xccac1f35
-#define clk_pclk1_clk_src 0x090f68ac
 #define clk_fd_core_clk_src 0xe4799ab7
 #define clk_mdp_clk_src 0x6dc1f8f1
 #define clk_ocmemnoc_clk_src 0x20297054
@@ -314,20 +272,10 @@
 #define clk_mclk3_clk_src 0x2bfbb714
 #define clk_csi0phytimer_clk_src 0xc8a309be
 #define clk_csi1phytimer_clk_src 0x7c0fe23a
-#define clk_byte0_clk_src 0x75cc885b
-#define clk_byte1_clk_src 0x63c2c955
 #define clk_esc0_clk_src 0xb41d7c38
 #define clk_esc1_clk_src 0x3b0afa42
-#define clk_extpclk_clk_src 0xb2c31abd
-#define clk_ext_byte0_clk_src 0xfb32f31e
-#define clk_ext_byte1_clk_src 0x585ef6d4
-#define clk_ext_pclk0_clk_src 0x087c1612
-#define clk_ext_pclk1_clk_src 0x8067c5a3
 #define clk_hdmi_clk_src 0xb40aeea9
-#define clk_hdmi_20nm_vco_clk 0xacaed5e6
 #define clk_vsync_clk_src 0xecb43940
-#define clk_rbbmtimer_clk_src 0x17649ecc
-#define clk_camss_ahb_clk 0xc4ff91d4
 #define clk_camss_cci_cci_ahb_clk 0x12aec62d
 #define clk_camss_cci_cci_clk 0xc9a1bf11
 #define clk_camss_vfe_cpp_ahb_clk 0xea097d83
@@ -383,24 +331,14 @@
 #define clk_fd_core_uar_clk 0x7e624e15
 #define clk_mdss_ahb_clk 0x684ccb41
 #define clk_mdss_axi_clk 0xcc07d687
-#define clk_mdss_byte0_clk 0xf5a03f64
-#define clk_mdss_byte1_clk 0xb8c7067d
 #define clk_mdss_esc0_clk 0x28cafbe6
 #define clk_mdss_esc1_clk 0xc22c6883
-#define clk_mdss_extpclk_clk 0xfa5aadb0
 #define clk_mdss_hdmi_ahb_clk 0x01cef516
 #define clk_mdss_hdmi_clk 0x097a6de9
 #define clk_mdss_mdp_clk 0x618336ac
-#define clk_mdss_pclk0_clk 0x3487234a
-#define clk_mdss_pclk1_clk 0xd5804246
 #define clk_mdss_vsync_clk 0x42a022d3
-#define clk_mmss_misc_ahb_clk 0xea30b0e7
 #define clk_mmss_mmssnoc_axi_clk 0x63753a4b
 #define clk_mmss_s0_axi_clk 0xcbd7b001
-#define clk_ocmemcx_ocmemnoc_clk 0x37acd041
-#define clk_oxili_gfx3d_clk 0x40c75e70
-#define clk_oxili_rbbmtimer_clk 0x18e21c57
-#define clk_oxilicx_ahb_clk 0xcc8b032c
 #define clk_venus0_ahb_clk 0x6694087d
 #define clk_venus0_axi_clk 0x34fecbbe
 #define clk_venus0_ocmemnoc_clk 0x590416b8
@@ -409,70 +347,5 @@
 #define clk_venus0_core1_vcodec_clk 0x6324869c
 #define clk_venus0_core2_vcodec_clk 0x24fa20a3
 #define clk_mmss_debug_mux 0xe646ffda
-
-/* dsi0pll controlled clocks */
-#define clk_pixel_clk_src 0x1708ae85
-#define clk_byte_clk_src 0x63154efc
-#define clk_fixed_hr_oclk2_div_clk_8994 0xabbb0923
-#define clk_bypass_lp_div_mux_8994 0xdc0bb6ea
-#define clk_hr_oclk3_div_clk_8994 0xc91f9f32
-#define clk_indirect_path_div2_clk_8994 0x21cdcc22
-#define clk_ndiv_clk_8994 0x39f41978
-#define clk_dsi_vco_clk_8994 0x976ed967
-#define clk_mdss_pixel_clk_mux 0xf261a1a6
-#define clk_mdss_byte_clk_mux 0x64a23fa0
-#define clk_shadow_byte_clk_src 0x5e69f8ef
-#define clk_shadow_pixel_clk_src 0xa6b20c5a
-#define clk_shadow_fixed_hr_oclk2_div_clk_8994 0xd1ec3fb3
-#define clk_shadow_bypass_lp_div_mux_8994 0xa57bf87b
-#define clk_shadow_hr_oclk3_div_clk_8994 0x20274a2b
-#define clk_shadow_indirect_path_div2_clk_8994 0x5d6b34c8
-#define clk_shadow_ndiv_clk_8994 0x488de275
-#define clk_shadow_dsi_vco_clk_8994 0x7995eebd
-#define clk_mdss_dsi1_vco_clk_src 0xfcd15658
-
-/* clock_cpu controlled clocks */
-#define clk_a57_pll0 0xd01177bc
-#define clk_a57_pll1 0x546813fa
-#define clk_a53_pll0 0xa24d446b
-#define clk_a53_pll1 0xdc2957a1
-#define clk_a53_hf_mux 0xae9fcd1a
-#define clk_a53_lf_mux 0x541f1e40
-#define clk_a57_hf_mux 0x11a12cf4
-#define clk_a57_lf_mux 0xc4923785
-#define clk_sys_apcsaux_clk 0x5ac5f5db
-#define clk_a53_lf_mux_pll0_div 0xdd845061
-#define clk_a53_lf_mux_pll1_div 0xd8218380
-#define clk_a53_pll0_main 0xb2cc34c0
-#define clk_a53_pll1_main 0x4fea3e81
-#define clk_a53_clk 0x5c9f8836
-#define clk_a57_clk 0x6c7dc3ea
-#define clk_cci_clk 0x96854074
-#define clk_cci_pll 0x9f1ea9a6
-#define clk_cci_hf_mux 0x1e4a0b42
-#define clk_cci_lf_mux 0x78b92bfd
-#define clk_xo_ao 0x480207b3
-#define clk_a57_debug_mux 0x0a9d77c3
-#define clk_a53_debug_mux 0x034d8e87
-#define clk_cpu_debug_mux 0x3ae8bcb2
-#define clk_a57_div_clk 0x4fdce8aa
-#define clk_a53_div_clk 0x6006022b
-/* V2 specific */
-#define clk_a57_pll0_main 0xe2f766a8
-#define clk_a57_pll1_main 0xe231d575
-#define clk_a53_hf_mux_v2 0xae5899af
-#define clk_a57_hf_mux_v2 0xf03c6e30
-#define clk_a53_lf_mux_v2 0x073a2e36
-#define clk_a53_hf_mux_v2 0xae5899af
-#define clk_a57_lf_mux_v2 0xcc0c0f08
-#define clk_a57_lf_mux_div 0xac0c1150
-#define clk_a53_lf_mux_div 0x6ae626e5
-
-
-/* clock_debug controlled clocks */
-#define clk_debug_mmss_clk 0x977c99b6
-#define clk_debug_rpm_clk 0x8e2b07ca
-#define clk_debug_cpu_clk 0x0e696b2b
-#define clk_gcc_debug_mux 0x8121ac15
 
 #endif

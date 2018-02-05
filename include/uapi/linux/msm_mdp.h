@@ -67,7 +67,9 @@
 #define MSMFB_ASYNC_BLIT              _IOW(MSMFB_IOCTL_MAGIC, 168, unsigned int)
 #define MSMFB_OVERLAY_PREPARE		_IOWR(MSMFB_IOCTL_MAGIC, 169, \
 						struct mdp_overlay_list)
-#define MSMFB_LPM_ENABLE	_IOWR(MSMFB_IOCTL_MAGIC, 170, unsigned int)
+#define MSMFB_REG_READ   _IOWR(MSMFB_IOCTL_MAGIC, 64, struct msmfb_reg_access)
+#define MSMFB_REG_WRITE  _IOW(MSMFB_IOCTL_MAGIC, 65, struct msmfb_reg_access)
+#define MSMFB_SECURE   _IOWR(MSMFB_IOCTL_MAGIC, 170, struct msmfb_secure_config)
 
 #define FB_TYPE_3D_PANEL 0x10101010
 #define MDP_IMGTYPE2_START 0x10000
@@ -95,17 +97,9 @@
 #define MDSS_MDP_HW_REV_102_1	MDSS_MDP_REV(1, 2, 1) /* 8974 v3.0 (Pro) */
 #define MDSS_MDP_HW_REV_103	MDSS_MDP_REV(1, 3, 0) /* 8084 v1.0 */
 #define MDSS_MDP_HW_REV_103_1	MDSS_MDP_REV(1, 3, 1) /* 8084 v1.1 */
-#define MDSS_MDP_HW_REV_105	MDSS_MDP_REV(1, 5, 0) /* 8994 v1.0 */
-#define MDSS_MDP_HW_REV_106	MDSS_MDP_REV(1, 6, 0) /* 8916 v1.0 */
-#define MDSS_MDP_HW_REV_107	MDSS_MDP_REV(1, 7, 0)
-#define MDSS_MDP_HW_REV_108	MDSS_MDP_REV(1, 8, 0) /* 8939 v1.0 */
-#define MDSS_MDP_HW_REV_109	MDSS_MDP_REV(1, 9, 0) /* 8994 v2.0 */
-#define MDSS_MDP_HW_REV_110	MDSS_MDP_REV(1, 10, 0) /* 8992 v1.0 */
 #define MDSS_MDP_HW_REV_200	MDSS_MDP_REV(2, 0, 0) /* 8092 v1.0 */
 
 enum {
-	NOTIFY_UPDATE_INIT,
-	NOTIFY_UPDATE_DEINIT,
 	NOTIFY_UPDATE_START,
 	NOTIFY_UPDATE_STOP,
 	NOTIFY_UPDATE_POWER_OFF,
@@ -116,7 +110,6 @@ enum {
 	NOTIFY_TYPE_SUSPEND,
 	NOTIFY_TYPE_UPDATE,
 	NOTIFY_TYPE_BL_UPDATE,
-	NOTIFY_TYPE_BL_AD_ATTEN_UPDATE,
 };
 
 enum {
@@ -160,13 +153,6 @@ enum {
 	MDP_YCBYCR_H2V1,  /* YCbYCr interleave */
 	MDP_RGB_565_TILE,	  /* RGB 565 in tile format */
 	MDP_BGR_565_TILE,	  /* BGR 565 in tile format */
-	MDP_ARGB_1555,	/*ARGB 1555*/
-	MDP_RGBA_5551,	/*RGBA 5551*/
-	MDP_ARGB_4444,	/*ARGB 4444*/
-	MDP_RGBA_4444,	/*RGBA 4444*/
-	MDP_RGB_565_UBWC,
-	MDP_RGBA_8888_UBWC,
-	MDP_Y_CBCR_H2V2_UBWC,
 	MDP_IMGTYPE_LIMIT,
 	MDP_RGB_BORDERFILL,	/* border fill pipe */
 	MDP_FB_FORMAT = MDP_IMGTYPE2_START,    /* framebuffer format */
@@ -227,15 +213,8 @@ enum {
 #define MDP_MEMORY_ID_TYPE_FB		0x00001000
 #define MDP_BWC_EN			0x00000400
 #define MDP_DECIMATION_EN		0x00000800
-#define MDP_SMP_FORCE_ALLOC		0x00200000
 #define MDP_TRANSP_NOP 0xffffffff
 #define MDP_ALPHA_NOP 0xff
-
-/*
- * MDP_DEINTERLACE & MDP_SHARPENING Flags are not valid for MDP3
- * so using them together for MDP_SMART_BLIT.
- */
-#define MDP_SMART_BLIT			0xC0000000
 
 #define MDP_FB_PAGE_PROTECTION_NONCACHED         (0)
 #define MDP_FB_PAGE_PROTECTION_WRITECOMBINE      (1)
@@ -312,8 +291,6 @@ struct mdp_blit_req {
 	uint32_t transp_mask;
 	uint32_t flags;
 	int sharpening_strength;  /* -127 <--> 127, default 64 */
-	uint8_t color_space;
-	uint32_t fps;
 };
 
 struct mdp_blit_req_list {
@@ -543,7 +520,6 @@ enum mdss_mdp_blend_op {
 	BLEND_OP_MAX,
 };
 
-#define DECIMATED_DIMENSION(dim, deci) (((dim) + ((1 << (deci)) - 1)) >> (deci))
 #define MAX_PLANES	4
 struct mdp_scale_data {
 	uint8_t enable_pxl_ext;
@@ -572,25 +548,6 @@ struct mdp_scale_data {
 };
 
 /**
- * enum mdp_overlay_pipe_type - Different pipe type set by userspace
- *
- * @PIPE_TYPE_AUTO:    Not specified, pipe will be selected according to flags.
- * @PIPE_TYPE_VIG:     VIG pipe.
- * @PIPE_TYPE_RGB:     RGB pipe.
- * @PIPE_TYPE_DMA:     DMA pipe.
- * @PIPE_TYPE_CURSOR:  CURSOR pipe.
- * @PIPE_TYPE_MAX:     Used to track maximum number of pipe type.
- */
-enum mdp_overlay_pipe_type {
-	PIPE_TYPE_AUTO = 0,
-	PIPE_TYPE_VIG,
-	PIPE_TYPE_RGB,
-	PIPE_TYPE_DMA,
-	PIPE_TYPE_CURSOR,
-	PIPE_TYPE_MAX,
-};
-
-/**
  * struct mdp_overlay - overlay surface structure
  * @src:	Source image information (width, height, format).
  * @src_rect:	Source crop rectangle, portion of image that will be fetched.
@@ -612,7 +569,6 @@ enum mdp_overlay_pipe_type {
  *		The color should be in same format as the source image format.
  * @flags:	This is used to customize operation of overlay. See MDP flags
  *		for more information.
- * @pipe_type:  Used to specify the type of overlay pipe.
  * @user_data:	DEPRECATED* Used to store user application specific information.
  * @bg_color:	Solid color used to fill the overlay surface when no source
  *		buffer is provided.
@@ -650,7 +606,6 @@ struct mdp_overlay {
 	uint32_t blend_op;
 	uint32_t transp_mask;
 	uint32_t flags;
-	uint32_t pipe_type;
 	uint32_t id;
 	uint8_t priority;
 	uint32_t user_data[6];
@@ -659,7 +614,6 @@ struct mdp_overlay {
 	uint8_t vert_deci;
 	struct mdp_overlay_pp_params overlay_pp_cfg;
 	struct mdp_scale_data scale;
-	uint8_t color_space;
 };
 
 struct msmfb_overlay_3d {
@@ -786,7 +740,6 @@ enum {
 	mdp_lut_igc,
 	mdp_lut_pgc,
 	mdp_lut_hist,
-	mdp_lut_rgb,
 	mdp_lut_max,
 };
 
@@ -807,20 +760,6 @@ struct mdp_pgc_lut_data {
 	struct mdp_ar_gc_lut_data *b_data;
 };
 
-/*
- * mdp_rgb_lut_data is used to provide parameters for configuring the
- * generic RGB lut in case of gamma correction or other LUT updation usecases
- */
-struct mdp_rgb_lut_data {
-	uint32_t flags;
-	uint32_t lut_type;
-	struct fb_cmap cmap;
-};
-
-enum {
-	mdp_rgb_lut_gc,
-	mdp_rgb_lut_hist,
-};
 
 struct mdp_lut_cfg_data {
 	uint32_t lut_type;
@@ -828,7 +767,6 @@ struct mdp_lut_cfg_data {
 		struct mdp_igc_lut_data igc_lut_data;
 		struct mdp_pgc_lut_data pgc_lut_data;
 		struct mdp_hist_lut_data hist_lut_data;
-		struct mdp_rgb_lut_data rgb_lut_data;
 	} data;
 };
 
@@ -1040,7 +978,6 @@ enum {
 	metadata_op_wb_secure,
 	metadata_op_get_caps,
 	metadata_op_crc,
-	metadata_op_get_ion_fd,
 	metadata_op_max
 };
 
@@ -1074,7 +1011,6 @@ struct msmfb_metadata {
 		uint32_t video_info_code;
 		struct mdss_hw_caps caps;
 		uint8_t secure_en;
-		int fbmem_ionfd;
 	} data;
 };
 
@@ -1138,7 +1074,7 @@ struct mdp_mixer_info {
 	int z_order;
 };
 
-#define MAX_PIPE_PER_MIXER  7
+#define MAX_PIPE_PER_MIXER  4
 
 struct msmfb_mixer_info_req {
 	int mixer_num;
@@ -1173,11 +1109,5 @@ enum {
 	MDP_WRITEBACK_MIRROR_ON,
 	MDP_WRITEBACK_MIRROR_PAUSE,
 	MDP_WRITEBACK_MIRROR_RESUME,
-};
-
-enum {
-	MDP_CSC_ITU_R_601,
-	MDP_CSC_ITU_R_601_FR,
-	MDP_CSC_ITU_R_709,
 };
 #endif /*_UAPI_MSM_MDP_H_*/

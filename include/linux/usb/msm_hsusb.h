@@ -2,7 +2,7 @@
  *
  * Copyright (C) 2008 Google, Inc.
  * Author: Brian Swetland <swetland@google.com>
- * Copyright (c) 2009-2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2014, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -92,17 +92,14 @@ enum otg_control_type {
  * PHY used in
  *
  * INVALID_PHY			Unsupported PHY
- * CI_PHY			Chipidea PHY
- * SNPS_PICO_PHY		Synopsis Pico PHY
- * SNPS_FEMTO_PHY		Synopsis Femto PHY
+ * CI_45NM_INTEGRATED_PHY	Chipidea 45nm integrated PHY
+ * SNPS_28NM_INTEGRATED_PHY	Synopsis 28nm integrated PHY
  *
  */
 enum msm_usb_phy_type {
 	INVALID_PHY = 0,
-	CI_PHY,			/* not supported */
-	SNPS_PICO_PHY,
-	SNPS_FEMTO_PHY,
-	QUSB_ULPI_PHY,
+	CI_45NM_INTEGRATED_PHY,
+	SNPS_28NM_INTEGRATED_PHY,
 };
 
 #define IDEV_CHG_MAX	1500
@@ -194,29 +191,6 @@ enum usb_vdd_value {
 };
 
 /**
- * Maintain state for hvdcp external charger status
- * DEFAULT	This is used when DCP is detected
- * ACTIVE	This is used when ioctl is called to block LPM
- * INACTIVE	This is used when ioctl is called to unblock LPM
- */
-
-enum usb_ext_chg_status {
-	DEFAULT = 1,
-	ACTIVE,
-	INACTIVE,
-};
-
-/**
- * Supported USB controllers
- */
-enum usb_ctrl {
-	DWC3_CTRL = 0,	/* DWC3 controller */
-	CI_CTRL,	/* ChipIdea controller */
-	HSIC_CTRL,	/* HSIC controller */
-	NUM_CTRL,
-};
-
-/**
  * struct msm_otg_platform_data - platform device data
  *              for msm_otg driver.
  * @phy_init_seq: PHY configuration sequence. val, reg pairs
@@ -266,9 +240,6 @@ enum usb_ctrl {
  *		mode with controller in device mode.
  * @bool disable_retention_with_vdd_min: Indicates whether to enable
 		allowing VDDmin without putting PHY into retention.
- * @usb_id_gpio: Gpio used for USB ID detection.
- * @bool phy_dvdd_always_on: PHY DVDD is supplied by always on PMIC LDO.
- * @bool emulation: Indicates whether we are running on emulation platform.
  */
 struct msm_otg_platform_data {
 	int *phy_init_seq;
@@ -278,6 +249,7 @@ struct msm_otg_platform_data {
 	enum otg_control_type otg_control;
 	enum usb_mode_type default_mode;
 	enum msm_usb_phy_type phy_type;
+	void (*setup_gpio)(enum usb_otg_state state);
 	int pmic_id_irq;
 	unsigned int mpm_otgsessvld_int;
 	unsigned int mpm_dpshv_int;
@@ -288,6 +260,7 @@ struct msm_otg_platform_data {
 	bool enable_lpm_on_dev_suspend;
 	bool core_clk_always_on_workaround;
 	bool delay_lpm_on_disconnect;
+	bool delay_lpm_hndshk_on_disconnect;
 	bool dp_manual_pullup;
 	bool enable_sec_phy;
 	struct msm_bus_scale_pdata *bus_scale_table;
@@ -299,9 +272,6 @@ struct msm_otg_platform_data {
 	bool rw_during_lpm_workaround;
 	bool enable_ahb2ahb_bypass;
 	bool disable_retention_with_vdd_min;
-	int usb_id_gpio;
-	bool phy_dvdd_always_on;
-	bool emulation;
 };
 
 /* phy related flags */
@@ -351,40 +321,24 @@ struct msm_otg_platform_data {
 #define B_TST_SRP	8
 #define B_TST_CONFIG	9
 
-#define USB_NUM_BUS_CLOCKS      3
-
 /**
  * struct msm_otg: OTG driver data. Shared by HCD and DCD.
  * @otg: USB OTG Transceiver structure.
  * @pdata: otg device platform data.
  * @irq: IRQ number assigned for HSUSB controller.
  * @async_irq: IRQ number used by some controllers during low power state
- * @phy_irq: IRQ number assigned for PHY to notify events like id and line
-		state changes.
+ * @clk: clock struct of alt_core_clk.
  * @pclk: clock struct of iface_clk.
  * @core_clk: clock struct of core_bus_clk.
  * @sleep_clk: clock struct of sleep_clk for USB PHY.
- * @phy_reset_clk: clock struct of phy_reset_clk for USB PHY. This clock is
-		a reset only clock and resets the PHY, ULPI bridge and
-		CSR wrapper.
- * @phy_por_clk: clock struct of phy_por_clk for USB PHY. This clock is
-		a reset only clock and resets only the PHY (POR).
- * @phy_csr_clk: clock struct of phy_csr_clk for USB PHY. This clock is
-		required to acess PHY CSR registers via AHB2PHY interface.
- * @bus_clks: bimc/snoc/pcnoc clock struct.
  * @core_clk_rate: core clk max frequency
  * @regs: ioremapped register base address.
  * @usb_phy_ctrl_reg: relevant PHY_CTRL_REG register base address.
  * @inputs: OTG state machine inputs(Id, SessValid etc).
  * @sm_work: OTG state machine work.
- * @pm_suspended: OTG device is system(PM) suspended.
- * @pm_notify: Notifier to receive system wide PM transition events.
-		It is used to defer wakeup events processing until
-		system is RESUMED.
  * @in_lpm: indicates low power mode (LPM) state.
  * @async_int: IRQ line on which ASYNC interrupt arrived in LPM.
  * @cur_power: The amount of mA available from downstream port.
- * @otg_wq: Strict order otg workqueue for OTG works (SM/ID/SUSPEND).
  * @chg_work: Charger detection work.
  * @chg_state: The state of charger detection process.
  * @chg_type: The type of charger attached.
@@ -402,38 +356,24 @@ struct msm_otg_platform_data {
  * @mhl_enabled: MHL driver registration successful and MHL enabled.
  * @host_bus_suspend: indicates host bus suspend or not.
  * @device_bus_suspend: indicates device bus suspend or not.
- * @bus_clks_enabled: indicates pcnoc/snoc/bimc clocks are on or not.
  * @chg_check_timer: The timer used to implement the workaround to detect
  *               very slow plug in of wall charger.
  * @ui_enabled: USB Intterupt is enabled or disabled.
- * @is_ext_chg_dcp: To indicate whether charger detected by external entity
-		SMB hardware is DCP charger or not.
- * @pm_done: It is used to increment the pm counter using pm_runtime_get_sync.
-	     This handles the race case when PM resume thread returns before
-	     the charger detection starts. When USB is disconnected and in lpm
-	     pm_done is set to true.
- * @ext_id_irq: IRQ for ID interrupt.
- * @phy_irq_pending: Gets set when PHY IRQ arrives in LPM.
+ * @pm_done: Indicates whether USB is PM resumed
  */
 struct msm_otg {
 	struct usb_phy phy;
 	struct msm_otg_platform_data *pdata;
 	int irq;
 	int async_irq;
-	int phy_irq;
 	struct clk *xo_clk;
+	struct clk *clk;
 	struct clk *pclk;
 	struct clk *core_clk;
 	struct clk *sleep_clk;
-	struct clk *phy_reset_clk;
-	struct clk *phy_por_clk;
-	struct clk *phy_csr_clk;
-	struct clk *bus_clks[USB_NUM_BUS_CLOCKS];
-	struct clk *phy_ref_clk;
 	long core_clk_rate;
 	struct resource *io_res;
 	void __iomem *regs;
-	void __iomem *phy_csr_regs;
 	void __iomem *usb_phy_ctrl_reg;
 #define ID		0
 #define B_SESS_VLD	1
@@ -458,15 +398,12 @@ struct msm_otg {
 	struct work_struct sm_work;
 	bool sm_work_pending;
 	atomic_t pm_suspended;
-	struct notifier_block pm_notify;
 	atomic_t in_lpm;
 	atomic_t set_fpr_with_lpm_exit;
-	bool err_event_seen;
 	int async_int;
 	unsigned cur_power;
-	struct workqueue_struct *otg_wq;
 	struct delayed_work chg_work;
-	struct delayed_work id_status_work;
+	struct delayed_work pmic_id_status_work;
 	struct delayed_work suspend_work;
 	enum usb_chg_state chg_state;
 	enum usb_chg_type chg_type;
@@ -481,7 +418,6 @@ struct msm_otg {
 	bool mhl_enabled;
 	bool host_bus_suspend;
 	bool device_bus_suspend;
-	bool bus_clks_enabled;
 	struct timer_list chg_check_timer;
 	/*
 	 * Allowing PHY power collpase turns off the HSUSB 3.3v and 1.8v
@@ -516,26 +452,18 @@ struct msm_otg {
 	* for fixing PHY current leakage issue when LDOs ar turned off.
 	*/
 #define ALLOW_VDD_MIN_WITH_RETENTION_DISABLED BIT(5)
-
-	/*
-	 * PHY can keep D+ pull-up during peripheral bus suspend and
-	 * D+/D- pull-down during host bus suspend without any
-	 * re-work. This is possible only when PHY DVDD is supplied
-	 * by a PMIC LDO (unlike VDDCX/VDDMX).
-	 */
-#define ALLOW_BUS_SUSPEND_WITHOUT_REWORK BIT(6)
 	unsigned long lpm_flags;
 #define PHY_PWR_COLLAPSED		BIT(0)
 #define PHY_RETENTIONED			BIT(1)
 #define XO_SHUTDOWN			BIT(2)
 #define CLOCKS_DOWN			BIT(3)
-#define PHY_REGULATORS_LPM		BIT(4)
-#define PHY_VDD_MINIMIZED		BIT(5)
+#define PHY_REGULATORS_LPM	BIT(4)
 	int reset_counter;
 	unsigned long b_last_se0_sess;
 	unsigned long tmouts;
 	u8 active_tmout;
 	struct hrtimer timer;
+	enum usb_vdd_type vdd_type;
 	struct power_supply usb_psy;
 	unsigned int online;
 	unsigned int host_mode;
@@ -548,16 +476,10 @@ struct msm_otg {
 	struct class *ext_chg_class;
 	struct device *ext_chg_device;
 	bool ext_chg_opened;
-	enum usb_ext_chg_status ext_chg_active;
+	bool ext_chg_active;
 	struct completion ext_chg_wait;
-	struct pinctrl *phy_pinctrl;
 	int ui_enabled;
-	bool is_ext_chg_dcp;
 	bool pm_done;
-	struct qpnp_vadc_chip	*vadc_dev;
-	int ext_id_irq;
-	bool phy_irq_pending;
-	wait_queue_head_t	host_suspend_wait;
 };
 
 struct ci13xxx_platform_data {
@@ -624,8 +546,6 @@ struct msm_usb_host_platform_data {
 	bool no_selective_suspend;
 	int resume_gpio;
 	int ext_hub_reset_gpio;
-	bool is_uicc;
-	int pm_qos_latency;
 };
 
 /**
@@ -659,8 +579,8 @@ struct usb_ext_notification {
 	void *ctxt;
 };
 #ifdef CONFIG_USB_BAM
-bool msm_bam_usb_lpm_ok(enum usb_ctrl ctrl);
-void msm_bam_notify_lpm_resume(enum usb_ctrl ctrl);
+bool msm_bam_usb_lpm_ok(void);
+void msm_bam_notify_lpm_resume(void);
 void msm_bam_set_usb_host_dev(struct device *dev);
 void msm_bam_set_hsic_host_dev(struct device *dev);
 void msm_bam_set_usb_dev(struct device *dev);
@@ -669,11 +589,9 @@ void msm_bam_wait_for_hsic_host_prod_granted(void);
 bool msm_bam_hsic_lpm_ok(void);
 void msm_bam_usb_host_notify_on_resume(void);
 void msm_bam_hsic_host_notify_on_resume(void);
-bool msm_bam_hsic_host_pipe_empty(void);
-void msm_bam_set_qdss_usb_active(bool is_active);
 #else
-static inline bool msm_bam_usb_lpm_ok(enum usb_ctrl ctrl) { return true; }
-static inline void msm_bam_notify_lpm_resume(enum usb_ctrl ctrl) {}
+static inline bool msm_bam_usb_lpm_ok(void) { return true; }
+static inline void msm_bam_notify_lpm_resume(void) {}
 static inline void msm_bam_set_usb_host_dev(struct device *dev) {}
 static inline void msm_bam_set_hsic_host_dev(struct device *dev) {}
 static inline void msm_bam_set_usb_dev(struct device *dev) {}
@@ -682,8 +600,6 @@ static inline void msm_bam_wait_for_hsic_host_prod_granted(void) {}
 static inline bool msm_bam_hsic_lpm_ok(void) { return true; }
 static inline void msm_bam_hsic_host_notify_on_resume(void) {}
 static inline void msm_bam_usb_host_notify_on_resume(void) {}
-static inline bool msm_bam_hsic_host_pipe_empty(void) { return true; }
-static inline void msm_bam_set_qdss_usb_active(bool is_active) {}
 #endif
 #ifdef CONFIG_USB_CI13XXX_MSM
 void msm_hw_bam_disable(bool bam_disable);
@@ -699,8 +615,6 @@ int msm_ep_unconfig(struct usb_ep *ep);
 void dwc3_tx_fifo_resize_request(struct usb_ep *ep, bool qdss_enable);
 int msm_data_fifo_config(struct usb_ep *ep, phys_addr_t addr, u32 size,
 	u8 dst_pipe_idx);
-bool msm_dwc3_reset_ep_after_lpm(struct usb_gadget *gadget);
-int msm_dwc3_reset_dbm_ep(struct usb_ep *ep);
 
 void msm_dwc3_restart_usb_session(struct usb_gadget *gadget);
 
@@ -738,16 +652,5 @@ static inline int msm_register_usb_ext_notification(
 {
 	return -ENODEV;
 }
-
-static inline bool msm_dwc3_reset_ep_after_lpm(struct usb_gadget *gadget)
-{
-	return false;
-}
-
-static inline int msm_dwc3_reset_dbm_ep(struct usb_ep *ep)
-{
-	return -ENODEV;
-}
-
 #endif
 #endif

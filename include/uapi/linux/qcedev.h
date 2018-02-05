@@ -228,10 +228,6 @@ struct qfips_verify_t {
 	void *kernel;
 };
 
-struct file;
-extern long qcedev_ioctl(struct file *file,
-			unsigned cmd, unsigned long arg);
-
 #define QCEDEV_IOC_MAGIC	0x87
 
 #define QCEDEV_IOCTL_ENC_REQ		\
@@ -251,7 +247,7 @@ extern long qcedev_ioctl(struct file *file,
 #define QCEDEV_IOCTL_UNLOCK_CE	\
 	_IO(QCEDEV_IOC_MAGIC, 8)
 #define QCEDEV_IOCTL_GET_CMAC_REQ	\
-	_IOWR(QCEDEV_IOC_MAGIC, 9, struct qcedev_sha_op_req)
+	_IOWR(QCEDEV_IOC_MAGIC, 9, struct qcedev_cipher_op_req)
 #define QCEDEV_IOCTL_UPDATE_FIPS_STATUS		\
 	_IOWR(QCEDEV_IOC_MAGIC, 10, enum fips_status)
 #define QCEDEV_IOCTL_QUERY_FIPS_STATUS	\

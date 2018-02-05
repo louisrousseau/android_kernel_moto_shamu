@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,7 +24,6 @@ extern struct bus_type slimbus_type;
 /* Standard values per SLIMbus spec needed by controllers and devices */
 #define SLIM_CL_PER_SUPERFRAME		6144
 #define SLIM_CL_PER_SUPERFRAME_DIV8	(SLIM_CL_PER_SUPERFRAME >> 3)
-#define SLIM_MAX_TXNS			256
 #define SLIM_MAX_CLK_GEAR		10
 #define SLIM_MIN_CLK_GEAR		1
 #define SLIM_CL_PER_SL			4
@@ -172,7 +171,6 @@ struct slim_addrt {
  *	(e.g. relevant for mc = SLIM_MSG_MC_REQUEST_INFORMATION)
  * @la: Logical address of the device this message is going to.
  *	(Not used when destination type is broadcast.)
- * @async: If this transaction is async
  * @rbuf: Buffer to be populated by controller when response is received.
  * @wbuf: Payload of the message. (e.g. channel number for DATA channel APIs)
  * @comp: Completion structure. Used by controller to notify response.
@@ -187,7 +185,6 @@ struct slim_msg_txn {
 	u8			len;
 	u8			tid;
 	u8			la;
-	bool			async;
 	u8			*rbuf;
 	const u8		*wbuf;
 	struct completion	*comp;
@@ -547,9 +544,8 @@ struct slim_controller {
 	u8			num_dev;
 	struct list_head	devs;
 	struct workqueue_struct *wq;
-	struct slim_msg_txn	*txnt[SLIM_MAX_TXNS];
+	struct slim_msg_txn	**txnt;
 	u8			last_tid;
-	spinlock_t		txn_lock;
 	struct slim_port	*ports;
 	int			nports;
 	struct slim_ich		*chans;
@@ -573,10 +569,10 @@ struct slim_controller {
 	int			(*framer_handover)(struct slim_controller *ctrl,
 				struct slim_framer *new_framer);
 	int			(*port_xfer)(struct slim_controller *ctrl,
-				u8 pn, phys_addr_t iobuf, u32 len,
+				u8 pn, u8 *iobuf, u32 len,
 				struct completion *comp);
 	enum slim_port_err	(*port_xfer_status)(struct slim_controller *ctr,
-				u8 pn, phys_addr_t *done_buf, u32 *done_len);
+				u8 pn, u8 **done_buf, u32 *done_len);
 	int			(*xfer_user_msg)(struct slim_controller *ctrl,
 				u8 la, u8 mt, u8 mc,
 				struct slim_ele_access *msg, u8 *buf, u8 len);
@@ -806,8 +802,8 @@ extern int slim_dealloc_mgrports(struct slim_device *sb, u32 *hdl, int hsz);
  * Client will call slim_port_get_xfer_status to get error and/or number of
  * bytes transferred if used asynchronously.
  */
-extern int slim_port_xfer(struct slim_device *sb, u32 ph, phys_addr_t iobuf,
-				u32 len, struct completion *comp);
+extern int slim_port_xfer(struct slim_device *sb, u32 ph, u8 *iobuf, u32 len,
+				struct completion *comp);
 
 /*
  * slim_port_get_xfer_status: Poll for port transfers, or get transfer status
@@ -829,7 +825,7 @@ extern int slim_port_xfer(struct slim_device *sb, u32 ph, phys_addr_t iobuf,
  * processed from the multiple transfers.
  */
 extern enum slim_port_err slim_port_get_xfer_status(struct slim_device *sb,
-			u32 ph, phys_addr_t *done_buf, u32 *done_len);
+			u32 ph, u8 **done_buf, u32 *done_len);
 
 /*
  * slim_connect_src: Connect source port to channel.

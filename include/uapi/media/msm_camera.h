@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2012, 2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2009-2012, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1609,6 +1609,7 @@ struct msm_camera_csi_lane_params {
 
 struct camera_vreg_t {
 	const char *reg_name;
+	enum camera_vreg_type type;
 	int min_voltage;
 	int max_voltage;
 	int op_mode;
@@ -1702,8 +1703,6 @@ struct damping_params_t {
 enum actuator_type {
 	ACTUATOR_VCM,
 	ACTUATOR_PIEZO,
-	ACTUATOR_HVCM,
-	ACTUATOR_BIVCM,
 };
 
 enum msm_actuator_data_type {
@@ -1719,10 +1718,6 @@ enum msm_actuator_addr_type {
 enum msm_actuator_write_type {
 	MSM_ACTUATOR_WRITE_HW_DAMP,
 	MSM_ACTUATOR_WRITE_DAC,
-	MSM_ACTUATOR_WRITE,
-	MSM_ACTUATOR_WRITE_DIR_REG,
-	MSM_ACTUATOR_POLL,
-	MSM_ACTUATOR_READ_WRITE,
 };
 
 struct msm_actuator_reg_params_t {
@@ -1730,10 +1725,7 @@ struct msm_actuator_reg_params_t {
 	uint32_t hw_mask;
 	uint16_t reg_addr;
 	uint16_t hw_shift;
-	uint16_t data_type;
-	uint16_t addr_type;
-	uint16_t reg_data;
-	uint16_t delay;
+	uint16_t data_shift;
 };
 
 struct reg_settings_t {
